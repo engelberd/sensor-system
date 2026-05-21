@@ -47,6 +47,22 @@ parentheses.
 
 ## Recommended Usage
 
+Prepare the local host environment first:
+
+```bash
+python3 -m venv host/.venv
+host/.venv/bin/python -m pip install -r host/requirements-recorder.txt
+```
+
+If this host is also your first-time firmware build machine, build the node
+artifacts before provisioning a fresh board:
+
+```bash
+export PICO_SDK_PATH=$PWD/pico-sdk
+cmake -S node -B node/build
+cmake --build node/build
+```
+
 Convenience launcher from repo root:
 
 ```bash
@@ -140,11 +156,20 @@ Typical workflow:
 `commission-assign` persists the new `node_id` immediately, so a separate
 `save` step is not required for this path.
 
+For a fresh board on a local development machine, the practical sequence is:
+
+1. Flash `node/build/sensor-system-node-factory.uf2` over USB/BOOTSEL.
+2. Connect the board to the RS485 bus.
+3. Run `commission-scan`.
+4. Assign the runtime `node_id`.
+5. Verify with `get-config` and then `ping`.
+
 ## Bootloader Workflow
 
 The recommended split is:
 
 - initial board provisioning: flash `node/build/sensor-system-node-factory.uf2`
+- bench reflashing of an already commissioned board over USB: `node/build/sensor-system-node.uf2`
 - remote maintenance over RS485: use `./hostctl update`
 
 The update command uploads `node/build/sensor-system-node-update-package.json`, which

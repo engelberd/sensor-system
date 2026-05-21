@@ -10,8 +10,12 @@ worker per RS485 channel from `host/system_config.json`.
 ## Install HDF5 Dependencies
 
 ```bash
+python3 -m venv host/.venv
 host/.venv/bin/python -m pip install -r host/requirements-recorder.txt
 ```
+
+If you are using a fresh local machine, create the virtual environment first and
+then use the `./hostctl` launcher from the repository root for day-to-day work.
 
 ## Record To HDF5
 
@@ -138,3 +142,8 @@ For day-to-day use from the repository root, the shorter launcher form is:
 
 Use the RS485 adapter path that exists on the host. In production prefer a
 stable udev alias such as `/dev/sensor-system-rs485`.
+
+For first-time node provisioning and later firmware updates, see:
+
+- [node/README-bootloader.md](/home/anone/pico-projects/node/README-bootloader.md:1)
+- [host/README-product.md](/home/anone/pico-projects/host/README-product.md:1)

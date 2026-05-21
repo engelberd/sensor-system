@@ -27,11 +27,11 @@ the important artifacts are:
 - `node/build/sensor-system-node-factory.uf2`
   Full factory image for initial provisioning over USB/BOOTSEL.
 - `node/build/sensor-system-node.uf2`
-  Compatibility alias removed; use `sensor-system-node-factory.uf2` or `sensor-system-node.uf2` for flashing.
+  General full-image UF2. For a brand-new node, prefer the factory image above.
 - `node/build/sensor-system-node-factory.bin`
   Raw flash image containing bootloader, initial metadata, and slot A app.
 - `node/build/sensor-system-node.bin`
-  Compatibility alias removed; use `sensor-system-node-factory.bin` or `sensor-system-node.bin`.
+  General full-image raw binary variant.
 - `node/build/sensor-system-node-bootloader.uf2`
   Bootloader-only image for development.
 - `node/build/sensor-system-node-slot-a.bin`
@@ -42,12 +42,38 @@ the important artifacts are:
   Diagnostic standalone application image without the A/B bootloader. Use it only
   to isolate bootloader issues during bench work.
 
+## Local Build On A New Computer
+
+For a fresh local machine where the node firmware will be built outside the
+Raspberry Pi host:
+
+```bash
+git clone https://github.com/raspberrypi/pico-sdk.git
+export PICO_SDK_PATH=$PWD/pico-sdk
+cmake -S node -B node/build
+cmake --build node/build
+```
+
+On macOS, if CMake does not auto-detect the ARM toolchain correctly, configure
+with explicit compiler paths:
+
+```bash
+cmake -S node -B node/build \
+  -DCMAKE_C_COMPILER=/opt/homebrew/bin/arm-none-eabi-gcc \
+  -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/arm-none-eabi-g++ \
+  -DCMAKE_ASM_COMPILER=/opt/homebrew/bin/arm-none-eabi-gcc
+cmake --build node/build
+```
+
+If you see a TinyUSB submodule warning during configuration, it is acceptable
+for current RS485-only builds and does not block the firmware artifacts above.
+
 ## Recommended Provisioning
 
 For a brand-new node or a board recovered locally:
 
 1. Put the Pico 2 into BOOTSEL mode.
-2. Flash `node/build/sensor-system-node.uf2` or `node/build/sensor-system-node-factory.uf2`.
+2. Flash `node/build/sensor-system-node-factory.uf2`.
 3. Reboot normally.
 4. Commission a runtime `node_id` over RS485:
 
@@ -155,7 +181,7 @@ The LED on state is therefore the local "app ready with sensor accepted" signal.
 
 Minimum acceptance after changing bootloader or application startup:
 
-1. Flash `sensor-system-node.uf2`.
+1. Flash `sensor-system-node-factory.uf2` for a fresh board, or `sensor-system-node.uf2` for bench reflashing.
 2. Confirm LED turns on after startup.
 3. Confirm `./hostctl ping --port ...` succeeds.
 4. Confirm `./hostctl boot --port ... --node ... --enter none hello` times out.

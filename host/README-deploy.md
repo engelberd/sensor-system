@@ -1,7 +1,11 @@
 # Sensor System Deployment Checklist (Host + Node)
 
 This is a practical pre-flight list for deploying a node where you will **not**
-have physical USB access (e.g. the node is mounted high up).
+have physical USB access after installation (e.g. the node is mounted high up).
+
+It assumes initial provisioning was already done locally with
+`node/build/sensor-system-node-factory.uf2`, and that the deployed host machine
+will own RS485 communication plus future remote updates.
 
 ## 1) Node (firmware) must-haves
 
@@ -41,6 +45,13 @@ have physical USB access (e.g. the node is mounted high up).
 - **Time sync**: enable NTP/chrony/systemd-timesyncd; host timestamps are written
   into the output files.
 
+For a development laptop or bench machine that is temporarily acting as the
+host, the minimum local setup is:
+
+- `python3 -m venv host/.venv`
+- `host/.venv/bin/python -m pip install -r host/requirements-recorder.txt`
+- use `./hostctl ping`, `./hostctl config`, and `./hostctl update` from the repo root
+
 ## 3) One-time setup steps (typical Linux host)
 
 1. Create Python venv and install dependencies:
@@ -72,3 +83,4 @@ have physical USB access (e.g. the node is mounted high up).
 - Reboot host during recording and confirm it restarts and continues with
   `--start-from newest`.
 - Power-cycle the node and confirm it comes back and answers `./hostctl ping`.
+- Confirm `./hostctl update --port ... --node ...` still works from the final host.
