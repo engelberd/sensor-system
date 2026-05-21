@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PYTHON="$ROOT_DIR/host/.venv/bin/python"
+export PYTHONUNBUFFERED=1
+
+if [[ ! -x "$VENV_PYTHON" ]]; then
+  echo "[ERROR] missing host virtualenv python: $VENV_PYTHON" >&2
+  echo "Create it first, for example:" >&2
+  echo "  python3 -m venv host/.venv" >&2
+  echo "  host/.venv/bin/python -m pip install pyserial numpy h5py" >&2
+  exit 1
+fi
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./hostctl <command> [args...]
+
+Commands:
+  ping       Run host ping tool
+  config     Run configurator
+  lab        Run lab/diagnostic tool
+  recorder   Run production recorder
+  supervisor Run multi-channel recorder supervisor
+  console    Run operator console
+  dashboard  Run web dashboard for supervisor/runtime state
+  operator   Run operator control panel for host, node config, runs, and preview
+  boot       Run bootloader maintenance tool
+  update     Upload latest firmware package over RS485
+  py         Run arbitrary python module/script inside host venv
+
+Examples:
+  ./hostctl ping --port /dev/sensor-system-rs485
+  ./hostctl config --port /dev/sensor-system-rs485 get-config
+  ./hostctl config --port /dev/sensor-system-rs485 commission-scan
+  ./hostctl config --port /dev/sensor-system-rs485 commission-assign --hardware-id 0123456789ABCDEF --node-id 7
+  ./hostctl recorder --port /dev/sensor-system-rs485 --nodes 1 --output-dir runs/sensor-system --format hdf5 --window-seconds 600
+  ./hostctl supervisor --config host/system_config.json
+  ./hostctl console
+  ./hostctl dashboard --config host/system_config.json --port 8080
+  ./hostctl operator --config host/system_config.json --port 8090
+  ./hostctl boot --port /dev/sensor-system-rs485 --node 1 --enter app hello
+  ./hostctl update --port /dev/sensor-system-rs485 --node 1
+EOF
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 2
+fi
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+  ping)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_ping.py" "$@"
+    ;;
+  config)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_configurator.py" "$@"
+    ;;
+  lab)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_lab.py" "$@"
+    ;;
+  recorder)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_recorder.py" "$@"
+    ;;
+  supervisor)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_supervisor.py" "$@"
+    ;;
+  console)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_console.py" "$@"
+    ;;
+  dashboard)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_dashboard.py" "$@"
+    ;;
+  operator)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_operator_panel.py" "$@"
+    ;;
+  boot)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/tools/bootloader_cli.py" "$@"
+    ;;
+  update)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/tools/bootloader_cli.py" \
+      --enter auto \
+      --enter-wait "${SENSOR_SYSTEM_UPDATE_ENTER_WAIT:-3}" \
+      --timeout "${SENSOR_SYSTEM_UPDATE_TIMEOUT:-10}" \
+      --hello-retries "${SENSOR_SYSTEM_UPDATE_HELLO_RETRIES:-20}" \
+      --hello-retry-delay "${SENSOR_SYSTEM_UPDATE_HELLO_RETRY_DELAY:-0.5}" \
+      --verify-app-wait "${SENSOR_SYSTEM_UPDATE_VERIFY_WAIT:-12}" \
+      --verify-app-retries "${SENSOR_SYSTEM_UPDATE_VERIFY_RETRIES:-10}" \
+      --verify-app-retry-delay "${SENSOR_SYSTEM_UPDATE_VERIFY_RETRY_DELAY:-0.5}" \
+      --image "$ROOT_DIR/node/build/sensor-system-node-update-package.json" \
+      upload "$@"
+    ;;
+  py)
+    exec "$VENV_PYTHON" "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "[ERROR] unknown command: $COMMAND" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,19 @@
+[Unit]
+Description=Sensor System operator panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anone
+Group=anone
+WorkingDirectory=/home/anone/pico-projects
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/anone/pico-projects/host/.venv/bin/python /home/anone/pico-projects/host/host_operator_panel.py --config /home/anone/pico-projects/host/system_config.json --host 0.0.0.0 --port 8090 --supervisor-service sensor-system-supervisor.service
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

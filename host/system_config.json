@@ -1,0 +1,44 @@
+{
+  "system": {
+    "name": "sensor-system-production",
+    "site": "main-installation",
+    "timezone": "Europe/Warsaw"
+  },
+  "storage": {
+    "root_dir": "runs",
+    "format": "hdf5",
+    "compression": "gzip",
+    "window_seconds": 600
+  },
+  "supervisor": {
+    "status_file": "/tmp/sensor-system_supervisor_status.json",
+    "event_log": "/tmp/sensor-system_supervisor_events.jsonl",
+    "channel_runtime_dir": "/tmp/sensor-system_channels",
+    "status_interval_s": 1.0,
+    "restart_delay_s": 2.0
+  },
+  "channels": [
+    {
+      "name": "line-a",
+      "label": "Linia A",
+      "enabled": true,
+      "port": "/dev/ttyACM0",
+      "baud": 115200,
+      "nodes": [
+        {
+          "id": 1,
+          "name": "Czujnik 1",
+          "enabled": true,
+          "expected_odr_hz": 62.5,
+          "sensor_odr_hz": 125,
+          "range_g": 2,
+          "high_pass_corner": 0,
+          "fifo_watermark": 30,
+          "offset_x": 0,
+          "offset_y": 0,
+          "offset_z": 0
+        }
+      ]
+    }
+  ]
+}

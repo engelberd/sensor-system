@@ -1,0 +1,11 @@
+node/build/
+host/.venv/
+__pycache__/
+*.pyc
+runs/
+.git-main/
+.git-node-history/
+.agents/
+.codex/
+.vscode/
+.codex

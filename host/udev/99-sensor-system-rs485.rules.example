@@ -1,0 +1,10 @@
+# Copy to /etc/udev/rules.d/99-sensor-system-rs485.rules on the production host.
+# Then run:
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# This example matches the currently used QinHeng USB Single Serial adapter.
+# Verify attributes on the target machine with:
+#   udevadm info -q property -n /dev/<current-rs485-adapter>
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="586D002198", SYMLINK+="sensor-system-rs485", MODE="0660", GROUP="dialout"

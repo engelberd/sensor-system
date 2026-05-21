@@ -1,0 +1,28 @@
+[Unit]
+Description=Sensor System RS485 multi-channel supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Adjust this to where you deploy the repo (or a copy of it).
+WorkingDirectory=/opt/sensor-system
+
+# Optional environment file for overriding the config path without editing the unit.
+# Create e.g. /etc/sensor-system-supervisor.env and set:
+#   SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
+EnvironmentFile=-/etc/sensor-system-supervisor.env
+
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_supervisor.py \
+  --config ${SENSOR_SYSTEM_CONFIG:-/opt/sensor-system/host/system_config.json}
+
+Restart=always
+RestartSec=5
+
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

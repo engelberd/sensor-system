@@ -1,0 +1,50 @@
+[Unit]
+Description=Sensor System RS485 recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Adjust this to where you deploy the repo (or a copy of it).
+WorkingDirectory=/opt/sensor-system
+
+# Optional environment file for overriding settings without editing the unit.
+# Create e.g. /etc/sensor-system-recorder.env and set:
+#   SENSOR_SYSTEM_PORT=/dev/sensor-system-rs485
+#   SENSOR_SYSTEM_NODES=1,2
+#   SENSOR_SYSTEM_OUTPUT_DIR=/data/sensor-system
+#   SENSOR_SYSTEM_WINDOW_SECONDS=600
+#   SENSOR_SYSTEM_WINDOW_TIMEZONE=Europe/Warsaw
+EnvironmentFile=-/etc/sensor-system-recorder.env
+
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_recorder.py \
+  --port ${SENSOR_SYSTEM_PORT:-/dev/sensor-system-rs485} \
+  --baud ${SENSOR_SYSTEM_BAUD:-115200} \
+  --nodes ${SENSOR_SYSTEM_NODES:-1} \
+  --output-dir ${SENSOR_SYSTEM_OUTPUT_DIR:-/data/sensor-system} \
+  --format ${SENSOR_SYSTEM_FORMAT:-hdf5} \
+  --compression ${SENSOR_SYSTEM_COMPRESSION:-gzip} \
+  --window-seconds ${SENSOR_SYSTEM_WINDOW_SECONDS:-600} \
+  --window-timezone ${SENSOR_SYSTEM_WINDOW_TIMEZONE:-local} \
+  --start-from ${SENSOR_SYSTEM_START_FROM:-newest} \
+  --grant-packets ${SENSOR_SYSTEM_GRANT_PACKETS:-4} \
+  --timeout ${SENSOR_SYSTEM_CMD_TIMEOUT_S:-0.5} \
+  --burst-idle-timeout ${SENSOR_SYSTEM_BURST_IDLE_TIMEOUT_S:-0.15} \
+  --burst-session-timeout ${SENSOR_SYSTEM_BURST_SESSION_TIMEOUT_S:-0.75} \
+  --flush-interval ${SENSOR_SYSTEM_FLUSH_INTERVAL_S:-2.0} \
+  --stats-interval ${SENSOR_SYSTEM_STATS_INTERVAL_S:-5.0} \
+  --temperature-interval ${SENSOR_SYSTEM_TEMPERATURE_INTERVAL_S:-3600.0} \
+  --status-file ${SENSOR_SYSTEM_STATUS_FILE:-/tmp/sensor-system_recorder_status.json} \
+  --event-log ${SENSOR_SYSTEM_EVENT_LOG:-/tmp/sensor-system_recorder_events.jsonl}
+
+Restart=always
+RestartSec=5
+
+# Give the recorder time to flush and close output cleanly.
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

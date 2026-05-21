@@ -1,0 +1,34 @@
+[Unit]
+Description=Sensor System operator panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Adjust this to where you deploy the repo (or a copy of it).
+WorkingDirectory=/opt/sensor-system
+
+# Optional environment file for overriding operator panel settings without editing the unit.
+# Create e.g. /etc/sensor-system-operator-panel.env and set:
+#   SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
+#   SENSOR_SYSTEM_OPERATOR_HOST=0.0.0.0
+#   SENSOR_SYSTEM_OPERATOR_PORT=8090
+#   SENSOR_SYSTEM_SUPERVISOR_SERVICE=sensor-system-supervisor.service
+EnvironmentFile=-/etc/sensor-system-operator-panel.env
+
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_operator_panel.py \
+  --config ${SENSOR_SYSTEM_CONFIG:-/opt/sensor-system/host/system_config.json} \
+  --host ${SENSOR_SYSTEM_OPERATOR_HOST:-0.0.0.0} \
+  --port ${SENSOR_SYSTEM_OPERATOR_PORT:-8090} \
+  --supervisor-service ${SENSOR_SYSTEM_SUPERVISOR_SERVICE:-sensor-system-supervisor.service}
+
+Restart=always
+RestartSec=5
+
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
