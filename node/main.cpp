@@ -20,13 +20,13 @@
 #include "transport/rs485_port.h"
 #include "transport/transport.h"
 
-#define SPI_PORT   spi0
-#define PIN_MISO   16
-#define PIN_CS     17
-#define PIN_SCK    18
-#define PIN_MOSI   19
-#define PIN_DRDY   22
-#define PIN_INT1   21  // preferred: FIFO watermark/overrun interrupt (INT1)
+#define SPI_PORT   spi1
+#define PIN_MISO   12
+#define PIN_CS     13
+#define PIN_SCK    10
+#define PIN_MOSI   11
+#define PIN_DRDY   14
+#define PIN_INT1   15  // preferred: FIFO watermark/overrun interrupt (INT1)
 
 #define RS485_UART uart0
 #define PIN_RS485_TX 0
