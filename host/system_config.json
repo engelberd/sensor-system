@@ -26,11 +26,11 @@
       "baud": 115200,
       "nodes": [
         {
-          "id": 1,
+          "id": 2,
           "name": "Czujnik 1",
           "enabled": true,
-          "expected_odr_hz": 62.5,
-          "sensor_odr_hz": 125,
+          "expected_odr_hz": 500.0,
+          "sensor_odr_hz": 1000,
           "range_g": 2,
           "high_pass_corner": 0,
           "fifo_watermark": 30,
