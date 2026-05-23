@@ -20,6 +20,7 @@ After:
 ```bash
 cmake -S node -B node/build
 cmake --build node/build
+cmake --build node/build --target sensor_system_node_release
 ```
 
 the important artifacts are:
@@ -41,6 +42,27 @@ the important artifacts are:
 - `node/build/sensor-system-node-direct.uf2`
   Diagnostic standalone application image without the A/B bootloader. Use it only
   to isolate bootloader issues during bench work.
+
+The node-only release package is generated under:
+
+- `node/build/releases/sensor-system-node-vX.Y.Z/`
+
+The `vX.Y.Z` value comes from `common/protocol_ids.h`, which is also what the
+node reports at runtime and what the update manifest carries as the packed
+firmware version. Host tools and host configuration are intentionally not
+included in this package; publish them as a separate host release.
+
+The node release package contains:
+
+- `sensor-system-node-vX.Y.Z-factory.uf2`
+- `sensor-system-node-vX.Y.Z-factory.bin`
+- `sensor-system-node-vX.Y.Z-update-package.json`
+- `sensor-system-node-vX.Y.Z-slot-a.bin`
+- `sensor-system-node-vX.Y.Z-slot-b.bin`
+- `sensor-system-node-vX.Y.Z-direct.uf2`
+- `README.md`
+- `SHA256SUMS.txt`
+- `release-manifest.json`
 
 ## Local Build On A New Computer
 
@@ -73,7 +95,7 @@ for current RS485-only builds and does not block the firmware artifacts above.
 For a brand-new node or a board recovered locally:
 
 1. Put the Pico 2 into BOOTSEL mode.
-2. Flash `node/build/sensor-system-node-factory.uf2`.
+2. Flash `node/build/releases/sensor-system-node-vX.Y.Z/sensor-system-node-vX.Y.Z-factory.uf2`.
 3. Reboot normally.
 4. Commission a runtime `node_id` over RS485:
 
@@ -101,12 +123,46 @@ The expected post-provisioning check is:
 `ping` should answer. `boot ... --enter none hello` should time out because the
 node should be running the application, not sitting in bootloader update mode.
 
+## Hardware Pinout
+
+The current node firmware uses `spi1` for the ADXL355 evaluation board.
+
+| ADXL355 signal | ADXL355 pin | Pico 2 pin |
+| --- | ---: | --- |
+| VDDIO | 1 | 3V3 |
+| VDD | 3 | 3V3 |
+| GND | 5 | GND |
+| SCLK/Vssio | 10 | GPIO10 / SPI1 SCK |
+| MOSI/SDA | 12 | GPIO11 / SPI1 TX |
+| MISO/SDA | 11 | GPIO12 / SPI1 RX |
+| CS/SCL | 8 | GPIO13 |
+| DRDY | 6 | GPIO14 |
+| INT1 | 2 | GPIO15 |
+| INT2 | 4 | Not connected |
+
+Do not drive the ADXL355 `V1P8ANA`, `V1P8DIG`, or `Vddio` output pins from the
+Pico.
+
+RS485 uses:
+
+| Signal | Pico 2 pin |
+| --- | --- |
+| UART TX | GPIO0 |
+| UART RX | GPIO1 |
+| Driver enable / DE | GPIO2 |
+| GND | GND |
+
+Keep the Pico, ADXL355 board, and RS485 transceiver grounds common. Connect the
+RS485 A/B pair according to the transceiver board markings and keep polarity
+consistent across the bus.
+
 ## Remote Update Over RS485
 
 For field updates, use the packaged manifest instead of a raw `.bin`:
 
 ```bash
-./hostctl update --port /dev/sensor-system-rs485 --node 1
+./hostctl update --port /dev/sensor-system-rs485 --node 1 \
+  --image node/build/releases/sensor-system-node-vX.Y.Z/sensor-system-node-vX.Y.Z-update-package.json
 ```
 
 The host uses a longer timeout for update operations because the bootloader

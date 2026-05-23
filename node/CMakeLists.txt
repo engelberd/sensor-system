@@ -253,3 +253,22 @@ add_custom_target(sensor_system_node ALL
 if (TARGET sensor_system_node_compat_uf2)
     add_dependencies(sensor_system_node sensor_system_node_compat_uf2)
 endif()
+
+if (TARGET sensor_system_node_factory_uf2)
+    add_custom_target(sensor_system_node_release
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tools/package_node_release.py
+            --node-dir ${PROJECT_SOURCE_DIR}
+            --build-dir ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS
+            sensor_system_node_factory_uf2
+            sensor_system_node_direct
+            sensor_system_node_slot_a
+            sensor_system_node_slot_b
+            sensor_system_node_update_package
+            ${PROJECT_SOURCE_DIR}/tools/package_node_release.py
+            ${PROJECT_SOURCE_DIR}/common/protocol_ids.h
+        VERBATIM
+    )
+endif()
