@@ -227,7 +227,7 @@ managed by our own A/B metadata.
 
 The Pico LED is an operational readiness indicator:
 
-- three short blinks after reset: application startup began
+- five short blinks after reset: application startup began
 - LED off: initialization is still in progress or failed
 - LED on: application, RS485 transport, core1 loop, and ADXL355 driver init all completed
 
