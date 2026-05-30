@@ -5,7 +5,6 @@ This repository contains the full Sensor System project:
 - `hardware/` for KiCad PCB projects, parts, footprints, and hardware notes
 - `node/` for the Pico firmware and bootloader artifacts
 - `host/` for recorder, configurator, supervisor, dashboards, and deployment files
-- `runs/` for local acquisition output that stays untracked
 
 ## Repository Notes
 
