@@ -3,9 +3,24 @@ host/.venv/
 __pycache__/
 *.pyc
 runs/
+.DS_Store
 .git-main/
 .git-node-history/
 .agents/
 .codex/
 .vscode/
 .codex
+
+# KiCad local/generated files. Keep source project files tracked:
+# *.kicad_pro, *.kicad_sch, *.kicad_pcb, project libraries, and chosen 3D models.
+*.kicad_prl
+*.kicad_prl.bak
+*.kicad_pcb-bak
+*-backups/
+footprints.extra/
+**/my_footprints.pretty/Untitled.kicad_mod
+fp-info-cache
+sym-lib-table-bak
+fp-lib-table-bak
+*.lck
+*.tmp

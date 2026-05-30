@@ -2,6 +2,7 @@
 
 This repository contains the full Sensor System project:
 
+- `hardware/` for KiCad PCB projects, parts, footprints, and hardware notes
 - `node/` for the Pico firmware and bootloader artifacts
 - `host/` for recorder, configurator, supervisor, dashboards, and deployment files
 - `runs/` for local acquisition output that stays untracked
@@ -67,6 +68,7 @@ The most important output files are:
 
 Further details live in:
 
-- [node/README-bootloader.md](/home/anone/pico-projects/node/README-bootloader.md:1)
-- [host/README-product.md](/home/anone/pico-projects/host/README-product.md:1)
-- [host/README-deploy.md](/home/anone/pico-projects/host/README-deploy.md:1)
+- [hardware/README.md](hardware/README.md)
+- [node/README-bootloader.md](node/README-bootloader.md)
+- [host/README-product.md](host/README-product.md)
+- [host/README-deploy.md](host/README-deploy.md)
