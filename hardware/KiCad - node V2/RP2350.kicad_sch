@@ -2072,186 +2072,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Device:L_Small"
-			(pin_numbers
-				(hide yes)
-			)
-			(pin_names
-				(offset 0.254)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "L"
-				(at 0.762 1.016 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify left)
-				)
-			)
-			(property "Value" "L_Small"
-				(at 0.762 -1.016 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify left)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Inductor, small symbol"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "inductor choke coil reactor magnetic"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "Choke_* *Coil* Inductor_* L_*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "L_Small_0_1"
-				(arc
-					(start 0 2.032)
-					(mid 0.5058 1.524)
-					(end 0 1.016)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(arc
-					(start 0 1.016)
-					(mid 0.5058 0.508)
-					(end 0 0)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(arc
-					(start 0 0)
-					(mid 0.5058 -0.508)
-					(end 0 -1.016)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(arc
-					(start 0 -1.016)
-					(mid 0.5058 -1.524)
-					(end 0 -2.032)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "L_Small_1_1"
-				(pin passive line
-					(at 0 2.54 270)
-					(length 0.508)
-					(name ""
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 0 -2.54 90)
-					(length 0.508)
-					(name ""
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Device:Polyfuse_Small"
 			(pin_numbers
 				(hide yes)
@@ -6424,6 +6244,217 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "symbols:FXL0420-100-M"
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "L"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "10uH"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" "FXL0420-100-M:IND-SMD_L4.4-W4.2"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" "https://item.szlcsc.com/datasheet/FXL0420-100-M/188634.html"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Inductance:10uH Tolerance:±20% Tolerance:±20% Current Rating:1.6A Current - Saturation(Isat):2.2A DC Resistance(DCR):282mΩ Type:Molded Inductor"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Manufacturer Part" "FXL0420-100-M"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Manufacturer" "cjiang(长江微电)"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Supplier Part" "C177242"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Supplier" "LCSC"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "LCSC Part Name" "10uH ±20% 2.2A"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "FXL0420-100-M_1_0"
+				(polyline
+					(pts
+						(xy -4.2672 0) (xy -4.2164 0.4064) (xy -4.2164 0.4064) (xy -4.0132 0.762) (xy -4.0132 0.762) (xy -3.6576 1.016)
+						(xy -3.6576 1.016) (xy -3.2512 1.0922) (xy -3.2512 1.0922) (xy -2.8702 1.016) (xy -2.8702 1.016)
+						(xy -2.5146 0.762) (xy -2.5146 0.762) (xy -2.3114 0.4064) (xy -2.3114 0.4064) (xy -2.2606 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -2.1082 0) (xy -2.0828 0.4064) (xy -2.0828 0.4064) (xy -1.8542 0.762) (xy -1.8542 0.762) (xy -1.4986 1.016)
+						(xy -1.4986 1.016) (xy -1.1176 1.0922) (xy -1.1176 1.0922) (xy -0.7112 1.016) (xy -0.7112 1.016)
+						(xy -0.3556 0.762) (xy -0.3556 0.762) (xy -0.1524 0.4064) (xy -0.1524 0.4064) (xy -0.1016 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0 0) (xy 0.0508 0.4064) (xy 0.0508 0.4064) (xy 0.2794 0.762) (xy 0.2794 0.762) (xy 0.6096 1.016)
+						(xy 0.6096 1.016) (xy 1.016 1.0922) (xy 1.016 1.0922) (xy 1.4224 1.016) (xy 1.4224 1.016) (xy 1.7526 0.762)
+						(xy 1.7526 0.762) (xy 1.9812 0.4064) (xy 1.9812 0.4064) (xy 2.032 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 2.2098 0) (xy 2.2352 0.4064) (xy 2.2352 0.4064) (xy 2.4638 0.762) (xy 2.4638 0.762) (xy 2.8194 1.016)
+						(xy 2.8194 1.016) (xy 3.2004 1.0922) (xy 3.2004 1.0922) (xy 3.6068 1.016) (xy 3.6068 1.016) (xy 3.9624 0.762)
+						(xy 3.9624 0.762) (xy 4.1656 0.4064) (xy 4.1656 0.4064) (xy 4.2164 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin unspecified line
+					(at -5.08 0 0)
+					(length 0.762)
+					(name "1"
+						(effects
+							(font
+								(size 0.0254 0.0254)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 0.0254 0.0254)
+							)
+						)
+					)
+				)
+				(pin unspecified line
+					(at 5.08 0 180)
+					(length 0.762)
+					(name "2"
+						(effects
+							(font
+								(size 0.0254 0.0254)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 0.0254 0.0254)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "symbols:GT-USB-7051A"
 			(exclude_from_sim no)
 			(in_bom yes)
@@ -7175,6 +7206,12 @@
 		(uuid "02a52ce0-e365-483c-94a6-8db7f352c976")
 	)
 	(junction
+		(at 64.77 226.06)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "02e7128e-ad7d-4389-9005-aaf3c1b7fa74")
+	)
+	(junction
 		(at 100.33 113.03)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -7227,12 +7264,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "24d08c1e-aded-4558-9cfa-a5f1a5e74f9b")
-	)
-	(junction
-		(at 40.64 195.58)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "24ecf2a0-5997-4805-a86a-6690ad4adb6a")
 	)
 	(junction
 		(at 100.33 160.02)
@@ -7443,12 +7474,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "8e595280-75ea-4461-89db-93c350dd31c9")
-	)
-	(junction
-		(at 52.07 195.58)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "8e98b76f-244d-4095-b13a-1ebc6f432775")
 	)
 	(junction
 		(at 100.33 119.38)
@@ -7849,16 +7874,6 @@
 			(type default)
 		)
 		(uuid "0e9db35f-9ee3-4627-b10f-ba118d60a9b9")
-	)
-	(wire
-		(pts
-			(xy 39.37 195.58) (xy 40.64 195.58)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "0ed0f192-924d-4eb7-8ad8-354384d5a5f4")
 	)
 	(wire
 		(pts
@@ -8332,6 +8347,16 @@
 	)
 	(wire
 		(pts
+			(xy 64.77 209.55) (xy 64.77 226.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "37ba3ed1-ab9d-4c0d-8d6e-61765e328e50")
+	)
+	(wire
+		(pts
 			(xy 137.16 127) (xy 137.16 124.46)
 		)
 		(stroke
@@ -8402,16 +8427,6 @@
 	)
 	(wire
 		(pts
-			(xy 40.64 199.39) (xy 40.64 195.58)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "3e3e940e-b43d-46e2-bb4f-dcc081854266")
-	)
-	(wire
-		(pts
 			(xy 173.99 231.14) (xy 165.1 231.14)
 		)
 		(stroke
@@ -8449,6 +8464,16 @@
 			(type default)
 		)
 		(uuid "4323e818-077e-4b37-af5c-5ef722b44ba9")
+	)
+	(wire
+		(pts
+			(xy 64.77 199.39) (xy 64.77 204.47)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "43f1bd48-a655-41c4-88d3-6cee593916d2")
 	)
 	(wire
 		(pts
@@ -8782,6 +8807,16 @@
 	)
 	(wire
 		(pts
+			(xy 57.15 215.9) (xy 57.15 226.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "638b428d-2ab4-4e82-9b68-3d8aa0fd9fd5")
+	)
+	(wire
+		(pts
 			(xy 86.36 31.75) (xy 168.91 31.75)
 		)
 		(stroke
@@ -8909,16 +8944,6 @@
 			(type default)
 		)
 		(uuid "6f515212-e23e-4600-9aa5-4b57f14c96ee")
-	)
-	(wire
-		(pts
-			(xy 43.18 195.58) (xy 40.64 195.58)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "702db14c-a274-4ca5-9cbc-a1a624246e36")
 	)
 	(wire
 		(pts
@@ -9382,16 +9407,6 @@
 	)
 	(wire
 		(pts
-			(xy 44.45 199.39) (xy 40.64 199.39)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "90df6aa4-81d9-47fc-bd01-2d5f20a56c50")
-	)
-	(wire
-		(pts
 			(xy 52.07 165.1) (xy 52.07 167.64)
 		)
 		(stroke
@@ -9442,16 +9457,6 @@
 	)
 	(wire
 		(pts
-			(xy 48.26 195.58) (xy 52.07 195.58)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "9423bd71-fd04-4ba5-a9c3-6642346d46ee")
-	)
-	(wire
-		(pts
 			(xy 186.69 31.75) (xy 186.69 57.15)
 		)
 		(stroke
@@ -9479,6 +9484,16 @@
 			(type default)
 		)
 		(uuid "98c52f97-3371-4c90-953a-702b650ddec6")
+	)
+	(wire
+		(pts
+			(xy 64.77 226.06) (xy 67.31 226.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "98d1605c-32ce-42a6-8c97-3118a639c7f1")
 	)
 	(wire
 		(pts
@@ -9539,16 +9554,6 @@
 			(type default)
 		)
 		(uuid "9f3e54e6-64dd-46dd-a7ac-332eb5337967")
-	)
-	(wire
-		(pts
-			(xy 52.07 191.77) (xy 52.07 195.58)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a005da2c-b289-4f1d-844d-0111330b66a7")
 	)
 	(wire
 		(pts
@@ -9792,7 +9797,7 @@
 	)
 	(wire
 		(pts
-			(xy 52.07 195.58) (xy 52.07 196.85)
+			(xy 52.07 191.77) (xy 52.07 196.85)
 		)
 		(stroke
 			(width 0)
@@ -10262,7 +10267,7 @@
 	)
 	(wire
 		(pts
-			(xy 62.23 226.06) (xy 67.31 226.06)
+			(xy 62.23 226.06) (xy 64.77 226.06)
 		)
 		(stroke
 			(width 0)
@@ -10282,6 +10287,16 @@
 	)
 	(wire
 		(pts
+			(xy 55.88 215.9) (xy 57.15 215.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e7eed153-7536-4da1-99a4-7c6838ab2dad")
+	)
+	(wire
+		(pts
 			(xy 58.42 231.14) (xy 58.42 226.06)
 		)
 		(stroke
@@ -10289,16 +10304,6 @@
 			(type default)
 		)
 		(uuid "e7f9b052-e352-4688-99e1-0ed2decdf92f")
-	)
-	(wire
-		(pts
-			(xy 33.02 195.58) (xy 34.29 195.58)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e99a1ca0-c561-40a6-b32e-34144b3cc471")
 	)
 	(wire
 		(pts
@@ -10352,6 +10357,16 @@
 	)
 	(wire
 		(pts
+			(xy 44.45 199.39) (xy 64.77 199.39)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "edc05be4-a545-4cf4-822e-0aed940e9300")
+	)
+	(wire
+		(pts
 			(xy 26.67 144.78) (xy 26.67 149.86)
 		)
 		(stroke
@@ -10369,6 +10384,16 @@
 			(type default)
 		)
 		(uuid "f0b31bf5-c3b1-4766-9e9e-7277162746af")
+	)
+	(wire
+		(pts
+			(xy 52.07 226.06) (xy 55.88 226.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f11a7208-5116-4a08-99ce-f221dbe7b968")
 	)
 	(wire
 		(pts
@@ -11104,7 +11129,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 43.18 237.49 0)
 			(hide yes)
 			(show_name no)
@@ -11514,7 +11539,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 50.8 237.49 0)
 			(hide yes)
 			(show_name no)
@@ -13236,7 +13261,7 @@
 				(justify right)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 58.42 215.9 0)
 			(hide yes)
 			(show_name no)
@@ -14002,85 +14027,6 @@
 			(project "RP2350"
 				(path "/e9943aea-ea9d-4269-a668-2289df1fb291"
 					(reference "C4")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 33.02 195.58 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "47011cc8-02f0-43d1-b12f-da24f5f4ef92")
-		(property "Reference" "#PWR012"
-			(at 26.67 195.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 29.21 195.5799 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 33.02 195.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 33.02 195.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 33.02 195.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "fd7d2bd0-4e6d-4480-8644-9b185ba33260")
-		)
-		(instances
-			(project "RP2350"
-				(path "/e9943aea-ea9d-4269-a668-2289df1fb291"
-					(reference "#PWR012")
 					(unit 1)
 				)
 			)
@@ -15002,7 +14948,7 @@
 	)
 	(symbol
 		(lib_id "Device:R_Small")
-		(at 36.83 195.58 90)
+		(at 64.77 207.01 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -15013,27 +14959,29 @@
 		(fields_autoplaced yes)
 		(uuid "55816c48-4b6e-450f-b25f-3a3fbc531ee7")
 		(property "Reference" "R7"
-			(at 36.83 190.5 90)
+			(at 67.31 205.7399 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.016 1.016)
 				)
+				(justify right)
 			)
 		)
 		(property "Value" "100k"
-			(at 36.83 193.04 90)
+			(at 67.31 208.2799 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(justify right)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
-			(at 36.83 195.58 0)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 64.77 207.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15044,7 +14992,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 36.83 195.58 0)
+			(at 64.77 207.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15055,7 +15003,7 @@
 			)
 		)
 		(property "Description" "Resistor, small symbol"
-			(at 36.83 195.58 0)
+			(at 64.77 207.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18589,86 +18537,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Device:R_Small")
-		(at 45.72 195.58 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "a225ad3d-e46a-44dc-9b87-578302dbd4ac")
-		(property "Reference" "R8"
-			(at 45.72 190.5 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.016 1.016)
-				)
-			)
-		)
-		(property "Value" "100k DNP"
-			(at 45.72 193.04 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
-			(at 45.72 195.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 45.72 195.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor, small symbol"
-			(at 45.72 195.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "0494d5c2-397b-43a3-a2b0-7816a79988e5")
-		)
-		(pin "2"
-			(uuid "f0be44c0-8acd-4c8d-ab25-a5ca016a7486")
-		)
-		(instances
-			(project "RP2350"
-				(path "/e9943aea-ea9d-4269-a668-2289df1fb291"
-					(reference "R8")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:GND")
 		(at 20.32 123.19 270)
 		(unit 1)
@@ -21979,6 +21847,143 @@
 		)
 	)
 	(symbol
+		(lib_id "symbols:FXL0420-100-M")
+		(at 55.88 220.98 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "db0b04ba-b4c8-4bc0-9309-fbabe5ff7f26")
+		(property "Reference" "L2"
+			(at 57.15 220.9799 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "10uH"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "footprints:FXL0420-100-MIND-SMD_L4.4-W4.2"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://item.szlcsc.com/datasheet/FXL0420-100-M/188634.html"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Inductance:10uH Tolerance:±20% Tolerance:±20% Current Rating:1.6A Current - Saturation(Isat):2.2A DC Resistance(DCR):282mΩ Type:Molded Inductor"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer Part" "FXL0420-100-M"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "cjiang(长江微电)"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Supplier Part" "C177242"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Supplier" "LCSC"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC Part Name" "10uH ±20% 2.2A"
+			(at 55.88 220.98 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "2"
+			(uuid "e7234d26-6735-47eb-9e78-19514661b83f")
+		)
+		(pin "1"
+			(uuid "6953a509-303c-425a-8d8c-c8b14689d572")
+		)
+		(instances
+			(project "RP2350"
+				(path "/e9943aea-ea9d-4269-a668-2289df1fb291"
+					(reference "L2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_name "Conn_01x05_1")
 		(lib_id "Connector_Generic:Conn_01x05")
 		(at 29.21 153.67 270)
@@ -22340,85 +22345,6 @@
 			(project "RP2350"
 				(path "/e9943aea-ea9d-4269-a668-2289df1fb291"
 					(reference "U_BUCK1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:L_Small")
-		(at 54.61 226.06 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "e0f27fc7-bef6-477c-abdd-bf33c5de0e69")
-		(property "Reference" "L1"
-			(at 54.864 228.6 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "10uH"
-			(at 54.864 231.14 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 54.61 226.06 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 54.61 226.06 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Inductor, small symbol"
-			(at 54.61 226.06 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "2"
-			(uuid "327c6c8b-c717-49d2-8021-0f68f78f62f1")
-		)
-		(pin "1"
-			(uuid "cd2358c1-512c-4510-951d-1d2076f59f42")
-		)
-		(instances
-			(project "RP2350"
-				(path "/e9943aea-ea9d-4269-a668-2289df1fb291"
-					(reference "L1")
 					(unit 1)
 				)
 			)
@@ -24209,7 +24135,7 @@
 				)
 			)
 		)
-		(property "Footprint" "AOTA-B201610S3R3-101-T:IND-SMD_L2.0-W1.6_AOTA-B201610S3R3-101-T"
+		(property "Footprint" "footprints:IND-SMD_L2.0-W1.6_AOTA-B201610S3R3-101-T"
 			(at 147.32 104.14 0)
 			(hide yes)
 			(show_name no)
