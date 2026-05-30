@@ -773,7 +773,7 @@
         "uuid": "e9943aea-ea9d-4269-a668-2289df1fb291"
       }
     ],
-    "used_designators": "J_OUT1,J_IN1,J_IM1,J1",
+    "used_designators": "L3,J_OUT1,J_IN1,J_IM1,#PWR68-71,J1",
     "variants": []
   },
   "sheets": [
