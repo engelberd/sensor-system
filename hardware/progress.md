@@ -39,6 +39,7 @@ Status: `schematic/layout in progress`
 | 2026-05-30 | Use monorepo layout instead of nested hardware Git repo. | Easier combined hardware/software review and fewer submodule problems. |
 | 2026-05-30 | Track KiCad source files and cleaned project-local footprints. | Everyone opens the same project with the same footprint library. |
 | 2026-05-30 | Ignore KiCad backups, local project state, and raw vendor imports. | Keeps commits reviewable and avoids machine-local noise. |
+| 2026-05-30 | Track concrete JLCPCB/LCSC sourcing in `jlcpcb-parts.md`. | Keeps stock-sensitive decisions separate from general design notes. |
 
 ## To do
 
@@ -49,6 +50,7 @@ Status: `schematic/layout in progress`
 | P0 | Calculate TPS62175 feedback, inductor, and capacitor values. | TBD | Use datasheet values; document result in `parts.md` or schematic notes. |
 | P0 | Calculate TPS2121 priority, threshold, and current-limit resistors. | TBD | Do not leave control pins floating. |
 | P0 | Verify USB-C connector footprint and exact MPN. | TBD | Mechanical fit and stock matter. |
+| P0 | Finalize JLCPCB/LCSC part numbers for every assembled BOM row. | TBD | Start from `jlcpcb-parts.md`; stock must be re-checked before order. |
 | P1 | Add/verify test points for `12V_IN`, `5V_BUCK`, `5V_SYS`, `3V3_DIG`, `3V3_ADXL`, SWD, UART/RS485. | TBD | Helps bring-up a lot. |
 | P1 | Run KiCad ERC and fix release-blocking errors. | TBD | Record result below. |
 | P1 | Run KiCad DRC and fix release-blocking errors. | TBD | Record result below. |
@@ -63,6 +65,7 @@ Status: `schematic/layout in progress`
 | 2026-05-30 | Added KiCad Git ignore rules. |
 | 2026-05-30 | Added shared parts/footprint table. |
 | 2026-05-30 | Added KiCad collaboration workflow. |
+| 2026-05-30 | Added first JLCPCB critical-parts shortlist. |
 
 ## Open risks
 

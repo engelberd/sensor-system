@@ -49,6 +49,7 @@ Do not track these files:
   board from the library and commit both the library change and board change.
 - Put part decisions in `parts.md` before layout, especially when package,
   stock, or footprint choice matters.
+- Put JLCPCB/LCSC assembly candidates and stock checks in `jlcpcb-parts.md`.
 - Put layout/manufacturing decisions in `design-notes.md`.
 - Track current work, assumptions, tasks, and completed items in `progress.md`.
 
