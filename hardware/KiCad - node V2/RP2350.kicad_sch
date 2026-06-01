@@ -10773,12 +10773,12 @@
 		(uuid "612c1971-d69a-4566-866d-f16676fd71a2")
 	)
 	(label "ADXL_INT2"
-		(at 265.43 38.1 0)
+		(at 267.97 38.1 180)
 		(effects
 			(font
 				(size 1.016 1.016)
 			)
-			(justify left bottom)
+			(justify right bottom)
 		)
 		(uuid "63192c61-6c46-4231-ac25-c2dddddc5f9c")
 	)
@@ -10927,12 +10927,12 @@
 		(uuid "9d53069d-213a-4ee5-98d3-e0ad4c6cd8a3")
 	)
 	(label "ADXL_DRDY"
-		(at 265.43 35.56 0)
+		(at 267.97 35.56 180)
 		(effects
 			(font
 				(size 1.016 1.016)
 			)
-			(justify left bottom)
+			(justify right bottom)
 		)
 		(uuid "9d7545a7-a292-4428-97df-6812c0de4ec2")
 	)
@@ -11030,12 +11030,12 @@
 		(uuid "c6ddfed5-20d7-40a6-ac10-d2618c7061a9")
 	)
 	(label "ADXL_INT1"
-		(at 265.43 40.64 0)
+		(at 267.97 40.64 180)
 		(effects
 			(font
 				(size 1.016 1.016)
 			)
-			(justify left bottom)
+			(justify right bottom)
 		)
 		(uuid "ca0cedb6-9f7c-4502-ab9b-e7e16c1ba82d")
 	)
