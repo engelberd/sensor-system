@@ -52,8 +52,8 @@
         "zones": {
           "border_display_style": 2,
           "border_hatch_pitch": 0.5,
-          "corner_radius": 0.0,
-          "corner_smoothing": 0,
+          "corner_radius": 3.0,
+          "corner_smoothing": 2,
           "fill_mode": 0,
           "hatch_gap": 1.5,
           "hatch_orientation": 0.0,
@@ -76,7 +76,16 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "copper_edge_clearance|140439182|81810364|d50fe2c2-b3c8-499c-a2c8-4bb4453e039d|55b92ac6-027c-4230-b721-9dae37710215",
+          ""
+        ],
+        [
+          "copper_edge_clearance|140439182|82330364|d50fe2c2-b3c8-499c-a2c8-4bb4453e039d|c31df2fd-cb5d-4580-9a98-ad831828cd22",
+          ""
+        ]
+      ],
       "meta": {
         "version": 2
       },
@@ -647,7 +656,7 @@
     "last_paths": {
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "./nodeV3-test",
       "specctra_dsn": "",
       "vrml": ""
     },
@@ -693,22 +702,28 @@
           "show": true
         },
         {
-          "group_by": true,
-          "label": "DNP",
-          "name": "${DNP}",
+          "group_by": false,
+          "label": "JLCPCB Part#",
+          "name": "JLCPC#",
           "show": true
         },
         {
-          "group_by": true,
+          "group_by": false,
+          "label": "Manufacturer Part",
+          "name": "Manufacturer Part",
+          "show": true
+        },
+        {
+          "group_by": false,
           "label": "Exclude from BOM",
           "name": "${EXCLUDE_FROM_BOM}",
-          "show": true
+          "show": false
         },
         {
-          "group_by": true,
+          "group_by": false,
           "label": "Exclude from Board",
           "name": "${EXCLUDE_FROM_BOARD}",
-          "show": true
+          "show": false
         },
         {
           "group_by": true,
@@ -718,17 +733,89 @@
         },
         {
           "group_by": false,
+          "label": "Description",
+          "name": "Description",
+          "show": true
+        },
+        {
+          "group_by": false,
           "label": "Datasheet",
           "name": "Datasheet",
           "show": true
+        },
+        {
+          "group_by": true,
+          "label": "DNP",
+          "name": "${DNP}",
+          "show": true
+        },
+        {
+          "group_by": false,
+          "label": "LCSC",
+          "name": "LCSC",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "LCSC Part Name",
+          "name": "LCSC Part Name",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Manufacturer",
+          "name": "Manufacturer",
+          "show": true
+        },
+        {
+          "group_by": false,
+          "label": "Sim.Pins",
+          "name": "Sim.Pins",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Supplier",
+          "name": "Supplier",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Supplier Part",
+          "name": "Supplier Part",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "DNP",
+          "name": "DNP",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "#",
+          "name": "${ITEM_NUMBER}",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "KLC_S4.2_DVDD",
+          "name": "KLC_S4.2_DVDD",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "KLC_S4.2_VREG_LX",
+          "name": "KLC_S4.2_VREG_LX",
+          "show": false
         }
       ],
       "filter_string": "",
       "group_symbols": true,
       "include_excluded_from_bom": true,
-      "name": "Default Editing",
-      "sort_asc": true,
-      "sort_field": "Reference"
+      "name": "",
+      "sort_asc": false,
+      "sort_field": "Manufacturer Part"
     },
     "bus_aliases": {},
     "connection_grid_size": 50.0,
@@ -779,7 +866,7 @@
         "uuid": "e9943aea-ea9d-4269-a668-2289df1fb291"
       }
     ],
-    "used_designators": "",
+    "used_designators": "H1-2,R25-26,R28,D5-7,U_BUCK1,#PWR12,#PWR72-74",
     "variants": []
   },
   "sheets": [
