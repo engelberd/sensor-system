@@ -479,7 +479,7 @@
       "no_connect_dangling": "warning",
       "pin_not_connected": "error",
       "pin_not_driven": "error",
-      "pin_to_pin": "warning",
+      "pin_to_pin": "ignore",
       "power_pin_not_driven": "error",
       "same_local_global_label": "warning",
       "similar_label_and_power": "warning",
@@ -619,6 +619,9 @@
     },
     "net_colors": null,
     "netclass_assignments": {
+      "/12V": [
+        "POWER 12V"
+      ],
       "/12V_BUS": [
         "POWER 12V"
       ],
@@ -776,7 +779,7 @@
         "uuid": "e9943aea-ea9d-4269-a668-2289df1fb291"
       }
     ],
-    "used_designators": "R_PR1_TOP1,R_PR1_BOT1,R_ILM1,C_USB_BULK1,C_OUT1",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [

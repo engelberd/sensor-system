@@ -24,3 +24,4 @@ sym-lib-table-bak
 fp-lib-table-bak
 *.lck
 *.tmp
+.history/
