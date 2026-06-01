@@ -7935,10 +7935,6 @@
 		(uuid "e2c44302-7f70-444a-8a80-49b49bb14307")
 	)
 	(no_connect
-		(at 181.61 88.9)
-		(uuid "e65160ef-0a01-44b1-ac35-901a74886103")
-	)
-	(no_connect
 		(at 240.03 139.7)
 		(uuid "e7274ae6-3e38-43f6-aa57-fe0eb443a5e2")
 	)
@@ -9738,16 +9734,6 @@
 	)
 	(wire
 		(pts
-			(xy 232.41 86.36) (xy 232.41 88.9)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a47140e0-4923-4f02-8469-655d19ccb9ce")
-	)
-	(wire
-		(pts
 			(xy 142.24 116.84) (xy 161.29 116.84)
 		)
 		(stroke
@@ -10305,6 +10291,16 @@
 			(type default)
 		)
 		(uuid "e5a6670e-fe89-412f-ad84-9a075e7148fe")
+	)
+	(wire
+		(pts
+			(xy 181.61 86.36) (xy 181.61 88.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e5f55b8d-51eb-4f18-b88a-ab9a5a5c8838")
 	)
 	(wire
 		(pts
@@ -17628,7 +17624,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 232.41 73.66 180)
+		(at 173.99 81.28 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -17639,7 +17635,7 @@
 		(fields_autoplaced yes)
 		(uuid "7c58ec45-2b36-44b5-9e49-cb86c7777ae9")
 		(property "Reference" "#PWR045"
-			(at 232.41 67.31 0)
+			(at 167.64 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -17650,7 +17646,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 232.41 68.58 0)
+			(at 168.91 81.28 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -17660,7 +17656,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 232.41 73.66 0)
+			(at 173.99 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -17671,7 +17667,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 232.41 73.66 0)
+			(at 173.99 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -17682,7 +17678,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 232.41 73.66 0)
+			(at 173.99 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -17864,7 +17860,7 @@
 	)
 	(symbol
 		(lib_id "Device:R_Small")
-		(at 232.41 83.82 180)
+		(at 181.61 83.82 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -17874,7 +17870,7 @@
 		(dnp no)
 		(uuid "80c1b96d-02a7-490e-8395-25230463acc4")
 		(property "Reference" "R20"
-			(at 233.934 83.312 90)
+			(at 183.134 83.312 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -17884,7 +17880,7 @@
 			)
 		)
 		(property "Value" "2.2k"
-			(at 229.87 83.82 90)
+			(at 179.07 83.82 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -17894,7 +17890,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
-			(at 232.41 83.82 0)
+			(at 181.61 83.82 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -17905,7 +17901,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 232.41 83.82 0)
+			(at 181.61 83.82 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -17916,7 +17912,7 @@
 			)
 		)
 		(property "Description" "Resistor, small symbol"
-			(at 232.41 83.82 0)
+			(at 181.61 83.82 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18900,7 +18896,7 @@
 	)
 	(symbol
 		(lib_id "Device:LED")
-		(at 232.41 77.47 270)
+		(at 177.8 81.28 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -18911,7 +18907,7 @@
 		(fields_autoplaced yes)
 		(uuid "9daa1e7d-f7b2-444d-8aa9-d54453e7751d")
 		(property "Reference" "D3"
-			(at 238.76 75.8825 0)
+			(at 176.2125 74.93 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -18921,7 +18917,7 @@
 			)
 		)
 		(property "Value" "LED"
-			(at 236.22 75.8825 0)
+			(at 176.2125 77.47 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -18931,7 +18927,7 @@
 			)
 		)
 		(property "Footprint" "LED_SMD:LED_0603_1608Metric"
-			(at 232.41 77.47 0)
+			(at 177.8 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18942,7 +18938,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 232.41 77.47 0)
+			(at 177.8 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18953,7 +18949,7 @@
 			)
 		)
 		(property "Description" "Light emitting diode"
-			(at 232.41 77.47 0)
+			(at 177.8 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18964,7 +18960,7 @@
 			)
 		)
 		(property "Sim.Pins" "1=K 2=A"
-			(at 232.41 77.47 0)
+			(at 177.8 81.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
