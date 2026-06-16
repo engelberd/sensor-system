@@ -101,6 +101,10 @@ def channel_process_log_path(runtime_dir: Path, channel_name: str) -> Path:
     return runtime_dir / f"{channel_name}.process.log"
 
 
+def channel_output_dir(system_config: HostSystemConfig, channel: ChannelConfig) -> str:
+    return str(Path(system_config.storage.root_dir) / channel.name)
+
+
 def build_worker_command(
     python_executable: str,
     recorder_script: Path,
@@ -121,7 +125,7 @@ def build_worker_command(
         "--nodes",
         ",".join(str(node_id) for node_id in channel.node_ids),
         "--output-dir",
-        system_config.storage.root_dir,
+        channel_output_dir(system_config, channel),
         "--format",
         system_config.storage.format,
         "--compression",
@@ -276,6 +280,7 @@ def build_supervisor_snapshot(
                 state.last_status_updated_utc = status_payload.get("updated_utc")
 
         nodes = to_runtime_nodes(state.last_status.get("nodes", []), state.config) if state.last_status else []
+        destination = channel_output_dir(system_config, state.config)
         channels.append(
             SupervisorChannelStatus(
                 name=state.config.name,
@@ -288,9 +293,9 @@ def build_supervisor_snapshot(
                 restart_count=state.restart_count,
                 last_exit_code=state.last_exit_code,
                 updated_utc=state.last_status_updated_utc,
-                destination=state.last_status.get("destination", system_config.storage.root_dir)
+                destination=state.last_status.get("destination", destination)
                 if state.last_status
-                else system_config.storage.root_dir,
+                else destination,
                 active_file=state.last_status.get("active_file") if state.last_status else None,
                 status_file=str(state.status_file),
                 event_log=str(state.event_log),

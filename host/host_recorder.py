@@ -466,15 +466,12 @@ class WindowedWriter(BaseWriter):
         )
         return local_window_start.astimezone(timezone.utc)
 
-    def window_path_for(self, window_start: datetime) -> Path:
+    def window_path_for(self, created_at: datetime) -> Path:
         suffix = ".h5" if self.args.format == "hdf5" else ".csv"
-        window_start_local = window_start.astimezone(self.window_timezone)
-        if self.args.window_seconds >= 86400 and self.args.channel_name == "default":
-            return Path(self.args.output_dir) / f"{window_start_local.date().isoformat()}{suffix}"
-
-        window_label = window_start_local.strftime("%Y-%m-%d_%H-%M")
-        day_dir = Path(self.args.output_dir) / window_start_local.strftime("%Y-%m-%d")
-        return day_dir / f"{window_label}{suffix}"
+        created_at_local = created_at.astimezone(self.window_timezone)
+        file_label = created_at_local.strftime("%Y-%m-%d_%H-%M-%S")
+        day_dir = Path(self.args.output_dir) / created_at_local.strftime("%Y-%m-%d")
+        return day_dir / f"{self.args.channel_name}_{file_label}{suffix}"
 
     def ensure_writer(self, now_utc: Optional[datetime] = None) -> BaseWriter:
         window_start = self.current_window(now_utc)
@@ -484,7 +481,10 @@ class WindowedWriter(BaseWriter):
         if self.writer is not None:
             self.writer.close()
 
-        path = self.window_path_for(window_start)
+        path_time = now_utc or datetime.now(timezone.utc)
+        if path_time.tzinfo is None:
+            path_time = path_time.replace(tzinfo=timezone.utc)
+        path = self.window_path_for(path_time)
         append = path.exists()
         window_metadata = dict(self.metadata)
         window_end = window_start + timedelta(seconds=max(1, int(self.args.window_seconds)))

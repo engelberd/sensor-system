@@ -25,6 +25,7 @@ public:
     bool write_blocking(const uint8_t* data, size_t size);
 
     bool read_byte(uint8_t& byte);
+    void drain_rx();
     uint32_t rx_overflow_count() const;
 
     void set_baudrate(uint32_t baudrate);

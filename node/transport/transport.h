@@ -188,6 +188,11 @@ private:
             return;
         }
 
+        // Runtime commands must originate from the host; ignore node-to-node or echo artifacts.
+        if (frame.source != HOST_NODE_ID) {
+            return;
+        }
+
         if (frame.payload == nullptr || frame.payload_length < 1) {
             return;
         }

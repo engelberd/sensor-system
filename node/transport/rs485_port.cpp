@@ -106,6 +106,8 @@ bool Rs485Port::write_blocking(const uint8_t* data, size_t size) {
 
     uart_tx_wait_blocking(uart_);
     set_driver_enable(false);
+    // Some RS485 paths echo local TX into RX; drop that before command parsing resumes.
+    drain_rx();
 
     tx_completed_flag_ = true;
     return true;
@@ -122,6 +124,16 @@ bool Rs485Port::read_byte(uint8_t& byte) {
 
     byte = static_cast<uint8_t>(uart_getc(uart_));
     return true;
+}
+
+void Rs485Port::drain_rx() {
+    if (!initialized_) {
+        return;
+    }
+
+    while (uart_is_readable(uart_)) {
+        (void)uart_getc(uart_);
+    }
 }
 
 uint32_t Rs485Port::rx_overflow_count() const {
@@ -159,6 +171,8 @@ void Rs485Port::finish_tx_if_done() {
 
     uart_tx_wait_blocking(uart_);
     set_driver_enable(false);
+    // Some RS485 paths echo local TX into RX; drop that before command parsing resumes.
+    drain_rx();
 
     tx_in_progress_ = false;
     tx_completed_flag_ = true;

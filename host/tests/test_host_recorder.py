@@ -49,23 +49,26 @@ class RecorderWindowingTests(unittest.TestCase):
 
         self.assertEqual(window_start, datetime(2026, 4, 30, 10, 0, 0, tzinfo=timezone.utc))
         self.assertEqual(
-            str(writer.window_path_for(window_start)),
-            "runs/sensor-system/2026-04-30/2026-04-30_12-00.h5",
+            str(writer.window_path_for(now_utc)),
+            "runs/sensor-system/2026-04-30/line-a_2026-04-30_12-07-31.h5",
         )
 
-    def test_daily_paths_use_local_day_boundary(self) -> None:
+    def test_daily_paths_keep_exact_start_time_in_filename(self) -> None:
         args = self.make_args(
             output_dir="runs/archive",
             window_seconds=86400,
-            channel_name="default",
+            channel_name="line-archive",
         )
         writer = WindowedWriter(args, metadata={}, nodes=[])
 
-        now_utc = datetime(2026, 4, 29, 22, 30, 0, tzinfo=timezone.utc)
+        now_utc = datetime(2026, 4, 29, 22, 30, 45, tzinfo=timezone.utc)
         window_start = writer.current_window(now_utc)
 
         self.assertEqual(window_start, datetime(2026, 4, 29, 22, 0, 0, tzinfo=timezone.utc))
-        self.assertEqual(str(writer.window_path_for(window_start)), "runs/archive/2026-04-30.h5")
+        self.assertEqual(
+            str(writer.window_path_for(now_utc)),
+            "runs/archive/2026-04-30/line-archive_2026-04-30_00-30-45.h5",
+        )
 
     def test_window_start_temperature_uses_first_sequence_in_new_window(self) -> None:
         args = self.make_args()

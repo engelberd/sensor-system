@@ -3,6 +3,7 @@ host/.venv/
 __pycache__/
 *.pyc
 runs/
+data/
 .DS_Store
 .git-main/
 .git-node-history/

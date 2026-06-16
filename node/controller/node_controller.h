@@ -193,6 +193,7 @@ private:
     static constexpr size_t kMaxInlineReadSamples =
         (FRAME_MAX_PAYLOAD_SIZE - sizeof(ReadSamplesResponseHeader)) /
         sizeof(WireSample32);
+    static constexpr uint16_t kMaxGrantBurstFrames = 16;
 
     static constexpr int32_t kMinOffset = -32768;
     static constexpr int32_t kMaxOffset = 32767;
@@ -1067,10 +1068,14 @@ private:
 
         const auto* cmd =
             reinterpret_cast<const GrantBurstReadCommandPayload*>(payload);
+        const uint16_t granted_max_frames =
+            (cmd->max_frames > kMaxGrantBurstFrames)
+                ? kMaxGrantBurstFrames
+                : cmd->max_frames;
 
         const auto st = data_plane_.start_burst(
             cmd->start_seq,
-            cmd->max_frames,
+            granted_max_frames,
             requester
         );
 
@@ -1078,7 +1083,7 @@ private:
         resp.command = static_cast<uint8_t>(CommandType::GrantBurstRead);
         resp.status = static_cast<uint8_t>(st);
         resp.granted_start_seq = cmd->start_seq;
-        resp.granted_max_frames = cmd->max_frames;
+        resp.granted_max_frames = granted_max_frames;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);

@@ -35,6 +35,10 @@ Default runtime side-files written by the supervisor:
 
 - Status snapshot: `/tmp/sensor-system_supervisor_status.json`
 - Event log: `/tmp/sensor-system_supervisor_events.jsonl`
+
+Recorder output files are created per channel under `/data/sensor-system/<line>/<YYYY-MM-DD>/`
+and use the exact recorder start timestamp in the filename, for example
+`line-a_2026-06-15_16-33-48.h5`.
 - Per-channel recorder stdout/stderr log: `/tmp/sensor-system_channels/<channel>.process.log`
 
 The console reads those files by default.
@@ -105,6 +109,19 @@ Multi-channel supervisor:
 ```bash
 host/.venv/bin/python host/host_supervisor.py --config host/system_config.json
 ```
+
+Soak-test launcher with cleanup and `tmux` sessions:
+
+```bash
+host/tools/soak_control.sh start --purge-data
+host/tools/soak_control.sh status
+host/tools/soak_control.sh alerts
+host/tools/soak_control.sh stop
+```
+
+The launcher enforces a single supervisor/watch pair, kills stale
+`host_supervisor.py` and `host_recorder.py` processes before each start, clears
+runtime logs by default, and optionally wipes `/data/sensor-system`.
 
 Console:
 
