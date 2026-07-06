@@ -63,6 +63,26 @@ class SupervisorWorkerCommandTests(unittest.TestCase):
         output_dir_index = command.index("--output-dir") + 1
         self.assertEqual(command[output_dir_index], "/data/sensor-system/line-a")
 
+    def test_channel_output_dir_can_override_namespaced_default(self) -> None:
+        config = HostSystemConfig.from_dict(
+            {
+                "storage": {"root_dir": "/data/sensor-system"},
+                "channels": [
+                    {
+                        "name": "line-a",
+                        "port": "/dev/ttyUSB0",
+                        "output_dir": "/archive/line-a",
+                        "nodes": [{"id": 1}],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            channel_output_dir(config, config.channels[0]),
+            "/archive/line-a",
+        )
+
     def test_supervisor_snapshot_uses_channel_destination_before_runtime_status(self) -> None:
         config = self.make_config()
         channel = config.channels[0]

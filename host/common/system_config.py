@@ -50,6 +50,7 @@ class ChannelConfig:
     label: str | None
     port: str
     nodes: tuple[NodeConfig, ...]
+    output_dir: str | None = None
     baud: int = 115200
     enabled: bool = True
     start_from: str = "newest"
@@ -112,6 +113,7 @@ class HostSystemConfig:
                     name=name,
                     label=str(raw.get("label")) if raw.get("label") is not None else None,
                     port=str(raw["port"]),
+                    output_dir=str(raw["output_dir"]) if raw.get("output_dir") is not None else None,
                     enabled=bool(raw.get("enabled", True)),
                     baud=int(raw.get("baud", 115200)),
                     nodes=nodes,
@@ -202,6 +204,7 @@ class HostSystemConfig:
                     name="channel-1",
                     label="Channel 1",
                     port=str(serial_data.get("port", "/dev/sensor-system-rs485")),
+                    output_dir=None,
                     baud=int(serial_data.get("baud", 115200)),
                     nodes=filtered_nodes,
                     start_from=str(recorder_data.get("start_from", "newest")),

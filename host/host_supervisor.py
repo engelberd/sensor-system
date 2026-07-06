@@ -158,6 +158,8 @@ def _remove_channel_entries_from_jsonl(path: Path, channel_name: str) -> None:
 
 
 def channel_output_dir(system_config: HostSystemConfig, channel: ChannelConfig) -> str:
+    if channel.output_dir:
+        return channel.output_dir
     return str(Path(system_config.storage.root_dir) / channel.name)
 
 

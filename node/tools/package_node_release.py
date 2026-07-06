@@ -92,33 +92,28 @@ Keep `sensor-system-node-{release_name}-slot-a.bin` and
 
 The firmware uses `spi1` for the ADXL355 evaluation board.
 
-| ADXL355 signal | ADXL355 pin | Pico 2 pin |
-| --- | ---: | --- |
-| VDDIO | 1 | 3V3 |
-| VDD | 3 | 3V3 |
-| GND | 5 | GND |
-| SCLK/Vssio | 10 | GPIO10 / SPI1 SCK |
-| MOSI/SDA | 12 | GPIO11 / SPI1 TX |
-| MISO/SDA | 11 | GPIO12 / SPI1 RX |
-| CS/SCL | 8 | GPIO13 |
-| DRDY | 6 | GPIO14 |
-| INT1 | 2 | GPIO15 |
-| INT2 | 4 | Not connected |
+| Power / ADXL355 signal | ADXL355 pin | Pico 2 pin | Wire color |
+| --- | ---: | --- | --- |
+| Pico 5V | - | 5V / VBUS | Red |
+| VDDIO / ADXL 3V3 | 1 | 3V3 | Orange |
+| VDD / ADXL 3V3 | 3 | 3V3 | Orange |
+| GND | 5 | GND | Black |
+| SCLK/Vssio | 10 | GPIO14 / SPI1 SCK | Yellow |
+| MOSI/SDA | 12 | GPIO15 / SPI1 TX | Green |
+| MISO/SDA | 11 | GPIO12 / SPI1 RX | Blue |
+| CS/SCL | 8 | GPIO13 | White |
+| DRDY | 6 | GPIO11 | Purple |
+| INT1 | 2 | GPIO10 | Gray |
+| INT2 | 4 | Not connected | - |
 
 Do not drive the ADXL355 `V1P8ANA`, `V1P8DIG`, or `Vddio` output pins from the
-Pico. Keep the Pico and RS485 adapter grounds common.
+Pico. Keep the Pico, ADXL355 board, and RS485 HAT grounds common.
 
 ## RS485 Wiring
 
-| Signal | Pico 2 pin |
-| --- | --- |
-| UART TX | GPIO0 |
-| UART RX | GPIO1 |
-| Driver enable / DE | GPIO2 |
-| GND | GND |
-
-Connect the external RS485 transceiver A/B lines according to the transceiver
-board markings, and keep polarity consistent across the bus.
+RS485 connects through the HAT, so no separate Pico GPIO jumper wiring is
+needed in the release harness. Connect the external RS485 A/B pair according to
+the HAT markings, and keep polarity consistent across the bus.
 """,
         encoding="utf-8",
     )
