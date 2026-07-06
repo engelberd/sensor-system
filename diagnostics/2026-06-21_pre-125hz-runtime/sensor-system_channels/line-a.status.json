@@ -1,0 +1,41 @@
+{
+  "active_file": "/home/anone/pico-projects/data/line-a/2026-06-21/line-a_2026-06-21_13-00-00.h5",
+  "baud": 115200,
+  "channel_name": "line-a",
+  "destination": "/home/anone/pico-projects/data/line-a",
+  "nodes": [
+    {
+      "baseline_packet_overwrite_count": 83,
+      "baseline_rx_overflow_count": 0,
+      "baseline_sensor_loss": 0,
+      "bursts_failed": 19253,
+      "bursts_no_data": 17,
+      "bursts_ok": 745535,
+      "empty_polls": 17,
+      "expected_sample_seq": 71509568,
+      "gaps_detected": 13811,
+      "instant_samples_per_second_5s": 251.1495508457969,
+      "last_temperature_c": 29.309391021728516,
+      "last_temperature_unix_ns": 1782039600243804140,
+      "last_written_seq": 71509567,
+      "name": null,
+      "node_id": 1,
+      "online": true,
+      "output_odr_hz": 250.0,
+      "packet_overwrite_session": 59895,
+      "packet_overwrite_total": 59978,
+      "rate_stability_percent_5s": 93.7533622209626,
+      "rx_overflow_session": 0,
+      "rx_overflow_total": 0,
+      "samples_written": 53792640,
+      "sensor_loss_session": 0,
+      "sensor_loss_total": 0,
+      "sensor_odr_hz": 500
+    }
+  ],
+  "port": "/dev/ttyCH9344USB0",
+  "recorder_version": "0.3.0",
+  "schema_version": 1,
+  "started_utc": "2026-06-18T22:07:09.912777+00:00",
+  "updated_utc": "2026-06-21T11:17:34.215723+00:00"
+}

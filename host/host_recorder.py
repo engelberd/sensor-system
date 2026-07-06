@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import csv
 import json
+import math
 import socket
 import signal
 import struct
@@ -126,6 +128,9 @@ class RecorderNode:
     baseline_sensor_loss: int = 0
     baseline_rx_overflow_count: int = 0
     baseline_packet_overwrite_count: int = 0
+    instant_samples_per_second_5s: Optional[float] = None
+    rate_stability_percent_5s: Optional[float] = None
+    rate_history: deque[tuple[float, int]] | None = None
 
 
 class StopFlag:
@@ -450,21 +455,30 @@ class WindowedWriter(BaseWriter):
         self.nodes = nodes
         self.window_timezone = args.window_timezone
         self.current_window_start: Optional[datetime] = None
+        self.current_window_end: Optional[datetime] = None
         self.current_path: Optional[Path] = None
         self.writer: Optional[BaseWriter] = None
+
+    def aligned_window_start(self, when_utc: datetime) -> datetime:
+        when_local = when_utc.astimezone(self.window_timezone)
+        offset = when_local.utcoffset() or timedelta(0)
+        aligned_ts = ((when_utc.timestamp() + offset.total_seconds()) // self.args.window_seconds) * self.args.window_seconds
+        return datetime.fromtimestamp(aligned_ts - offset.total_seconds(), tz=timezone.utc)
 
     def current_window(self, now_utc: Optional[datetime] = None) -> datetime:
         resolved_now = now_utc or datetime.now(timezone.utc)
         if resolved_now.tzinfo is None:
             resolved_now = resolved_now.replace(tzinfo=timezone.utc)
-        local_now = resolved_now.astimezone(self.window_timezone)
-        window_seconds = max(1, int(self.args.window_seconds))
-        local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        seconds_since_day_start = int((local_now - local_day_start).total_seconds())
-        local_window_start = local_day_start + timedelta(
-            seconds=(seconds_since_day_start // window_seconds) * window_seconds
-        )
-        return local_window_start.astimezone(timezone.utc)
+        if (
+            self.current_window_start is not None
+            and self.current_window_end is not None
+            and resolved_now < self.current_window_end
+        ):
+            return self.current_window_start
+        return self.aligned_window_start(resolved_now)
+
+    def window_end_for(self, created_at: datetime) -> datetime:
+        return self.aligned_window_start(created_at) + timedelta(seconds=self.args.window_seconds)
 
     def window_path_for(self, created_at: datetime) -> Path:
         suffix = ".h5" if self.args.format == "hdf5" else ".csv"
@@ -473,21 +487,36 @@ class WindowedWriter(BaseWriter):
         day_dir = Path(self.args.output_dir) / created_at_local.strftime("%Y-%m-%d")
         return day_dir / f"{self.args.channel_name}_{file_label}{suffix}"
 
+    def resolve_new_path(self, created_at: datetime) -> Path:
+        candidate = self.window_path_for(created_at)
+        if not candidate.exists():
+            return candidate
+        suffix = candidate.suffix
+        stem = candidate.stem
+        for index in range(2, 1000):
+            next_candidate = candidate.with_name(f"{stem}_{index:02d}{suffix}")
+            if not next_candidate.exists():
+                return next_candidate
+        raise RuntimeError(f"cannot allocate unique output path for '{candidate}'")
+
     def ensure_writer(self, now_utc: Optional[datetime] = None) -> BaseWriter:
-        window_start = self.current_window(now_utc)
-        if self.writer is not None and self.current_window_start == window_start:
+        resolved_now = now_utc or datetime.now(timezone.utc)
+        if resolved_now.tzinfo is None:
+            resolved_now = resolved_now.replace(tzinfo=timezone.utc)
+        if (
+            self.writer is not None
+            and self.current_window_end is not None
+            and resolved_now < self.current_window_end
+        ):
             return self.writer
 
         if self.writer is not None:
             self.writer.close()
 
-        path_time = now_utc or datetime.now(timezone.utc)
-        if path_time.tzinfo is None:
-            path_time = path_time.replace(tzinfo=timezone.utc)
-        path = self.window_path_for(path_time)
-        append = path.exists()
+        window_start = self.aligned_window_start(resolved_now)
+        window_end = self.window_end_for(window_start)
+        path = self.resolve_new_path(window_start)
         window_metadata = dict(self.metadata)
-        window_end = window_start + timedelta(seconds=max(1, int(self.args.window_seconds)))
         window_start_local = window_start.astimezone(self.window_timezone)
         window_end_local = window_end.astimezone(self.window_timezone)
         window_metadata["window_start_utc"] = window_start.isoformat()
@@ -495,16 +524,14 @@ class WindowedWriter(BaseWriter):
         window_metadata["window_timezone"] = self.args.window_timezone_name
         window_metadata["window_start_local"] = window_start_local.isoformat()
         window_metadata["window_end_local"] = window_end_local.isoformat()
-        if append:
-            window_metadata["file_opened_utc"] = datetime.now(timezone.utc).isoformat()
-        else:
-            window_metadata["file_created_utc"] = datetime.now(timezone.utc).isoformat()
-        self.writer = make_single_writer(self.args, window_metadata, path, append=append)
+        window_metadata["file_created_utc"] = datetime.now(timezone.utc).isoformat()
+        self.writer = make_single_writer(self.args, window_metadata, path, append=False)
         self.current_window_start = window_start
+        self.current_window_end = window_end
         self.current_path = path
         for node in self.nodes:
             self.writer.add_node(node)
-        print(f"[FILE] {path} ({'append' if append else 'new'})")
+        print(f"[FILE] {path} (new)")
         return self.writer
 
     def add_node(self, node: RecorderNode) -> None:
@@ -543,6 +570,7 @@ class WindowedWriter(BaseWriter):
             self.writer.close()
             self.writer = None
             self.current_window_start = None
+            self.current_window_end = None
 
 
 def parse_node_list(value: str) -> list[int]:
@@ -872,6 +900,8 @@ def write_runtime_status(
                 sensor_odr_hz=node.config.odr_hz,
                 output_odr_hz=effective_output_odr_hz(node.config.odr_hz),
                 samples_written=node.samples_written,
+                instant_samples_per_second_5s=node.instant_samples_per_second_5s,
+                rate_stability_percent_5s=node.rate_stability_percent_5s,
                 expected_sample_seq=node.expected_sample_seq,
                 last_written_seq=node.last_written_seq,
                 bursts_ok=node.bursts_ok,
@@ -895,6 +925,54 @@ def write_runtime_status(
         ],
     )
     status_writer.write(snapshot)
+
+
+def update_rate_metrics(nodes: Iterable[RecorderNode], now_monotonic: float) -> None:
+    for node in nodes:
+        if node.rate_history is None:
+            node.rate_history = deque()
+        node.rate_history.append((now_monotonic, node.samples_written))
+        cutoff = now_monotonic - 5.5
+        while len(node.rate_history) > 1 and node.rate_history[0][0] < cutoff:
+            node.rate_history.popleft()
+
+        history = list(node.rate_history)
+        if len(history) < 2:
+            node.instant_samples_per_second_5s = None
+            node.rate_stability_percent_5s = None
+            continue
+
+        first_time, first_samples = history[0]
+        last_time, last_samples = history[-1]
+        elapsed = last_time - first_time
+        if elapsed <= 0:
+            node.instant_samples_per_second_5s = None
+            node.rate_stability_percent_5s = None
+            continue
+
+        instant_rate = max(0.0, (last_samples - first_samples) / elapsed)
+        node.instant_samples_per_second_5s = instant_rate
+
+        interval_rates: list[float] = []
+        for (prev_time, prev_samples), (curr_time, curr_samples) in zip(history, history[1:]):
+            interval_elapsed = curr_time - prev_time
+            if interval_elapsed <= 0:
+                continue
+            interval_rates.append(max(0.0, (curr_samples - prev_samples) / interval_elapsed))
+
+        if not interval_rates:
+            node.rate_stability_percent_5s = None
+            continue
+        if len(interval_rates) == 1:
+            node.rate_stability_percent_5s = 100.0
+            continue
+
+        mean_rate = sum(interval_rates) / len(interval_rates)
+        variance = sum((rate - mean_rate) ** 2 for rate in interval_rates) / len(interval_rates)
+        stddev = math.sqrt(variance)
+        node.rate_stability_percent_5s = max(
+            0.0,
+            min(100.0, 100.0 * (1.0 - (stddev / max(mean_rate, 1e-9)))))
 
 
 def record_one_burst(
@@ -1015,6 +1093,24 @@ def record_one_burst(
     node.samples_written += len(batch)
     node.bursts_ok += 1
     node.online = True
+
+
+def handle_node_runtime_error(
+    node: RecorderNode,
+    args: argparse.Namespace,
+    event_writer: JsonlEventWriter,
+    exc: RuntimeError,
+) -> None:
+    node.online = False
+    node.bursts_failed += 1
+    print(f"[WARN] {exc}", file=sys.stderr)
+    event_writer.emit(
+        "runtime_warning",
+        severity="warning",
+        node_id=node.node_id,
+        fields={"channel_name": args.channel_name, "error": str(exc)},
+    )
+    time.sleep(args.error_sleep)
 
 
 def print_status(nodes: Iterable[RecorderNode], started_at: float) -> None:
@@ -1223,16 +1319,19 @@ def main() -> int:
 
                     loop_now_utc = datetime.now(timezone.utc)
                     for node in nodes:
-                        maybe_refresh_window_start_temperature(
-                            client,
-                            writer,
-                            node,
-                            args,
-                            event_writer,
-                            now_monotonic=now,
-                            now_utc=loop_now_utc,
-                        )
-                        record_one_burst(client, writer, node, args, event_writer, live_buffer)
+                        try:
+                            maybe_refresh_window_start_temperature(
+                                client,
+                                writer,
+                                node,
+                                args,
+                                event_writer,
+                                now_monotonic=now,
+                                now_utc=loop_now_utc,
+                            )
+                            record_one_burst(client, writer, node, args, event_writer, live_buffer)
+                        except RuntimeError as exc:
+                            handle_node_runtime_error(node, args, event_writer, exc)
 
                     now = time.monotonic()
                     if args.temperature_interval > 0:
@@ -1268,6 +1367,7 @@ def main() -> int:
                         next_flush_at = now + args.flush_interval
 
                     if now >= next_status_at:
+                        update_rate_metrics(nodes, now)
                         print_status(nodes, started_at)
                         write_runtime_status(writer, args, nodes, created_utc, status_writer)
                         next_status_at = now + args.status_interval

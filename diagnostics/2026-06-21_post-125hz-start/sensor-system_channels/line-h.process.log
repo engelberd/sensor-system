@@ -1,0 +1,46 @@
+[FILE] /home/anone/pico-projects/data/line-h/2026-06-21/line-h_2026-06-21_15-05-09.h5 (new)
+[INIT] channel=line-h node=1 sensor_odr=250Hz output_odr=125Hz range=2g high_pass=0 fifo_watermark=30 start_seq=57817280
+[REC] t=     0.7s samples=64 rate=   87.2 samples/s
+  node=1 written=64 next=57817344 bursts_ok=1 no_data=0 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     2.0s samples=224 rate=  114.2 samples/s
+  node=1 written=224 next=57817504 bursts_ok=6 no_data=0 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     3.0s samples=352 rate=  117.7 samples/s
+  node=1 written=352 next=57817632 bursts_ok=10 no_data=1 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     4.1s samples=480 rate=  118.1 samples/s
+  node=1 written=480 next=57817760 bursts_ok=14 no_data=3 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     5.3s samples=640 rate=  120.1 samples/s
+  node=1 written=640 next=57817920 bursts_ok=19 no_data=3 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     6.4s samples=768 rate=  120.9 samples/s
+  node=1 written=768 next=57818048 bursts_ok=23 no_data=4 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     7.4s samples=896 rate=  121.4 samples/s
+  node=1 written=896 next=57818176 bursts_ok=27 no_data=5 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     8.4s samples=1024 rate=  121.7 samples/s
+  node=1 written=1024 next=57818304 bursts_ok=31 no_data=6 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=     9.6s samples=1184 rate=  122.7 samples/s
+  node=1 written=1184 next=57818464 bursts_ok=36 no_data=6 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    10.7s samples=1312 rate=  122.5 samples/s
+  node=1 written=1312 next=57818592 bursts_ok=40 no_data=7 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    11.7s samples=1440 rate=  122.7 samples/s
+  node=1 written=1440 next=57818720 bursts_ok=44 no_data=8 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    12.8s samples=1568 rate=  122.7 samples/s
+  node=1 written=1568 next=57818848 bursts_ok=48 no_data=9 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    14.0s samples=1728 rate=  123.3 samples/s
+  node=1 written=1728 next=57819008 bursts_ok=53 no_data=9 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    15.0s samples=1856 rate=  123.4 samples/s
+  node=1 written=1856 next=57819136 bursts_ok=57 no_data=10 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    16.1s samples=1984 rate=  123.6 samples/s
+  node=1 written=1984 next=57819264 bursts_ok=61 no_data=10 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    17.1s samples=2112 rate=  123.6 samples/s
+  node=1 written=2112 next=57819392 bursts_ok=65 no_data=11 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    18.1s samples=2240 rate=  123.7 samples/s
+  node=1 written=2240 next=57819520 bursts_ok=69 no_data=12 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    19.1s samples=2368 rate=  123.8 samples/s
+  node=1 written=2368 next=57819648 bursts_ok=73 no_data=13 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    20.2s samples=2496 rate=  123.8 samples/s
+  node=1 written=2496 next=57819776 bursts_ok=77 no_data=14 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    21.2s samples=2624 rate=  123.9 samples/s
+  node=1 written=2624 next=57819904 bursts_ok=81 no_data=14 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    22.2s samples=2752 rate=  123.9 samples/s
+  node=1 written=2752 next=57820032 bursts_ok=85 no_data=15 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)
+[REC] t=    23.2s samples=2880 rate=  123.9 samples/s
+  node=1 written=2880 next=57820160 bursts_ok=89 no_data=16 failed=0 gaps=0 sensor_loss=0 rx_ovf=0 pkt_ovf=0 totals=(0/0/2964)

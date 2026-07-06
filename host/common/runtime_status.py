@@ -34,6 +34,8 @@ class RuntimeStatusNode:
     baseline_packet_overwrite_count: int
     last_temperature_c: float | None
     last_temperature_unix_ns: int | None
+    instant_samples_per_second_5s: float | None = None
+    rate_stability_percent_5s: float | None = None
 
 
 @dataclass
@@ -55,6 +57,8 @@ class SupervisorChannelStatus:
     name: str
     label: str | None
     enabled: bool
+    desired_running: bool
+    control_state: str | None
     port: str
     baud: int
     process_id: int | None

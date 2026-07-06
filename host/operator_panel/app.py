@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import mimetypes
-import tarfile
 import tempfile
 import subprocess
 import struct
@@ -16,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from host.common.data_browser import DataRepository, FileDownload
 from host.common.system_config import HostSystemConfig
 from host.dashboard.app import DashboardRepository, clamp_limit, load_json, load_tail_jsonl
 from host.host_configurator import (
@@ -46,7 +45,6 @@ from host.host_configurator import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PANEL_VERSION = "0.1.0"
 MAX_PREVIEW_LIMIT = 4_096
-MAX_RUN_ITEMS = 500
 
 
 class ApiError(RuntimeError):
@@ -67,14 +65,6 @@ class SupervisorControlState:
     description: str | None
     pid: int | None
     message: str | None = None
-
-
-@dataclass(frozen=True)
-class FileDownload:
-    path: Path
-    media_type: str
-    download_name: str
-    cleanup_path: Path | None = None
 
 
 class SystemConfigStore:
@@ -198,101 +188,45 @@ class SystemdSupervisorController:
         return self.status()
 
 
-class RunsRepository:
+class RunsRepository(DataRepository):
     def __init__(self, config_store: SystemConfigStore) -> None:
-        self.config_store = config_store
-
-    def root_path(self) -> Path:
-        raw = self.config_store.load_raw()
-        config = HostSystemConfig.from_dict(raw)
-        root = Path(config.storage.root_dir)
-        if not root.is_absolute():
-            root = PROJECT_ROOT / root
-        return root.resolve()
-
-    def _resolve(self, raw_relative: str | None) -> Path:
-        root = self.root_path()
-        target = root
-        if raw_relative:
-            target = (root / unquote(raw_relative)).resolve()
-        if root != target and root not in target.parents:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "path escapes runs root")
-        return target
+        super().__init__(config_store.path)
 
     def list(self, raw_relative: str | None) -> dict[str, Any]:
-        root = self.root_path()
-        target = self._resolve(raw_relative)
-        if not root.exists():
-            return {
-                "root": str(root),
-                "relative_path": ".",
-                "exists": False,
-                "items": [],
-            }
-        if not target.exists():
-            raise ApiError(HTTPStatus.NOT_FOUND, "requested runs path does not exist")
-        if not target.is_dir():
-            raise ApiError(HTTPStatus.BAD_REQUEST, "requested runs path is not a directory")
+        try:
+            return super().list(raw_relative)
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise ApiError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        except NotADirectoryError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
 
-        items: list[dict[str, Any]] = []
-        for child in sorted(target.iterdir(), key=lambda entry: (not entry.is_dir(), entry.name.lower()))[:MAX_RUN_ITEMS]:
-            stat = child.stat()
-            relative = child.relative_to(root).as_posix()
-            items.append(
-                {
-                    "name": child.name,
-                    "relative_path": relative,
-                    "type": "directory" if child.is_dir() else "file",
-                    "size_bytes": stat.st_size,
-                    "modified_utc": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                    "download_url": f"/api/runs/download?path={quote(relative)}",
-                }
-            )
-
-        relative_path = "." if target == root else target.relative_to(root).as_posix()
-        parent = None
-        if target != root:
-            parent_path = target.parent.relative_to(root)
-            parent = "." if str(parent_path) == "." else parent_path.as_posix()
-        return {
-            "root": str(root),
-            "relative_path": relative_path,
-            "parent_relative_path": parent,
-            "exists": True,
-            "items": items,
-        }
+    def search(self, raw_query: str | None) -> dict[str, Any]:
+        try:
+            return super().search(raw_query)
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
 
     def download(self, raw_relative: str | None) -> FileDownload:
-        if not raw_relative:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "missing runs file path")
-        target = self._resolve(raw_relative)
-        if not target.exists():
-            raise ApiError(HTTPStatus.NOT_FOUND, "requested runs file does not exist")
-        if target.is_dir():
-            return self._archive_directory(target)
-        media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        return FileDownload(path=target, media_type=media_type, download_name=target.name)
-
-    def _archive_directory(self, target: Path) -> FileDownload:
-        temp_handle = tempfile.NamedTemporaryFile(
-            prefix=f"{target.name}_",
-            suffix=".tar.gz",
-            delete=False,
-        )
-        temp_handle.close()
-        archive_path = Path(temp_handle.name)
         try:
-            with tarfile.open(archive_path, "w:gz") as archive:
-                archive.add(target, arcname=target.name)
-        except Exception:
-            archive_path.unlink(missing_ok=True)
-            raise
-        return FileDownload(
-            path=archive_path,
-            media_type="application/gzip",
-            download_name=f"{target.name}.tar.gz",
-            cleanup_path=archive_path,
-        )
+            return super().download(raw_relative)
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise ApiError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        except NotADirectoryError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+
+    def download_bundle(self, raw_paths: list[str]) -> FileDownload:
+        try:
+            return super().download_bundle(raw_paths)
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise ApiError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        except NotADirectoryError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
 
 
 def tail_text(path: Path, limit: int) -> list[str]:
@@ -641,7 +575,7 @@ class OperatorApplication:
             "pages": [
                 {"path": "/", "label": "Przeglad"},
                 {"path": "/logs", "label": "Logi"},
-                {"path": "/runs", "label": "Runs"},
+                {"path": "/data", "label": "Data"},
             ],
             "supervisor": supervisor,
         }
@@ -739,7 +673,7 @@ def page_template(*, title: str, active: str, body: str, script: str = "") -> st
     nav = [
         ("/", "Przeglad"),
         ("/logs", "Logi"),
-        ("/runs", "Runs"),
+        ("/data", "Data"),
     ]
     nav_html = "".join(
         f'<a class="nav-link{" active" if path == active else ""}" href="{path}">{label}</a>'
@@ -884,6 +818,14 @@ def page_template(*, title: str, active: str, body: str, script: str = "") -> st
         if (value === true) return '<span class="chip good">aktywny</span>';
         if (value === false) return '<span class="chip warn">zatrzymany</span>';
         return '<span class="chip info">nieznany</span>';
+      }}
+      function escapeHtml(value) {{
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
       }}
       {script}
     </script>
@@ -1140,12 +1082,25 @@ def runs_page() -> str:
     body = """
       <section class="grid two">
         <div class="panel">
-          <h2>Przegladarka runs</h2>
+          <h2>Przegladarka data</h2>
           <div class="btn-row">
             <button class="btn" onclick="browse(currentPath)">Odswiez</button>
             <button class="btn" onclick="browse(parentPath)">Do gory</button>
+            <button class="btn" onclick="clearSearch()">Powrot do katalogu</button>
+          </div>
+          <div class="form-grid" style="margin-top: 12px;">
+            <label class="wide">Szukaj po sciezce
+              <input id="data-search" type="text" placeholder="np. line-a 2026-06-17 13" />
+            </label>
+          </div>
+          <div class="btn-row" style="margin-top: 12px;">
+            <button class="btn primary" onclick="searchData()">Szukaj</button>
+            <button class="btn" onclick="selectVisible()">Zaznacz widoczne</button>
+            <button class="btn" onclick="clearSelection()">Wyczysc zaznaczenie</button>
+            <button class="btn primary" onclick="downloadSelected()">Pobierz zaznaczone</button>
           </div>
           <p class="muted mono" id="runs-path"></p>
+          <p class="muted" id="data-mode"></p>
           <div id="runs-list" class="card-list"></div>
         </div>
         <div class="panel">
@@ -1157,36 +1112,157 @@ def runs_page() -> str:
     script = """
       let currentPath = '.';
       let parentPath = '.';
-      async function browse(path) {
-        const suffix = path && path !== '.' ? `?path=${encodeURIComponent(path)}` : '';
-        const payload = await fetchJson(`/api/runs${suffix}`);
-        currentPath = payload.relative_path || '.';
-        parentPath = payload.parent_relative_path || '.';
-        document.getElementById('runs-path').textContent = `root: ${payload.root} / ${currentPath}`;
+      let currentItems = [];
+      let searchMode = false;
+      const selectedPaths = new Set();
+
+      function summarize(payload, label) {
         const files = (payload.items || []).filter(item => item.type === 'file');
         const dirs = (payload.items || []).filter(item => item.type === 'directory');
         document.getElementById('runs-summary').innerHTML = `
           <div class="metric">${payload.items.length}</div>
-          <p class="muted">pozycji w katalogu</p>
-          <p class="muted">Katalogi: ${dirs.length} · pliki: ${files.length}</p>`;
-        document.getElementById('runs-list').innerHTML = (payload.items || []).map(item => `
+          <p class="muted">${label}</p>
+          <p class="muted">Katalogi: ${dirs.length} · pliki: ${files.length}</p>
+          <p class="muted">Zaznaczone: ${selectedPaths.size}</p>`;
+      }
+
+      function renderItems(items) {
+        document.getElementById('runs-list').innerHTML = items.map(item => `
           <div class="card">
             <div class="btn-row">
-              <strong>${item.name}</strong>
-              <span class="chip ${item.type === 'directory' ? 'info' : 'good'}">${item.type}</span>
+              <label style="display:flex;align-items:center;gap:8px;color:inherit;">
+                <input class="data-select" type="checkbox" data-path="${encodeURIComponent(item.relative_path)}" ${selectedPaths.has(item.relative_path) ? 'checked' : ''} />
+                <strong>${escapeHtml(item.name)}</strong>
+              </label>
+              <span class="chip ${item.type === 'directory' ? 'info' : 'good'}">${item.type === 'directory' ? 'katalog' : 'plik'}</span>
             </div>
-            <p class="muted mono">${item.relative_path}</p>
-            <p class="muted">size=${item.size_bytes} · modified=${item.modified_utc}</p>
+            <p class="muted mono">${escapeHtml(item.relative_path)}</p>
+            <p class="muted">size=${item.size_bytes} · modified=${escapeHtml(item.modified_utc)}</p>
             <div class="btn-row">
               ${item.type === 'directory'
-                ? `<button class="btn" onclick="browse('${item.relative_path}')">Otworz</button><a class="btn" href="${item.download_url}">Pobierz dzien</a>`
+                ? `<button class="btn browse-btn" data-path="${encodeURIComponent(item.relative_path)}">Otworz</button><a class="btn" href="${item.download_url}">Pobierz ZIP</a>`
                 : `<a class="btn" href="${item.download_url}">Pobierz</a>`}
             </div>
           </div>`).join('');
       }
+
+      async function browse(path) {
+        const suffix = path && path !== '.' ? `?path=${encodeURIComponent(path)}` : '';
+        const payload = await fetchJson(`/api/data${suffix}`);
+        searchMode = false;
+        currentItems = payload.items || [];
+        currentPath = payload.relative_path || '.';
+        parentPath = payload.parent_relative_path || '.';
+        document.getElementById('runs-path').textContent = `root: ${payload.root} / ${currentPath}`;
+        document.getElementById('data-mode').textContent = 'Tryb: przegladanie katalogu data';
+        summarize(payload, 'pozycji w katalogu');
+        renderItems(currentItems);
+      }
+
+      async function searchData() {
+        const query = document.getElementById('data-search').value.trim();
+        if (!query) {
+          await browse(currentPath);
+          return;
+        }
+        const payload = await fetchJson(`/api/data/search?q=${encodeURIComponent(query)}`);
+        searchMode = true;
+        currentItems = payload.items || [];
+        document.getElementById('runs-path').textContent = `root: ${payload.root}`;
+        document.getElementById('data-mode').textContent =
+          `Tryb: wyszukiwanie "${query}"${payload.truncated ? ' (wynik przyciety do limitu)' : ''}`;
+        summarize(payload, 'wynikow wyszukiwania');
+        renderItems(currentItems);
+      }
+
+      function clearSearch() {
+        document.getElementById('data-search').value = '';
+        browse(currentPath).catch(error => alert(error.message));
+      }
+
+      function syncSelectionFromDom() {
+        document.querySelectorAll('.data-select').forEach(input => {
+          const path = decodeURIComponent(input.dataset.path || '');
+          if (!path) return;
+          if (input.checked) {
+            selectedPaths.add(path);
+          } else {
+            selectedPaths.delete(path);
+          }
+        });
+      }
+
+      function selectVisible() {
+        currentItems.forEach(item => selectedPaths.add(item.relative_path));
+        renderItems(currentItems);
+        summarize({ items: currentItems }, searchMode ? 'wynikow wyszukiwania' : 'pozycji w katalogu');
+      }
+
+      function clearSelection() {
+        selectedPaths.clear();
+        renderItems(currentItems);
+        summarize({ items: currentItems }, searchMode ? 'wynikow wyszukiwania' : 'pozycji w katalogu');
+      }
+
+      async function downloadSelected() {
+        syncSelectionFromDom();
+        if (selectedPaths.size === 0) {
+          alert('Najpierw zaznacz co pobrac.');
+          return;
+        }
+        const response = await fetch('/api/data/download-bundle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: Array.from(selectedPaths) })
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || ('HTTP ' + response.status));
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="([^"]+)"/);
+        const filename = match ? match[1] : 'data-selection.zip';
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      document.getElementById('runs-list').addEventListener('click', event => {
+        const target = event.target;
+        if (target.classList.contains('browse-btn')) {
+          browse(decodeURIComponent(target.dataset.path || '.')).catch(error => alert(error.message));
+        }
+      });
+
+      document.getElementById('runs-list').addEventListener('change', event => {
+        const target = event.target;
+        if (target.classList.contains('data-select')) {
+          const path = decodeURIComponent(target.dataset.path || '');
+          if (!path) return;
+          if (target.checked) {
+            selectedPaths.add(path);
+          } else {
+            selectedPaths.delete(path);
+          }
+          summarize({ items: currentItems }, searchMode ? 'wynikow wyszukiwania' : 'pozycji w katalogu');
+        }
+      });
+
+      document.getElementById('data-search').addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          searchData().catch(error => alert(error.message));
+        }
+      });
+
       browse('.').catch(error => alert(error.message));
     """
-    return page_template(title="Runs i pobieranie plikow", active="/runs", body=body, script=script)
+    return page_template(title="Data i pobieranie plikow", active="/data", body=body, script=script)
 
 
 def logs_page() -> str:
@@ -1261,7 +1337,7 @@ class OperatorRequestHandler(BaseHTTPRequestHandler):
             if route == "/config":
                 self._write_response(config_page().encode("utf-8"), "text/html; charset=utf-8")
                 return
-            if route == "/runs":
+            if route in {"/runs", "/data"}:
                 self._write_response(runs_page().encode("utf-8"), "text/html; charset=utf-8")
                 return
             if route == "/preview":
@@ -1300,10 +1376,13 @@ class OperatorRequestHandler(BaseHTTPRequestHandler):
                 limit = clamp_limit(query.get("limit", [None])[0], 120)
                 self._write_json(self.app.logs_payload(limit, query.get("channel", [None])[0]))
                 return
-            if route == "/api/runs":
+            if route in {"/api/runs", "/api/data"}:
                 self._write_json(self.app.runs_payload(query.get("path", [None])[0]))
                 return
-            if route == "/api/runs/download":
+            if route == "/api/data/search":
+                self._write_json(self.app.runs_repository.search(query.get("q", [None])[0]))
+                return
+            if route in {"/api/runs/download", "/api/data/download"}:
                 download = self.app.runs_repository.download(query.get("path", [None])[0])
                 self._write_file_response(
                     download,
@@ -1353,6 +1432,20 @@ class OperatorRequestHandler(BaseHTTPRequestHandler):
             if route.startswith("/api/supervisor/"):
                 action = route.rsplit("/", 1)[-1]
                 self._write_json(self.app.supervisor_action(action))
+                return
+
+            if route in {"/api/runs/download-bundle", "/api/data/download-bundle"}:
+                payload = self._read_json_body()
+                raw_paths = payload.get("paths")
+                if not isinstance(raw_paths, list) or not all(isinstance(item, str) for item in raw_paths):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "request body must contain 'paths' as an array of strings")
+                download = self.app.runs_repository.download_bundle(raw_paths)
+                self._write_file_response(
+                    download,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{download.download_name}"',
+                    },
+                )
                 return
 
             segments = [segment for segment in route.split("/") if segment]

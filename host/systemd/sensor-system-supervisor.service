@@ -1,7 +1,7 @@
 [Unit]
 Description=Sensor System RS485 multi-channel supervisor
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target sensor-system-dashboard.service
 
 [Service]
 Type=simple

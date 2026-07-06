@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import http.client
 import json
-import tarfile
 import tempfile
 import threading
 import unittest
 from io import BytesIO
 from pathlib import Path
+import zipfile
 
 from host.operator_panel.app import (
     OperatorApplication,
@@ -121,6 +121,7 @@ class OperatorPanelRoutesTests(unittest.TestCase):
         self.runs_root.mkdir()
         (self.runs_root / "2026-05-12").mkdir()
         (self.runs_root / "2026-05-12" / "capture.h5").write_bytes(b"test-data")
+        (self.runs_root / "2026-05-12" / "line-c_13-00.h5").write_bytes(b"test-data-c")
         self.config_path = temp_root / "system_config.json"
         self.config_path.write_text(
             json.dumps(
@@ -273,9 +274,19 @@ class OperatorPanelRoutesTests(unittest.TestCase):
         connection.close()
         return response.status, raw
 
-    def request_binary(self, method: str, path: str) -> tuple[int, bytes, dict[str, str]]:
+    def request_binary(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+    ) -> tuple[int, bytes, dict[str, str]]:
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
-        connection.request(method, path)
+        payload = None
+        headers: dict[str, str] = {}
+        if body is not None:
+            payload = json.dumps(body)
+            headers["Content-Type"] = "application/json"
+        connection.request(method, path, body=payload, headers=headers)
         response = connection.getresponse()
         raw = response.read()
         headers = {key: value for key, value in response.getheaders()}
@@ -292,7 +303,7 @@ class OperatorPanelRoutesTests(unittest.TestCase):
         status, payload = self.request("GET", "/api/meta")
         self.assertEqual(status, 200)
         self.assertEqual(payload["supervisor"]["controller"], "fake")
-        self.assertEqual([page["label"] for page in payload["pages"]], ["Przeglad", "Logi", "Runs"])
+        self.assertEqual([page["label"] for page in payload["pages"]], ["Przeglad", "Logi", "Data"])
 
         status, payload = self.request("GET", "/api/system-config")
         self.assertEqual(status, 200)
@@ -322,18 +333,34 @@ class OperatorPanelRoutesTests(unittest.TestCase):
         self.assertEqual(payload["channels"][0]["name"], "line-a")
         self.assertIn("capture ok", payload["channels"][0]["lines"][-1])
 
-        status, payload = self.request("GET", "/api/runs")
+        status, payload = self.request("GET", "/api/data")
         self.assertEqual(status, 200)
         self.assertEqual(payload["items"][0]["type"], "directory")
         self.assertIsNotNone(payload["items"][0]["download_url"])
 
-        status, archive_bytes, headers = self.request_binary("GET", "/api/runs/download?path=2026-05-12")
+        status, archive_bytes, headers = self.request_binary("GET", "/api/data/download?path=2026-05-12")
         self.assertEqual(status, 200)
-        self.assertEqual(headers["Content-Type"], "application/gzip")
-        self.assertIn("2026-05-12.tar.gz", headers["Content-Disposition"])
-        with tarfile.open(fileobj=BytesIO(archive_bytes), mode="r:gz") as archive:
-            names = archive.getnames()
+        self.assertEqual(headers["Content-Type"], "application/zip")
+        self.assertIn("2026-05-12.zip", headers["Content-Disposition"])
+        with zipfile.ZipFile(BytesIO(archive_bytes), mode="r") as archive:
+            names = archive.namelist()
         self.assertIn("2026-05-12/capture.h5", names)
+
+        status, payload = self.request("GET", "/api/data/search?q=line-c%2013")
+        self.assertEqual(status, 200)
+        self.assertEqual([item["relative_path"] for item in payload["items"]], ["2026-05-12/line-c_13-00.h5"])
+
+        status, bundle_bytes, headers = self.request_binary(
+            "POST",
+            "/api/data/download-bundle",
+            {"paths": ["2026-05-12/capture.h5", "2026-05-12/line-c_13-00.h5"]},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/zip")
+        self.assertIn("data-selection.zip", headers["Content-Disposition"])
+        with zipfile.ZipFile(BytesIO(bundle_bytes), mode="r") as archive:
+            names = sorted(archive.namelist())
+        self.assertEqual(names, ["2026-05-12/capture.h5", "2026-05-12/line-c_13-00.h5"])
 
         status, payload = self.request("GET", "/api/channels/line-a/nodes/1/device-config")
         self.assertEqual(status, 200)
@@ -368,9 +395,9 @@ class OperatorPanelRoutesTests(unittest.TestCase):
         self.assertEqual(self.node_service.calls, [])
 
     def test_runs_repository_blocks_path_escape(self) -> None:
-        status, payload = self.request("GET", "/api/runs?path=../secret")
+        status, payload = self.request("GET", "/api/data?path=../secret")
         self.assertEqual(status, 400)
-        self.assertIn("escapes runs root", payload["error"])
+        self.assertIn("escapes data root", payload["error"])
 
 
 if __name__ == "__main__":

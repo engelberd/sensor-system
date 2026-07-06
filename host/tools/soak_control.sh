@@ -5,15 +5,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOST_PYTHON="$ROOT_DIR/host/.venv/bin/python"
 SUPERVISOR_CMD="./hostctl supervisor --config host/system_config.json"
 WATCH_CMD="$HOST_PYTHON host/tools/soak_watch.py"
-DASHBOARD_CMD="$HOST_PYTHON host/host_dashboard.py --config host/system_config.json --host 0.0.0.0 --port 8080"
+DASHBOARD_CMD="$HOST_PYTHON host/host_dashboard.py --config host/system_config.json --host 0.0.0.0 --port 8090"
 SUPERVISOR_SESSION="sensor-supervisor"
 WATCH_SESSION="sensor-watch"
 DASHBOARD_SESSION="sensor-dashboard"
 STATUS_FILE="/tmp/sensor-system_supervisor_status.json"
 EVENT_LOG="/tmp/sensor-system_supervisor_events.jsonl"
-WATCH_LOG="/tmp/sensor-system_soak_watch.log"
-ALERT_LOG="/tmp/sensor-system_soak_alerts.log"
-DASHBOARD_URL="http://127.0.0.1:8080/"
+WATCH_LOG="/tmp/sensor-system_channels/soak_watch.log"
+ALERT_LOG="/tmp/sensor-system_channels/soak_alerts.log"
+DASHBOARD_URL="http://127.0.0.1:8090/"
 STREAM_SESSION_PREFIX="sensor-stream-"
 STREAM_DEFAULT_PORT=8000
 
@@ -57,6 +57,23 @@ require_host_python() {
   }
 }
 
+read_config_value() {
+  local expr="$1"
+  "$HOST_PYTHON" -c 'import json, sys; from pathlib import Path; cfg=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); print(eval(sys.argv[2], {"cfg": cfg}))' \
+    "$ROOT_DIR/host/system_config.json" \
+    "$expr"
+}
+
+refresh_runtime_paths() {
+  local runtime_dir
+  STATUS_FILE="$(read_config_value "cfg['supervisor']['status_file']")"
+  EVENT_LOG="$(read_config_value "cfg['supervisor']['event_log']")"
+  runtime_dir="$(read_config_value "cfg['supervisor']['channel_runtime_dir']")"
+  WATCH_LOG="${runtime_dir%/}/soak_watch.log"
+  ALERT_LOG="${runtime_dir%/}/soak_alerts.log"
+  WATCH_CMD="$HOST_PYTHON host/tools/soak_watch.py --status-file '$STATUS_FILE' --log-file '$WATCH_LOG' --alert-file '$ALERT_LOG'"
+}
+
 tmux_has_session() {
   local session="$1"
   tmux has-session -t "$session" 2>/dev/null
@@ -82,13 +99,13 @@ stop_all() {
 }
 
 clear_runtime_logs() {
-  mkdir -p /tmp/sensor-system_channels
+  mkdir -p "$(dirname "$WATCH_LOG")"
   truncate -s 0 \
     "$EVENT_LOG" \
     "$WATCH_LOG" \
     "$ALERT_LOG" \
-    /tmp/sensor-system_channels/*.events.jsonl \
-    /tmp/sensor-system_channels/*.process.log 2>/dev/null || true
+    "$(dirname "$WATCH_LOG")"/*.events.jsonl \
+    "$(dirname "$WATCH_LOG")"/*.process.log 2>/dev/null || true
 }
 
 purge_data() {
@@ -120,6 +137,7 @@ start_all() {
 
   require_tmux
   require_host_python
+  refresh_runtime_paths
 
   echo "[INFO] stopping old soak processes"
   stop_all
@@ -183,6 +201,7 @@ start_stream() {
 
   require_tmux
   require_host_python
+  refresh_runtime_paths
   mkdir -p "$ROOT_DIR/data"
 
   local session
@@ -240,6 +259,9 @@ main() {
   local command="${1:-}"
   shift || true
 
+  require_host_python
+  refresh_runtime_paths
+
   case "$command" in
     start)
       local purge_data_flag=0
@@ -282,9 +304,19 @@ main() {
       show_status
       ;;
     alerts)
+      if [[ ! -e "$ALERT_LOG" ]]; then
+        echo "[INFO] alert log not found: $ALERT_LOG"
+        echo "[INFO] start the host first with: host/tools/soak_control.sh start"
+        exit 1
+      fi
       tail -f "$ALERT_LOG"
       ;;
     watch)
+      if [[ ! -e "$WATCH_LOG" ]]; then
+        echo "[INFO] watch log not found: $WATCH_LOG"
+        echo "[INFO] start the host first with: host/tools/soak_control.sh start"
+        exit 1
+      fi
       tail -f "$WATCH_LOG"
       ;;
     web)

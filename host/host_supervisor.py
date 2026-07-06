@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import signal
@@ -52,6 +53,7 @@ class WorkerState:
     status_file: Path
     event_log: Path
     process_log: Path
+    command_file: Path
     process: subprocess.Popen[str] | None = None
     process_log_handle: TextIO | None = None
     restart_count: int = 0
@@ -59,6 +61,7 @@ class WorkerState:
     next_start_monotonic: float = 0.0
     last_status: dict[str, Any] | None = None
     last_status_updated_utc: str | None = None
+    desired_running: bool = True
 
     @property
     def running(self) -> bool:
@@ -99,6 +102,59 @@ def channel_event_path(runtime_dir: Path, channel_name: str) -> Path:
 
 def channel_process_log_path(runtime_dir: Path, channel_name: str) -> Path:
     return runtime_dir / f"{channel_name}.process.log"
+
+
+def channel_command_path(runtime_dir: Path, channel_name: str) -> Path:
+    return runtime_dir / f"{channel_name}.command.json"
+
+
+def supervisor_command_path(runtime_dir: Path) -> Path:
+    return runtime_dir / "supervisor.command.json"
+
+
+def load_channel_command(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        path.unlink(missing_ok=True)
+        return None
+    if not isinstance(payload, dict):
+        path.unlink(missing_ok=True)
+        return None
+    path.unlink(missing_ok=True)
+    return payload
+
+
+def _truncate_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+
+
+def _remove_channel_entries_from_jsonl(path: Path, channel_name: str) -> None:
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    kept: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        if isinstance(payload, dict) and payload.get("channel_name") == channel_name:
+            continue
+        kept.append(line)
+    text = "\n".join(kept)
+    if text:
+        text += "\n"
+    path.write_text(text, encoding="utf-8")
 
 
 def channel_output_dir(system_config: HostSystemConfig, channel: ChannelConfig) -> str:
@@ -228,6 +284,109 @@ def stop_worker(state: WorkerState, event_writer: JsonlEventWriter) -> None:
     state.close_process_log()
 
 
+def purge_worker_runtime(state: WorkerState, event_writer: JsonlEventWriter) -> None:
+    state.close_process_log()
+    state.event_log.unlink(missing_ok=True)
+    state.status_file.unlink(missing_ok=True)
+    _truncate_file(state.process_log)
+    _remove_channel_entries_from_jsonl(event_writer.path, state.config.name)
+    state.last_status = None
+    state.last_status_updated_utc = None
+    state.last_exit_code = None
+    state.restart_count = 0
+
+
+def control_state_label(state: WorkerState, now_monotonic: float) -> str:
+    if not state.config.enabled:
+        return "disabled"
+    if not state.desired_running:
+        return "stopped-manual"
+    if state.running:
+        return "running"
+    if state.next_start_monotonic > now_monotonic:
+        return "restart-pending"
+    return "waiting"
+
+
+def apply_channel_command(
+    state: WorkerState,
+    action: str,
+    *,
+    now_monotonic: float,
+    restart_delay_s: float,
+    event_writer: JsonlEventWriter,
+) -> None:
+    if action == "stop":
+        state.desired_running = False
+        state.next_start_monotonic = 0.0
+        if state.running:
+            stop_worker(state, event_writer)
+        event_writer.emit(
+            "channel_stop_requested",
+            severity="warning",
+            fields={"channel_name": state.config.name, "port": state.config.port},
+        )
+        return
+
+    if action == "start":
+        if not state.config.enabled:
+            event_writer.emit(
+                "channel_start_rejected",
+                severity="error",
+                fields={"channel_name": state.config.name, "reason": "disabled-in-config"},
+            )
+            return
+        state.desired_running = True
+        state.next_start_monotonic = now_monotonic
+        event_writer.emit(
+            "channel_start_requested",
+            fields={"channel_name": state.config.name, "port": state.config.port},
+        )
+        return
+
+    if action == "restart":
+        if not state.config.enabled:
+            event_writer.emit(
+                "channel_restart_rejected",
+                severity="error",
+                fields={"channel_name": state.config.name, "reason": "disabled-in-config"},
+            )
+            return
+        state.desired_running = True
+        if state.running:
+            stop_worker(state, event_writer)
+            state.next_start_monotonic = now_monotonic + restart_delay_s
+        else:
+            state.next_start_monotonic = now_monotonic
+        event_writer.emit(
+            "channel_restart_requested",
+            severity="warning",
+            fields={"channel_name": state.config.name, "port": state.config.port},
+        )
+        return
+
+    if action == "purge":
+        if not state.config.enabled:
+            event_writer.emit(
+                "channel_purge_rejected",
+                severity="error",
+                fields={"channel_name": state.config.name, "reason": "disabled-in-config"},
+            )
+            return
+        state.desired_running = True
+        if state.running:
+            stop_worker(state, event_writer)
+            state.next_start_monotonic = now_monotonic + restart_delay_s
+        else:
+            state.next_start_monotonic = now_monotonic
+        purge_worker_runtime(state, event_writer)
+        event_writer.emit(
+            "channel_purged",
+            fields={"channel_name": state.config.name, "port": state.config.port},
+        )
+        return
+
+
 def to_runtime_nodes(raw_nodes: list[dict[str, Any]], channel: ChannelConfig) -> list[RuntimeStatusNode]:
     node_names = channel.node_name_map()
     nodes: list[RuntimeStatusNode] = []
@@ -241,6 +400,8 @@ def to_runtime_nodes(raw_nodes: list[dict[str, Any]], channel: ChannelConfig) ->
                 sensor_odr_hz=int(raw.get("sensor_odr_hz", 0)),
                 output_odr_hz=float(raw.get("output_odr_hz", 0.0)),
                 samples_written=int(raw.get("samples_written", 0)),
+                instant_samples_per_second_5s=float(raw.get("instant_samples_per_second_5s")) if raw.get("instant_samples_per_second_5s") is not None else None,
+                rate_stability_percent_5s=float(raw.get("rate_stability_percent_5s")) if raw.get("rate_stability_percent_5s") is not None else None,
                 expected_sample_seq=int(raw.get("expected_sample_seq", 0)),
                 last_written_seq=int(raw.get("last_written_seq", 0)),
                 bursts_ok=int(raw.get("bursts_ok", 0)),
@@ -264,6 +425,56 @@ def to_runtime_nodes(raw_nodes: list[dict[str, Any]], channel: ChannelConfig) ->
     return nodes
 
 
+def apply_supervisor_command(
+    states: list[WorkerState],
+    action: str,
+    *,
+    now_monotonic: float,
+    restart_delay_s: float,
+    event_writer: JsonlEventWriter,
+) -> None:
+    normalized_action = action.strip().lower()
+    if normalized_action not in {"restart_all", "purge_all"}:
+        event_writer.emit(
+            "supervisor_command_rejected",
+            severity="error",
+            fields={"action": normalized_action or "missing"},
+        )
+        return
+
+    enabled_states = [state for state in states if state.config.enabled]
+    any_running = False
+    for state in enabled_states:
+        state.desired_running = True
+        if state.running:
+            any_running = True
+            stop_worker(state, event_writer)
+        if normalized_action == "purge_all":
+            purge_worker_runtime(state, event_writer)
+            event_writer.emit(
+                "channel_purged",
+                fields={"channel_name": state.config.name, "port": state.config.port, "scope": "all"},
+            )
+
+    restart_at = now_monotonic + restart_delay_s if any_running else now_monotonic
+    for state in enabled_states:
+        state.next_start_monotonic = restart_at
+        event_writer.emit(
+            "channel_restart_requested",
+            severity="warning",
+            fields={"channel_name": state.config.name, "port": state.config.port, "scope": "all"},
+        )
+
+    event_writer.emit(
+        "supervisor_restart_all_requested" if normalized_action == "restart_all" else "supervisor_purge_all_requested",
+        severity="warning",
+        fields={
+            "channel_count": len(enabled_states),
+            "had_running_channels": any_running,
+        },
+    )
+
+
 def build_supervisor_snapshot(
     system_config: HostSystemConfig,
     status_writer: JsonStatusWriter,
@@ -271,6 +482,7 @@ def build_supervisor_snapshot(
     started_utc: str,
     states: list[WorkerState],
 ) -> SupervisorStatusSnapshot:
+    now_monotonic = time.monotonic()
     channels: list[SupervisorChannelStatus] = []
     for state in states:
         if state.status_file.exists():
@@ -286,6 +498,8 @@ def build_supervisor_snapshot(
                 name=state.config.name,
                 label=state.config.label,
                 enabled=state.config.enabled,
+                desired_running=state.desired_running,
+                control_state=control_state_label(state, now_monotonic),
                 port=state.config.port,
                 baud=state.config.baud,
                 process_id=state.process_id,
@@ -329,12 +543,44 @@ def ensure_storage_root(path: str) -> None:
         raise RuntimeError(f"cannot prepare storage root '{root}': {exc}") from exc
 
 
+class SupervisorInstanceLock:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.handle: TextIO | None = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(
+                f"another supervisor instance is already running (lock: {self.path})"
+            ) from exc
+        self.handle.seek(0)
+        self.handle.truncate()
+        self.handle.write(f"{os.getpid()}\n")
+        self.handle.flush()
+
+    def release(self) -> None:
+        if self.handle is None:
+            return
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+            self.handle = None
+
+
 def main() -> int:
     args = parse_args()
     system_config = HostSystemConfig.load(args.config)
     ensure_storage_root(system_config.storage.root_dir)
     runtime_dir = Path(system_config.supervisor.channel_runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    instance_lock = SupervisorInstanceLock(runtime_dir / "supervisor.lock")
+    instance_lock.acquire()
+    supervisor_commands = supervisor_command_path(runtime_dir)
 
     recorder_script = Path(__file__).resolve().parent / "host_recorder.py"
     status_writer = JsonStatusWriter(system_config.supervisor.status_file)
@@ -350,6 +596,8 @@ def main() -> int:
             status_file=channel_status_path(runtime_dir, channel.name),
             event_log=channel_event_path(runtime_dir, channel.name),
             process_log=channel_process_log_path(runtime_dir, channel.name),
+            command_file=channel_command_path(runtime_dir, channel.name),
+            desired_running=channel.enabled,
         )
         for channel in system_config.channels
     ]
@@ -369,8 +617,38 @@ def main() -> int:
 
         while not stop_flag.stop_requested:
             now = time.monotonic()
+            supervisor_command = load_channel_command(supervisor_commands)
+            if supervisor_command is not None:
+                apply_supervisor_command(
+                    states,
+                    str(supervisor_command.get("action", "")),
+                    now_monotonic=now,
+                    restart_delay_s=system_config.supervisor.restart_delay_s,
+                    event_writer=event_writer,
+                )
             for state in states:
+                command = load_channel_command(state.command_file)
+                if command is not None:
+                    action = str(command.get("action", "")).strip().lower()
+                    if action in {"start", "stop", "restart", "purge"}:
+                        apply_channel_command(
+                            state,
+                            action,
+                            now_monotonic=now,
+                            restart_delay_s=system_config.supervisor.restart_delay_s,
+                            event_writer=event_writer,
+                        )
+                    else:
+                        event_writer.emit(
+                            "channel_command_rejected",
+                            severity="error",
+                            fields={"channel_name": state.config.name, "action": action or "missing"},
+                        )
+
                 if not state.config.enabled:
+                    state.desired_running = False
+                    if state.running:
+                        stop_worker(state, event_writer)
                     continue
                 if state.process is not None:
                     exit_code = state.process.poll()
@@ -394,6 +672,7 @@ def main() -> int:
 
                 if (
                     state.process is None
+                    and state.desired_running
                     and not stop_flag.stop_requested
                     and now >= state.next_start_monotonic
                 ):
@@ -437,6 +716,7 @@ def main() -> int:
                 "signal_name": stop_flag.signal_name,
             },
         )
+        instance_lock.release()
 
     return 0
 

@@ -1,0 +1,34 @@
+[Unit]
+Description=Sensor System data download server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Adjust this to where you deploy the repo (or a copy of it).
+WorkingDirectory=/opt/sensor-system
+
+# Optional environment file for overriding settings without editing the unit.
+# Create e.g. /etc/sensor-system-data-download.env and set:
+#   SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
+#   SENSOR_SYSTEM_DATA_HOST=0.0.0.0
+#   SENSOR_SYSTEM_DATA_PORT=8091
+#   SENSOR_SYSTEM_DATA_ROOT=/data/sensor-system
+EnvironmentFile=-/etc/sensor-system-data-download.env
+
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_data_download.py \
+  --config ${SENSOR_SYSTEM_CONFIG:-/opt/sensor-system/host/system_config.json} \
+  --host ${SENSOR_SYSTEM_DATA_HOST:-0.0.0.0} \
+  --port ${SENSOR_SYSTEM_DATA_PORT:-8091} \
+  --root-dir ${SENSOR_SYSTEM_DATA_ROOT:-}
+
+Restart=always
+RestartSec=5
+
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -16,12 +16,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--log-file",
-        default="/tmp/sensor-system_soak_watch.log",
+        default="/tmp/sensor-system_channels/soak_watch.log",
         help="Continuous soak watch log",
     )
     parser.add_argument(
         "--alert-file",
-        default="/tmp/sensor-system_soak_alerts.log",
+        default="/tmp/sensor-system_channels/soak_alerts.log",
         help="Alert-only soak log",
     )
     parser.add_argument(

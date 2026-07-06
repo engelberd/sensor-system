@@ -5,7 +5,7 @@
     "timezone": "Europe/Warsaw"
   },
   "storage": {
-    "root_dir": "/opt/sensor-system/data",
+    "root_dir": "/home/anone/pico-projects/data",
     "format": "hdf5",
     "compression": "gzip",
     "window_seconds": 600
@@ -182,29 +182,6 @@
         {
           "id": 1,
           "name": "Czujnik H",
-          "enabled": true,
-          "expected_odr_hz": 125.0,
-          "sensor_odr_hz": 250,
-          "range_g": 2,
-          "high_pass_corner": 0,
-          "fifo_watermark": 30,
-          "offset_x": 0,
-          "offset_y": 0,
-          "offset_z": 0
-        }
-      ]
-    },
-    {
-      "name": "line-acm0",
-      "label": "Linia ACM0",
-      "enabled": true,
-      "port": "/dev/ttyACM0",
-      "output_dir": "/data/sensor-system/line-acm0",
-      "baud": 115200,
-      "nodes": [
-        {
-          "id": 1,
-          "name": "Czujnik ACM0",
           "enabled": true,
           "expected_odr_hz": 125.0,
           "sensor_odr_hz": 250,

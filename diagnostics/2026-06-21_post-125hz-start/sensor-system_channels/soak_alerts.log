@@ -1,0 +1,9 @@
+[2026-06-21 15:05:18 +0200] ALERT line-a running False -> True
+[2026-06-21 15:05:18 +0200] ALERT line-b running False -> True
+[2026-06-21 15:05:18 +0200] ALERT line-c running False -> True
+[2026-06-21 15:05:18 +0200] ALERT line-d running False -> True
+[2026-06-21 15:05:18 +0200] ALERT line-e running False -> True
+[2026-06-21 15:05:18 +0200] ALERT line-f running False -> True
+[2026-06-21 15:05:18 +0200] ALERT line-h running False -> True
+[2026-06-21 15:05:28 +0200] ALERT line-g restart_count 3 -> 6
+[2026-06-21 15:05:28 +0200] ALERT line-g running False -> True
