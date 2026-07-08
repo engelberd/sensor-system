@@ -17,9 +17,12 @@ data/
 *.kicad_prl
 *.kicad_prl.bak
 *.kicad_pcb-bak
+_autosave-*.kicad_*
 *-backups/
 footprints.extra/
 **/my_footprints.pretty/Untitled.kicad_mod
+**/*.pretty/Untitled*.kicad_mod
+*.elibz
 fp-info-cache
 sym-lib-table-bak
 fp-lib-table-bak
