@@ -34,6 +34,7 @@ set(SENSOR_SYSTEM_NODE_INCLUDE_DIRS
     ${CMAKE_CURRENT_LIST_DIR}/common
     ${CMAKE_CURRENT_LIST_DIR}/config
     ${CMAKE_CURRENT_LIST_DIR}/controller
+    ${CMAKE_CURRENT_LIST_DIR}/diagnostics
     ${CMAKE_CURRENT_LIST_DIR}/interfaces
     ${CMAKE_CURRENT_LIST_DIR}/storage
     ${CMAKE_CURRENT_LIST_DIR}/transport
@@ -48,6 +49,8 @@ set(SENSOR_SYSTEM_NODE_APP_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/config/config_manager.cpp
     ${CMAKE_CURRENT_LIST_DIR}/config/config_store_flash.cpp
     ${CMAKE_CURRENT_LIST_DIR}/common/device_identity.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/diagnostics/diagnostic_store.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/diagnostics/persistent_diagnostic_store.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/crc16.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/frame_decoder.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/frame_encoder.cpp

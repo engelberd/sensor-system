@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
 
-from host.host_configurator import build_parser, ConfigView, sync_system_config_from_device_config
+from host.host_configurator import (
+    CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD,
+    CMD_READ_DIAGNOSTIC_EVENTS,
+    GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT,
+    GET_STATUS_FORMAT_V2,
+    GET_STATUS_FORMAT_V3,
+    READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT,
+    READ_DIAGNOSTIC_EVENT_FORMAT,
+    ConfigView,
+    build_parser,
+    format_diagnostic_detail,
+    parse_diagnostic_events,
+    parse_persistent_diagnostic_record_view,
+    parse_status_view,
+    sync_system_config_from_device_config,
+)
+from host.host_lab import parse_stats
 
 
 class HostConfiguratorSyncTests(unittest.TestCase):
@@ -80,6 +97,206 @@ class HostConfiguratorSyncTests(unittest.TestCase):
     def test_set_baudrate_parser_rejects_disabled_higher_baudrate(self) -> None:
         with self.assertRaises(SystemExit):
             build_parser().parse_args(["set-baudrate", "230400"])
+
+    def test_parse_extended_status_view(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V3,
+            0x40,
+            0,
+            7,
+            2,
+            125,
+            4,
+            2,
+            0x00010203,
+            9,
+            12345,
+            67890,
+            321,
+            36,
+            3,
+            0x3F,
+            12,
+            2,
+            5,
+            9,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.node_id, 7)
+        self.assertEqual(status.uptime_ms, 12345)
+        self.assertEqual(status.last_sample_seq, 67890)
+        self.assertEqual(status.last_progress_ms_ago, 321)
+        self.assertEqual(status.last_error_code, 36)
+        self.assertEqual(status.reset_cause, 3)
+        self.assertEqual(status.diagnostic_flags, 0x3F)
+        self.assertEqual(status.fifo_poll_fallback_reads, 12)
+        self.assertEqual(status.soft_recover_count, 2)
+        self.assertEqual(status.no_data_with_irq, 5)
+        self.assertEqual(status.no_data_without_irq, 9)
+
+    def test_parse_v2_status_view_keeps_new_fields_defaulted(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V2,
+            0x40,
+            0,
+            7,
+            2,
+            125,
+            4,
+            2,
+            0x00010203,
+            9,
+            12345,
+            67890,
+            321,
+            36,
+            3,
+            0x0F,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.fifo_poll_fallback_reads, 0)
+        self.assertEqual(status.soft_recover_count, 0)
+
+    def test_parse_diagnostic_events(self) -> None:
+        payload = struct.pack(
+            READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT,
+            CMD_READ_DIAGNOSTIC_EVENTS,
+            0,
+            2,
+            0,
+            11,
+            13,
+        )
+        payload += struct.pack(
+            READ_DIAGNOSTIC_EVENT_FORMAT,
+            11,
+            1000,
+            34,
+            2,
+            0,
+            555,
+            8,
+            0,
+        )
+        payload += struct.pack(
+            READ_DIAGNOSTIC_EVENT_FORMAT,
+            12,
+            2000,
+            37,
+            1,
+            1,
+            777,
+            8,
+            1,
+        )
+
+        first_event_id, next_event_id, events = parse_diagnostic_events(payload)
+        self.assertEqual(first_event_id, 11)
+        self.assertEqual(next_event_id, 13)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0].event_code, 34)
+        self.assertEqual(events[0].repeat_count, 0)
+        self.assertEqual(events[0].sample_seq, 555)
+        self.assertEqual(events[1].event_code, 37)
+        self.assertEqual(events[1].repeat_count, 1)
+        self.assertEqual(events[1].arg1, 1)
+
+    def test_parse_stats_v3(self) -> None:
+        payload = struct.pack(
+            "<BBQ" + ("I" * 12) + "Q" + ("I" * 9),
+            0x43,
+            0,
+            1001,
+            1000,
+            3,
+            4,
+            5000,
+            100,
+            7,
+            8,
+            90,
+            91,
+            92,
+            10,
+            11,
+            999,
+            1234,
+            2,
+            1,
+            12,
+            13,
+            14,
+            15,
+            1600,
+            1700,
+        )
+        stats = parse_stats(payload)
+        self.assertEqual(stats.next_sample_seq, 1001)
+        self.assertEqual(stats.fifo_poll_fallback_reads, 12)
+        self.assertEqual(stats.no_data_with_irq, 13)
+        self.assertEqual(stats.no_data_without_irq, 14)
+        self.assertEqual(stats.soft_recover_count, 15)
+        self.assertEqual(stats.last_irq_event_ms, 1600)
+        self.assertEqual(stats.last_soft_recover_ms, 1700)
+
+    def test_dump_diagnostics_parser_accepts_limit(self) -> None:
+        args = build_parser().parse_args(["dump-diagnostics", "--start-event-id", "7", "--limit", "12"])
+        self.assertEqual(args.command, "dump-diagnostics")
+        self.assertEqual(args.start_event_id, 7)
+        self.assertEqual(args.limit, 12)
+
+    def test_parse_persistent_diagnostic_record(self) -> None:
+        payload = struct.pack(
+            GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT,
+            CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD,
+            0,
+            3,
+            9,
+            0x00030201,
+            41,
+            2222,
+            34,
+            2,
+            7,
+            3,
+            0,
+            0,
+            123456,
+            50,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+        )
+        record = parse_persistent_diagnostic_record_view(payload)
+        self.assertEqual(record.generation, 3)
+        self.assertEqual(record.boot_counter, 9)
+        self.assertEqual(record.firmware_version, 0x00030201)
+        self.assertEqual(record.event_code, 34)
+        self.assertEqual(record.repeat_count, 7)
+        self.assertEqual(record.reset_cause, 3)
+        self.assertEqual(record.sample_seq, 123456)
+        self.assertEqual(record.arg1, 17)
+
+    def test_format_diagnostic_detail_decodes_fifo_no_data_snapshot(self) -> None:
+        packed_snapshot = (
+            0x12 |
+            (6 << 8) |
+            (8 << 16) |
+            ((0x80 | 0x01) << 24)
+        )
+        detail = format_diagnostic_detail(34, packed_snapshot, 16)
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertIn("status_reg=0x12", detail)
+        self.assertIn("fifo_entries=6", detail)
+        self.assertIn("fifo_read_status=NoData", detail)
+        self.assertIn("irq_seen=True", detail)
+        self.assertIn("empty_entry=True", detail)
+        self.assertIn("no_data_streak=16", detail)
 
 
 if __name__ == "__main__":

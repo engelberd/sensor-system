@@ -198,22 +198,27 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
                                               size_t max_samples,
                                               size_t& samples_read) {
     samples_read = 0;
+    diag_.flags = 0;
 
     if (!initialized_) {
+        diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NotInitialized);
         return SensorStatus::NotInitialized;
     }
 
     if (samples == nullptr || max_samples == 0) {
+        diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidParam);
         return SensorStatus::InvalidParam;
     }
 
     uint8_t fifo_entries = 0;
     SensorStatus st = read_fifo_entries(fifo_entries);
     if (st != SensorStatus::Ok) {
+        diag_.last_fifo_read_status = static_cast<uint8_t>(st);
         return st;
     }
 
     if (fifo_entries < 3) {
+        diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
         return SensorStatus::NoData;
     }
 
@@ -221,6 +226,7 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
     const size_t to_read = (available_samples < max_samples) ? available_samples : max_samples;
 
     if (to_read == 0) {
+        diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
         return SensorStatus::NoData;
     }
 
@@ -229,6 +235,7 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
 
     st = read_fifo_raw(buffer, bytes_to_read);
     if (st != SensorStatus::Ok) {
+        diag_.last_fifo_read_status = static_cast<uint8_t>(st);
         return st;
     }
 
@@ -240,23 +247,38 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         FifoEntry z_entry{};
 
         st = decode_fifo_entry(&buffer[base + 0], x_entry);
-        if (st != SensorStatus::Ok) return st;
+        if (st != SensorStatus::Ok) {
+            diag_.last_fifo_read_status = static_cast<uint8_t>(st);
+            return st;
+        }
 
         st = decode_fifo_entry(&buffer[base + 3], y_entry);
-        if (st != SensorStatus::Ok) return st;
+        if (st != SensorStatus::Ok) {
+            diag_.last_fifo_read_status = static_cast<uint8_t>(st);
+            return st;
+        }
 
         st = decode_fifo_entry(&buffer[base + 6], z_entry);
-        if (st != SensorStatus::Ok) return st;
+        if (st != SensorStatus::Ok) {
+            diag_.last_fifo_read_status = static_cast<uint8_t>(st);
+            return st;
+        }
 
         if (x_entry.is_empty || y_entry.is_empty || z_entry.is_empty) {
+            diag_.flags |= SENSOR_DIAG_FLAG_FIFO_EMPTY_ENTRY;
+            diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
             return SensorStatus::NoData;
         }
 
         if (!x_entry.is_x_axis) {
+            diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
+            diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
             return SensorStatus::InvalidSample;
         }
 
         if (y_entry.is_x_axis || z_entry.is_x_axis) {
+            diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
+            diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
             return SensorStatus::InvalidSample;
         }
 
@@ -266,6 +288,7 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
     }
 
     samples_read = to_read;
+    diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::Ok);
     return SensorStatus::Ok;
 }
 
@@ -421,11 +444,20 @@ SensorStatus Adxl355Driver::read_fifo_entries(uint8_t& entries) {
     }
 
     entries &= 0x7F;
+    diag_.last_fifo_entries = entries;
     return SensorStatus::Ok;
 }
 
 SensorStatus Adxl355Driver::read_status(uint8_t& status) {
-    return read_status_register(status);
+    const SensorStatus st = read_status_register(status);
+    if (st == SensorStatus::Ok) {
+        diag_.last_status_reg = status;
+    }
+    return st;
+}
+
+SensorDiagnosticSnapshot Adxl355Driver::diagnostic_snapshot() const {
+    return diag_;
 }
 
 SensorStatus Adxl355Driver::configure_fifo(uint8_t watermark) {

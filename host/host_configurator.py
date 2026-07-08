@@ -40,7 +40,14 @@ CMD_SET_BAUD_RATE = 0x29
 CMD_COMMISSION_DISCOVER = 0x2A
 CMD_COMMISSION_ASSIGN_NODE_ID = 0x2B
 CMD_SET_HIGH_PASS = 0x2C
+CMD_RESTART = 0x02
 CMD_GET_STATUS = 0x40
+CMD_GET_DIAGNOSTIC_INFO = 0x44
+CMD_GET_FAULT_SNAPSHOT = 0x45
+CMD_READ_DIAGNOSTIC_EVENTS = 0x46
+CMD_CLEAR_DIAGNOSTIC_EVENTS = 0x47
+CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD = 0x48
+CMD_CLEAR_PERSISTENT_DIAGNOSTIC_RECORD = 0x49
 
 STATUS_NAMES = {
     0: "Ok",
@@ -60,6 +67,14 @@ STATUS_NAMES = {
 
 GET_CONFIG_FORMAT = "<BBBHb"  # placeholder, replaced below
 GET_STATUS_FORMAT = "<BBBBHIBBI"  # placeholder, replaced below
+GET_STATUS_FORMAT_V2 = "<BBBBHBIIIIQIHBB"
+GET_STATUS_FORMAT_V3 = "<BBBBHBIIIIQIHBBIIII"
+GET_DIAGNOSTIC_INFO_FORMAT = "<BBIBBHHIIIIH"
+GET_FAULT_SNAPSHOT_FORMAT = "<BBIIHBBQIIIIIIii"
+GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT = "<BBIIIIIHBBBBHQIIIIIIii"
+READ_DIAGNOSTIC_EVENTS_REQUEST_FORMAT = "<BIB"
+READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT = "<BBBBII"
+READ_DIAGNOSTIC_EVENT_FORMAT = "<IIHBBQii"
 
 # Actual packed layouts from firmware.
 GET_CONFIG_FORMAT = "<BBBIHBiiiBHBB"
@@ -132,6 +147,22 @@ def status_name(status: int) -> str:
     return STATUS_NAMES.get(status, f"Unknown({status})")
 
 
+def sensor_status_name(status: int) -> str:
+    return {
+        0: "Ok",
+        1: "NotInitialized",
+        2: "Busy",
+        3: "CommError",
+        4: "Timeout",
+        5: "InvalidParam",
+        6: "NotSupported",
+        7: "InvalidDevice",
+        8: "NoData",
+        9: "InvalidSample",
+        10: "InternalError",
+    }.get(status, f"UnknownSensorStatus({status})")
+
+
 @dataclass
 class HostConfig:
     port: str = "/dev/sensor-system-rs485"
@@ -183,6 +214,82 @@ class StatusView:
     protocol_version: int
     firmware_version: int
     dropped_samples: int
+    uptime_ms: int = 0
+    last_sample_seq: int = 0
+    last_progress_ms_ago: int = 0
+    last_error_code: int = 0
+    reset_cause: int = 0
+    diagnostic_flags: int = 0
+    fifo_poll_fallback_reads: int = 0
+    soft_recover_count: int = 0
+    no_data_with_irq: int = 0
+    no_data_without_irq: int = 0
+
+
+@dataclass
+class DiagnosticInfoView:
+    uptime_ms: int
+    reset_cause: int
+    live_usb_enabled: int
+    stored_event_count: int
+    event_capacity: int
+    dropped_event_count: int
+    first_event_id: int
+    next_event_id: int
+    last_error_event_id: int
+    last_error_code: int
+
+
+@dataclass
+class FaultSnapshotView:
+    event_id: int
+    time_ms: int
+    event_code: int
+    severity: int
+    reset_cause: int
+    sample_seq: int
+    last_progress_ms: int
+    fifo_no_data: int
+    sensor_errors: int
+    dropped_samples: int
+    rx_overflow_count: int
+    packet_overwrite_count: int
+    arg0: int
+    arg1: int
+
+
+@dataclass
+class PersistentDiagnosticRecordView:
+    generation: int
+    boot_counter: int
+    firmware_version: int
+    event_id: int
+    time_ms: int
+    event_code: int
+    severity: int
+    repeat_count: int
+    reset_cause: int
+    sample_seq: int
+    last_progress_ms: int
+    fifo_no_data: int
+    sensor_errors: int
+    dropped_samples: int
+    rx_overflow_count: int
+    packet_overwrite_count: int
+    arg0: int
+    arg1: int
+
+
+@dataclass
+class DiagnosticEventView:
+    event_id: int
+    time_ms: int
+    event_code: int
+    severity: int
+    repeat_count: int
+    sample_seq: int
+    arg0: int
+    arg1: int
 
 
 @dataclass
@@ -439,6 +546,46 @@ def parse_config_view(payload: bytes) -> ConfigView:
 
 
 def parse_status_view(payload: bytes) -> StatusView:
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V3):
+        values = struct.unpack(GET_STATUS_FORMAT_V3, payload[: struct.calcsize(GET_STATUS_FORMAT_V3)])
+        return StatusView(
+            node_id=values[2],
+            node_state=values[3],
+            odr_hz=values[4],
+            range_g=values[5],
+            protocol_version=values[6],
+            firmware_version=values[7],
+            dropped_samples=values[8],
+            uptime_ms=values[9],
+            last_sample_seq=values[10],
+            last_progress_ms_ago=values[11],
+            last_error_code=values[12],
+            reset_cause=values[13],
+            diagnostic_flags=values[14],
+            fifo_poll_fallback_reads=values[15],
+            soft_recover_count=values[16],
+            no_data_with_irq=values[17],
+            no_data_without_irq=values[18],
+        )
+
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V2):
+        values = struct.unpack(GET_STATUS_FORMAT_V2, payload[: struct.calcsize(GET_STATUS_FORMAT_V2)])
+        return StatusView(
+            node_id=values[2],
+            node_state=values[3],
+            odr_hz=values[4],
+            range_g=values[5],
+            protocol_version=values[6],
+            firmware_version=values[7],
+            dropped_samples=values[8],
+            uptime_ms=values[9],
+            last_sample_seq=values[10],
+            last_progress_ms_ago=values[11],
+            last_error_code=values[12],
+            reset_cause=values[13],
+            diagnostic_flags=values[14],
+        )
+
     values = struct.unpack(GET_STATUS_FORMAT, payload[: struct.calcsize(GET_STATUS_FORMAT)])
     return StatusView(
         node_id=values[2],
@@ -449,6 +596,109 @@ def parse_status_view(payload: bytes) -> StatusView:
         firmware_version=values[7],
         dropped_samples=values[8],
     )
+
+
+def parse_diagnostic_info_view(payload: bytes) -> DiagnosticInfoView:
+    values = struct.unpack(
+        GET_DIAGNOSTIC_INFO_FORMAT,
+        payload[: struct.calcsize(GET_DIAGNOSTIC_INFO_FORMAT)],
+    )
+    return DiagnosticInfoView(
+        uptime_ms=values[2],
+        reset_cause=values[3],
+        live_usb_enabled=values[4],
+        stored_event_count=values[5],
+        event_capacity=values[6],
+        dropped_event_count=values[7],
+        first_event_id=values[8],
+        next_event_id=values[9],
+        last_error_event_id=values[10],
+        last_error_code=values[11],
+    )
+
+
+def parse_fault_snapshot_view(payload: bytes) -> FaultSnapshotView:
+    values = struct.unpack(
+        GET_FAULT_SNAPSHOT_FORMAT,
+        payload[: struct.calcsize(GET_FAULT_SNAPSHOT_FORMAT)],
+    )
+    return FaultSnapshotView(
+        event_id=values[2],
+        time_ms=values[3],
+        event_code=values[4],
+        severity=values[5],
+        reset_cause=values[6],
+        sample_seq=values[7],
+        last_progress_ms=values[8],
+        fifo_no_data=values[9],
+        sensor_errors=values[10],
+        dropped_samples=values[11],
+        rx_overflow_count=values[12],
+        packet_overwrite_count=values[13],
+        arg0=values[14],
+        arg1=values[15],
+    )
+
+
+def parse_persistent_diagnostic_record_view(payload: bytes) -> PersistentDiagnosticRecordView:
+    values = struct.unpack(
+        GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT,
+        payload[: struct.calcsize(GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT)],
+    )
+    return PersistentDiagnosticRecordView(
+        generation=values[2],
+        boot_counter=values[3],
+        firmware_version=values[4],
+        event_id=values[5],
+        time_ms=values[6],
+        event_code=values[7],
+        severity=values[8],
+        repeat_count=values[9],
+        reset_cause=values[10],
+        sample_seq=values[13],
+        last_progress_ms=values[14],
+        fifo_no_data=values[15],
+        sensor_errors=values[16],
+        dropped_samples=values[17],
+        rx_overflow_count=values[18],
+        packet_overwrite_count=values[19],
+        arg0=values[20],
+        arg1=values[21],
+    )
+
+
+def parse_diagnostic_events(payload: bytes) -> tuple[int, int, list[DiagnosticEventView]]:
+    header_size = struct.calcsize(READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT)
+    event_size = struct.calcsize(READ_DIAGNOSTIC_EVENT_FORMAT)
+    command, status, returned_count, _reserved, first_event_id, next_event_id = struct.unpack(
+        READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT,
+        payload[:header_size],
+    )
+    if command != CMD_READ_DIAGNOSTIC_EVENTS or status != 0:
+        raise ValueError("diagnostic events payload header mismatch")
+
+    events: list[DiagnosticEventView] = []
+    offset = header_size
+    for _ in range(returned_count):
+        values = struct.unpack(
+            READ_DIAGNOSTIC_EVENT_FORMAT,
+            payload[offset:offset + event_size],
+        )
+        events.append(
+            DiagnosticEventView(
+                event_id=values[0],
+                time_ms=values[1],
+                event_code=values[2],
+                severity=values[3],
+                repeat_count=values[4],
+                sample_seq=values[5],
+                arg0=values[6],
+                arg1=values[7],
+            )
+        )
+        offset += event_size
+
+    return first_event_id, next_event_id, events
 
 
 def parse_commission_identity(payload: bytes) -> CommissionIdentity:
@@ -547,6 +797,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("get-config")
     sub.add_parser("get-status")
+    sub.add_parser("get-diagnostic-info")
+    sub.add_parser("get-fault-snapshot")
+    sub.add_parser("get-persistent-diagnostic-record")
+    dump_diag = sub.add_parser("dump-diagnostics")
+    dump_diag.add_argument("--start-event-id", type=int, default=1)
+    dump_diag.add_argument("--limit", type=int, default=32)
+
+    read_diag_events = sub.add_parser("read-diagnostic-events")
+    read_diag_events.add_argument("--start-event-id", type=int, default=1)
+    read_diag_events.add_argument("--limit", type=int, default=16)
+
+    sub.add_parser("clear-diagnostic-events")
+    sub.add_parser("clear-persistent-diagnostic-record")
+    sub.add_parser("restart")
 
     set_node = sub.add_parser("set-node-id")
     set_node.add_argument("value", type=int)
@@ -637,11 +901,7 @@ def print_config(config: ConfigView) -> None:
 
 
 def print_status(status: StatusView) -> None:
-    firmware_version = (
-        f"{(status.firmware_version >> 16) & 0xFF}."
-        f"{(status.firmware_version >> 8) & 0xFF}."
-        f"{status.firmware_version & 0xFF}"
-    )
+    firmware_version = format_firmware_version(status.firmware_version)
     print("Status:")
     print(f"  node_id          : {status.node_id}")
     print(f"  node_state       : {status.node_state}")
@@ -651,6 +911,256 @@ def print_status(status: StatusView) -> None:
     print(f"  protocol_version : {status.protocol_version}")
     print(f"  firmware_version : {firmware_version}")
     print(f"  dropped_samples  : {status.dropped_samples}")
+    print(f"  uptime_ms        : {status.uptime_ms}")
+    print(f"  last_sample_seq  : {status.last_sample_seq}")
+    print(f"  last_progress_ms : {status.last_progress_ms_ago}")
+    print(f"  last_error_code  : {status.last_error_code}")
+    print(f"  reset_cause      : {format_reset_cause(status.reset_cause)}")
+    print(f"  diagnostic_flags : 0x{status.diagnostic_flags:02X}")
+    print(f"  diag_flag_names  : {format_diagnostic_flags(status.diagnostic_flags)}")
+    print(f"  poll_fallbacks   : {status.fifo_poll_fallback_reads}")
+    print(f"  soft_recovers    : {status.soft_recover_count}")
+    print(f"  no_data_irq      : {status.no_data_with_irq}")
+    print(f"  no_data_poll     : {status.no_data_without_irq}")
+
+
+def format_reset_cause(reset_cause: int) -> str:
+    return {
+        0: "unknown",
+        1: "power_on",
+        2: "watchdog",
+        3: "watchdog_timeout",
+    }.get(reset_cause, f"unknown({reset_cause})")
+
+
+def format_diagnostic_flags(flags: int) -> str:
+    names: list[str] = []
+    if flags & 0x01:
+        names.append("fault_snapshot")
+    if flags & 0x02:
+        names.append("live_usb")
+    if flags & 0x04:
+        names.append("watchdog_reset")
+    if flags & 0x08:
+        names.append("sample_stall")
+    if flags & 0x10:
+        names.append("degraded_acquisition")
+    if flags & 0x20:
+        names.append("irq_fallback_active")
+    return ",".join(names) if names else "none"
+
+
+def format_firmware_version(raw_version: int) -> str:
+    return (
+        f"{(raw_version >> 16) & 0xFF}."
+        f"{(raw_version >> 8) & 0xFF}."
+        f"{raw_version & 0xFF}"
+    )
+
+
+def format_diagnostic_severity(severity: int) -> str:
+    return {
+        0: "Debug",
+        1: "Info",
+        2: "Warn",
+        3: "Error",
+        4: "Critical",
+    }.get(severity, f"Unknown({severity})")
+
+
+def format_diagnostic_event_code(event_code: int) -> str:
+    return {
+        1: "Boot",
+        2: "ControllerInitOk",
+        3: "ControllerInitFailed",
+        4: "Rs485InitFailed",
+        5: "TransportInitFailed",
+        16: "SensorInitFailed",
+        17: "SensorCheckFailed",
+        18: "SensorConfigFailed",
+        19: "SensorOffsetsFailed",
+        32: "FifoOverrun",
+        33: "FifoStatusReadError",
+        34: "FifoRepeatedNoData",
+        35: "SensorReadError",
+        36: "InvalidSample",
+        37: "AcquisitionRecovered",
+        48: "TemperatureReadFailed",
+        49: "TemperatureReadRecovered",
+        64: "RuntimeConfigApplyFailed",
+        65: "RuntimeConfigApplied",
+        80: "RestartCommand",
+        81: "EnterBootloaderCommand",
+        82: "DiagnosticsCleared",
+    }.get(event_code, f"Unknown({event_code})")
+
+
+def decode_sensor_snapshot_arg(arg0: int) -> dict[str, object]:
+    raw = arg0 & 0xFFFFFFFF
+    status_reg = raw & 0xFF
+    fifo_entries = (raw >> 8) & 0xFF
+    fifo_read_status = (raw >> 16) & 0xFF
+    flags = (raw >> 24) & 0xFF
+    return {
+        "status_reg": status_reg,
+        "fifo_entries": fifo_entries,
+        "fifo_read_status": fifo_read_status,
+        "irq_seen": bool(flags & 0x80),
+        "empty_entry": bool(flags & 0x01),
+        "axis_mismatch": bool(flags & 0x02),
+    }
+
+
+def decode_sensor_status_streak_arg(arg1: int) -> tuple[int, int]:
+    raw = arg1 & 0xFFFFFFFF
+    sensor_status = raw & 0xFF
+    streak = (raw >> 8) & 0x00FFFFFF
+    return sensor_status, streak
+
+
+def format_diagnostic_detail(event_code: int, arg0: int, arg1: int) -> str | None:
+    if event_code in {32, 34, 35, 36, 33}:
+        snapshot = decode_sensor_snapshot_arg(arg0)
+        parts = [
+            f"status_reg=0x{snapshot['status_reg']:02X}",
+            f"fifo_entries={snapshot['fifo_entries']}",
+            f"fifo_read_status={sensor_status_name(int(snapshot['fifo_read_status']))}",
+            f"irq_seen={snapshot['irq_seen']}",
+            f"empty_entry={snapshot['empty_entry']}",
+            f"axis_mismatch={snapshot['axis_mismatch']}",
+        ]
+        if event_code == 32:
+            parts.append(f"dropped_counter={arg1}")
+        elif event_code == 34:
+            parts.append(f"no_data_streak={arg1}")
+        else:
+            sensor_status, streak = decode_sensor_status_streak_arg(arg1)
+            parts.append(f"sensor_status={sensor_status_name(sensor_status)}")
+            parts.append(f"error_streak={streak}")
+        return ", ".join(parts)
+
+    if event_code == 37:
+        return f"previous_no_data={arg0}, previous_sensor_errors={arg1}"
+
+    return None
+
+
+def print_diagnostic_info(info: DiagnosticInfoView) -> None:
+    print("Diagnostic Info:")
+    print(f"  uptime_ms           : {info.uptime_ms}")
+    print(f"  reset_cause         : {format_reset_cause(info.reset_cause)}")
+    print(f"  live_usb_enabled    : {bool(info.live_usb_enabled)}")
+    print(f"  stored_event_count  : {info.stored_event_count}")
+    print(f"  event_capacity      : {info.event_capacity}")
+    print(f"  dropped_event_count : {info.dropped_event_count}")
+    print(f"  first_event_id      : {info.first_event_id}")
+    print(f"  next_event_id       : {info.next_event_id}")
+    print(f"  last_error_event_id : {info.last_error_event_id}")
+    print(f"  last_error_code     : {format_diagnostic_event_code(info.last_error_code)}")
+
+
+def print_fault_snapshot(snapshot: FaultSnapshotView) -> None:
+    print("Fault Snapshot:")
+    print(f"  event_id               : {snapshot.event_id}")
+    print(f"  time_ms                : {snapshot.time_ms}")
+    print(f"  event_code             : {format_diagnostic_event_code(snapshot.event_code)}")
+    print(f"  severity               : {format_diagnostic_severity(snapshot.severity)}")
+    print(f"  reset_cause            : {format_reset_cause(snapshot.reset_cause)}")
+    print(f"  sample_seq             : {snapshot.sample_seq}")
+    print(f"  last_progress_ms       : {snapshot.last_progress_ms}")
+    print(f"  fifo_no_data           : {snapshot.fifo_no_data}")
+    print(f"  sensor_errors          : {snapshot.sensor_errors}")
+    print(f"  dropped_samples        : {snapshot.dropped_samples}")
+    print(f"  rx_overflow_count      : {snapshot.rx_overflow_count}")
+    print(f"  packet_overwrite_count : {snapshot.packet_overwrite_count}")
+    print(f"  arg0                   : {snapshot.arg0}")
+    print(f"  arg1                   : {snapshot.arg1}")
+    detail = format_diagnostic_detail(snapshot.event_code, snapshot.arg0, snapshot.arg1)
+    if detail is not None:
+        print(f"  detail                 : {detail}")
+
+
+def print_persistent_diagnostic_record(record: PersistentDiagnosticRecordView) -> None:
+    print("Persistent Diagnostic Record:")
+    print(f"  generation             : {record.generation}")
+    print(f"  boot_counter           : {record.boot_counter}")
+    print(f"  firmware_version       : {format_firmware_version(record.firmware_version)}")
+    print(f"  event_id               : {record.event_id}")
+    print(f"  time_ms                : {record.time_ms}")
+    print(f"  event_code             : {format_diagnostic_event_code(record.event_code)}")
+    print(f"  severity               : {format_diagnostic_severity(record.severity)}")
+    print(f"  repeat_count           : {record.repeat_count}")
+    print(f"  reset_cause            : {format_reset_cause(record.reset_cause)}")
+    print(f"  sample_seq             : {record.sample_seq}")
+    print(f"  last_progress_ms       : {record.last_progress_ms}")
+    print(f"  fifo_no_data           : {record.fifo_no_data}")
+    print(f"  sensor_errors          : {record.sensor_errors}")
+    print(f"  dropped_samples        : {record.dropped_samples}")
+    print(f"  rx_overflow_count      : {record.rx_overflow_count}")
+    print(f"  packet_overwrite_count : {record.packet_overwrite_count}")
+    print(f"  arg0                   : {record.arg0}")
+    print(f"  arg1                   : {record.arg1}")
+    detail = format_diagnostic_detail(record.event_code, record.arg0, record.arg1)
+    if detail is not None:
+        print(f"  detail                 : {detail}")
+
+
+def print_diagnostic_events(first_event_id: int,
+                            next_event_id: int,
+                            events: list[DiagnosticEventView]) -> None:
+    print("Diagnostic Events:")
+    print(f"  first_event_id : {first_event_id}")
+    print(f"  next_event_id  : {next_event_id}")
+    print(f"  returned_count : {len(events)}")
+    for event in events:
+        detail = format_diagnostic_detail(event.event_code, event.arg0, event.arg1)
+        print(
+            "  "
+            f"event_id={event.event_id} time_ms={event.time_ms} "
+            f"severity={format_diagnostic_severity(event.severity)} "
+            f"code={format_diagnostic_event_code(event.event_code)} "
+            f"repeat_count={event.repeat_count} "
+            f"sample_seq={event.sample_seq} arg0={event.arg0} arg1={event.arg1}"
+        )
+        if detail is not None:
+            print(f"    detail={detail}")
+
+
+def read_all_diagnostic_events(
+    client: ProtocolClient,
+    node_id: int,
+    timeout_s: float,
+    *,
+    start_event_id: int = 1,
+    limit: int = 32,
+) -> tuple[int, int, list[DiagnosticEventView]]:
+    all_events: list[DiagnosticEventView] = []
+    request_start = max(0, start_event_id)
+    limit = max(1, min(limit, 32))
+    first_event_id = request_start
+    next_event_id = request_start
+
+    while True:
+        payload = struct.pack(
+            READ_DIAGNOSTIC_EVENTS_REQUEST_FORMAT,
+            CMD_READ_DIAGNOSTIC_EVENTS,
+            request_start,
+            limit,
+        )
+        response = send_and_wait(client, node_id, payload, timeout_s)
+        batch_first_event_id, batch_next_event_id, events = parse_diagnostic_events(response.payload)
+        first_event_id = batch_first_event_id
+        next_event_id = batch_next_event_id
+        all_events.extend(events)
+
+        if not events:
+            break
+
+        request_start = events[-1].event_id + 1
+        if request_start >= batch_next_event_id:
+            break
+
+    return first_event_id, next_event_id, all_events
 
 
 def format_hardware_id(hardware_id: bytes) -> str:
@@ -831,6 +1341,131 @@ def main() -> int:
         if args.command == "get-status":
             response = send_and_wait(client, config.node, bytes([CMD_GET_STATUS]), config.timeout)
             print_status(parse_status_view(response.payload))
+            return 0
+
+        if args.command == "get-diagnostic-info":
+            response = send_and_wait(
+                client,
+                config.node,
+                bytes([CMD_GET_DIAGNOSTIC_INFO]),
+                config.timeout,
+            )
+            print_diagnostic_info(parse_diagnostic_info_view(response.payload))
+            return 0
+
+        if args.command == "get-fault-snapshot":
+            response = send_and_wait(
+                client,
+                config.node,
+                bytes([CMD_GET_FAULT_SNAPSHOT]),
+                config.timeout,
+            )
+            print_fault_snapshot(parse_fault_snapshot_view(response.payload))
+            return 0
+
+        if args.command == "get-persistent-diagnostic-record":
+            response = send_and_wait(
+                client,
+                config.node,
+                bytes([CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD]),
+                config.timeout,
+            )
+            print_persistent_diagnostic_record(parse_persistent_diagnostic_record_view(response.payload))
+            return 0
+
+        if args.command == "dump-diagnostics":
+            status_response = send_and_wait(
+                client,
+                config.node,
+                bytes([CMD_GET_STATUS]),
+                config.timeout,
+            )
+            print_status(parse_status_view(status_response.payload))
+            print()
+
+            info_response = send_and_wait(
+                client,
+                config.node,
+                bytes([CMD_GET_DIAGNOSTIC_INFO]),
+                config.timeout,
+            )
+            info = parse_diagnostic_info_view(info_response.payload)
+            print_diagnostic_info(info)
+            print()
+
+            try:
+                fault_response = send_and_wait(
+                    client,
+                    config.node,
+                    bytes([CMD_GET_FAULT_SNAPSHOT]),
+                    config.timeout,
+                )
+            except RuntimeError as exc:
+                print(f"Fault Snapshot:\n  unavailable          : {exc}")
+            else:
+                print_fault_snapshot(parse_fault_snapshot_view(fault_response.payload))
+            print()
+
+            try:
+                persistent_response = send_and_wait(
+                    client,
+                    config.node,
+                    bytes([CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD]),
+                    config.timeout,
+                )
+            except RuntimeError as exc:
+                print(f"Persistent Diagnostic Record:\n  unavailable          : {exc}")
+            else:
+                print_persistent_diagnostic_record(
+                    parse_persistent_diagnostic_record_view(persistent_response.payload)
+                )
+            print()
+
+            first_event_id, next_event_id, events = read_all_diagnostic_events(
+                client,
+                config.node,
+                config.timeout,
+                start_event_id=args.start_event_id,
+                limit=args.limit,
+            )
+            print_diagnostic_events(first_event_id, next_event_id, events)
+            return 0
+
+        if args.command == "read-diagnostic-events":
+            payload = struct.pack(
+                READ_DIAGNOSTIC_EVENTS_REQUEST_FORMAT,
+                CMD_READ_DIAGNOSTIC_EVENTS,
+                max(0, args.start_event_id),
+                max(1, min(args.limit, 32)),
+            )
+            response = send_and_wait(client, config.node, payload, config.timeout)
+            first_event_id, next_event_id, events = parse_diagnostic_events(response.payload)
+            print_diagnostic_events(first_event_id, next_event_id, events)
+            return 0
+
+        if args.command == "clear-diagnostic-events":
+            send_and_wait(
+                client,
+                config.node,
+                bytes([CMD_CLEAR_DIAGNOSTIC_EVENTS]),
+                config.timeout,
+            )
+            print("[OK] diagnostic events cleared")
+            return 0
+
+        if args.command == "clear-persistent-diagnostic-record":
+            send_and_wait(
+                client,
+                config.node,
+                bytes([CMD_CLEAR_PERSISTENT_DIAGNOSTIC_RECORD]),
+                config.timeout,
+            )
+            print("[OK] persistent diagnostic record cleared")
+            return 0
+
+        if args.command == "restart":
+            send_and_wait(client, config.node, bytes([CMD_RESTART]), config.timeout)
+            print("[OK] restart command acknowledged")
             return 0
 
         if args.command == "set-node-id":

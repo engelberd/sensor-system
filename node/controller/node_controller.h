@@ -11,8 +11,10 @@
 #include "common/protocol_ids.h"
 #include "common/sensor_types.h"
 #include "config/config_manager.h"
+#include "diagnostics/diagnostic_store.h"
 #include "interfaces/i_data_plane.h"
 #include "interfaces/i_temperature_sensor.h"
+#include "pico/time.h"
 #include "storage/stored_sample.h"
 #include "transport/command_payloads.h"
 #include "transport/command_types.h"
@@ -34,17 +36,36 @@ public:
                    AcquisitionEngine<BufferCapacity>& acquisition,
                    ITemperatureSensor& temperature_sensor,
                    IDataPlane& data_plane,
-                   Rs485Port* rs485_port = nullptr)
+                   Rs485Port* rs485_port = nullptr,
+                   DiagnosticStore* diagnostics = nullptr)
         : config_(config),
           acquisition_(acquisition),
           temperature_sensor_(temperature_sensor),
           data_plane_(data_plane),
-          rs485_port_(rs485_port) {
+          rs485_port_(rs485_port),
+          diagnostics_(diagnostics) {
     }
 
     bool init() {
         const auto st = acquisition_.init(config_.current());
         init_status_ = st;
+        if (diagnostics_ != nullptr) {
+            if (st == SensorStatus::Ok) {
+                diagnostics_->record(
+                    DiagnosticSeverity::Info,
+                    DiagnosticEventCode::ControllerInitOk,
+                    0,
+                    static_cast<int32_t>(config_.current().node_id),
+                    0
+                );
+            } else {
+                diagnostics_->record_fault(
+                    DiagnosticSeverity::Error,
+                    DiagnosticEventCode::ControllerInitFailed,
+                    current_fault_context(static_cast<int32_t>(st), 0)
+                );
+            }
+        }
         return st == SensorStatus::Ok;
     }
 
@@ -161,6 +182,24 @@ public:
             case CommandType::GetTemperature:
                 return handle_get_temperature(response, response_len);
 
+            case CommandType::GetDiagnosticInfo:
+                return handle_get_diagnostic_info(response, response_len);
+
+            case CommandType::GetFaultSnapshot:
+                return handle_get_fault_snapshot(response, response_len);
+
+            case CommandType::ReadDiagnosticEvents:
+                return handle_read_diagnostic_events(payload, payload_len, response, response_len);
+
+            case CommandType::ClearDiagnosticEvents:
+                return handle_clear_diagnostic_events(response, response_len);
+
+            case CommandType::GetPersistentDiagnosticRecord:
+                return handle_get_persistent_diagnostic_record(response, response_len);
+
+            case CommandType::ClearPersistentDiagnosticRecord:
+                return handle_clear_persistent_diagnostic_record(response, response_len);
+
             case CommandType::ReadLatest:
                 return handle_read_latest(payload, payload_len, response, response_len);
 
@@ -190,13 +229,29 @@ public:
     }
 
 private:
+    static_assert(sizeof(GetStatusResponsePayload) <= FRAME_MAX_PAYLOAD_SIZE,
+                  "GetStatusResponsePayload exceeds frame payload size");
+    static_assert(sizeof(GetStatsResponsePayload) <= FRAME_MAX_PAYLOAD_SIZE,
+                  "GetStatsResponsePayload exceeds frame payload size");
+
     static constexpr size_t kMaxInlineReadSamples =
         (FRAME_MAX_PAYLOAD_SIZE - sizeof(ReadSamplesResponseHeader)) /
         sizeof(WireSample32);
     static constexpr uint16_t kMaxGrantBurstFrames = 16;
+    static constexpr size_t kMaxDiagnosticEventsPerResponse =
+        (FRAME_MAX_PAYLOAD_SIZE - sizeof(ReadDiagnosticEventsResponseHeader)) /
+        sizeof(DiagnosticEventWirePayload);
 
     static constexpr int32_t kMinOffset = -32768;
     static constexpr int32_t kMaxOffset = 32767;
+    static constexpr uint32_t kDiagnosticStallThresholdMs = 2000;
+    static constexpr uint32_t kDiagnosticDegradedWindowMs = 10000;
+    static constexpr uint8_t kDiagnosticFlagFaultSnapshot = 0x01u;
+    static constexpr uint8_t kDiagnosticFlagLiveUsbEnabled = 0x02u;
+    static constexpr uint8_t kDiagnosticFlagWatchdogReset = 0x04u;
+    static constexpr uint8_t kDiagnosticFlagSampleStall = 0x08u;
+    static constexpr uint8_t kDiagnosticFlagDegradedAcquisition = 0x10u;
+    static constexpr uint8_t kDiagnosticFlagIrqFallbackActive = 0x20u;
 
 private:
     static StatusCode map_sensor_status(SensorStatus status) {
@@ -263,6 +318,41 @@ private:
         return offset >= kMinOffset && offset <= kMaxOffset;
     }
 
+    static uint32_t current_uptime_ms() {
+        return static_cast<uint32_t>(time_us_64() / 1000u);
+    }
+
+    uint32_t sample_stall_ms_ago(const AcquisitionStats& stats) const {
+        if (stats.pushed_samples == 0 || stats.last_progress_ms == 0) {
+            return 0;
+        }
+
+        const uint32_t now_ms = current_uptime_ms();
+        if (now_ms < stats.last_progress_ms) {
+            return 0;
+        }
+        return now_ms - stats.last_progress_ms;
+    }
+
+    DiagnosticFaultContext current_fault_context(int32_t arg0, int32_t arg1) const {
+        const auto stats = acquisition_.stats();
+        const auto dp = data_plane_.state();
+
+        DiagnosticFaultContext context{};
+        context.sample_seq = stats.last_sample_seq;
+        context.last_progress_ms = stats.last_progress_ms;
+        context.fifo_no_data = stats.fifo_no_data;
+        context.sensor_errors = stats.sensor_errors;
+        context.dropped_samples = stats.dropped_samples;
+        context.rx_overflow_count = (rs485_port_ != nullptr)
+            ? rs485_port_->rx_overflow_count()
+            : 0u;
+        context.packet_overwrite_count = dp.packet_overwrite_count;
+        context.arg0 = arg0;
+        context.arg1 = arg1;
+        return context;
+    }
+
     StatusCode build_error_response(uint8_t cmd,
                                     StatusCode status,
                                     uint8_t* out,
@@ -295,6 +385,13 @@ private:
         const SensorStatus sensor_status =
             acquisition_.reload_runtime_config(config);
         if (sensor_status != SensorStatus::Ok) {
+            if (diagnostics_ != nullptr) {
+                diagnostics_->record_fault(
+                    DiagnosticSeverity::Error,
+                    DiagnosticEventCode::RuntimeConfigApplyFailed,
+                    current_fault_context(static_cast<int32_t>(sensor_status), static_cast<int32_t>(cmd))
+                );
+            }
             return build_error_response(
                 cmd,
                 map_sensor_status(sensor_status),
@@ -304,6 +401,15 @@ private:
         }
 
         config_.replace_device_config(config);
+        if (diagnostics_ != nullptr) {
+            diagnostics_->record(
+                DiagnosticSeverity::Info,
+                DiagnosticEventCode::RuntimeConfigApplied,
+                acquisition_.stats().last_sample_seq,
+                static_cast<int32_t>(cmd),
+                static_cast<int32_t>(config.node_id)
+            );
+        }
         return build_simple_ok(cmd, out, out_len);
     }
 
@@ -311,10 +417,26 @@ private:
         const SensorStatus sensor_status =
             acquisition_.reload_runtime_config(config);
         if (sensor_status != SensorStatus::Ok) {
+            if (diagnostics_ != nullptr) {
+                diagnostics_->record_fault(
+                    DiagnosticSeverity::Error,
+                    DiagnosticEventCode::RuntimeConfigApplyFailed,
+                    current_fault_context(static_cast<int32_t>(sensor_status), 0)
+                );
+            }
             return false;
         }
 
         config_.replace_device_config(config);
+        if (diagnostics_ != nullptr) {
+            diagnostics_->record(
+                DiagnosticSeverity::Info,
+                DiagnosticEventCode::RuntimeConfigApplied,
+                acquisition_.stats().last_sample_seq,
+                0,
+                static_cast<int32_t>(config.node_id)
+            );
+        }
         return true;
     }
 
@@ -385,6 +507,13 @@ private:
     }
 
     StatusCode handle_restart(uint8_t* out, size_t& out_len) {
+        if (diagnostics_ != nullptr) {
+            diagnostics_->record_fault(
+                DiagnosticSeverity::Warn,
+                DiagnosticEventCode::RestartCommand,
+                current_fault_context(0, 0)
+            );
+        }
         deferred_action_ = DeferredAction::Restart;
         return build_simple_ok(static_cast<uint8_t>(CommandType::Restart), out, out_len);
     }
@@ -399,6 +528,13 @@ private:
             );
         }
 
+        if (diagnostics_ != nullptr) {
+            diagnostics_->record_fault(
+                DiagnosticSeverity::Warn,
+                DiagnosticEventCode::EnterBootloaderCommand,
+                current_fault_context(0, 0)
+            );
+        }
         deferred_action_ = DeferredAction::EnterBootloader;
         return build_simple_ok(
             static_cast<uint8_t>(CommandType::EnterBootloader),
@@ -870,6 +1006,8 @@ private:
     }
 
     StatusCode handle_get_status(uint8_t* out, size_t& out_len) {
+        const auto stats = acquisition_.stats();
+        const auto uptime_ms = current_uptime_ms();
         GetStatusResponsePayload resp{};
         resp.command = static_cast<uint8_t>(CommandType::GetStatus);
         resp.status = static_cast<uint8_t>(StatusCode::Ok);
@@ -888,7 +1026,44 @@ private:
             (static_cast<uint32_t>(FW_VERSION_MAJOR) << 16) |
             (static_cast<uint32_t>(FW_VERSION_MINOR) << 8) |
             static_cast<uint32_t>(FW_VERSION_PATCH);
-        resp.dropped_samples = acquisition_.stats().dropped_samples;
+        resp.dropped_samples = stats.dropped_samples;
+        resp.uptime_ms = uptime_ms;
+        resp.last_sample_seq = stats.last_sample_seq;
+        resp.last_progress_ms_ago = sample_stall_ms_ago(stats);
+        if (diagnostics_ != nullptr) {
+            const auto info = diagnostics_->info();
+            resp.last_error_code = info.last_error_code;
+            resp.reset_cause = info.reset_cause;
+            if (diagnostics_->has_fault_snapshot()) {
+                resp.diagnostic_flags |= kDiagnosticFlagFaultSnapshot;
+            }
+            if (info.live_usb_enabled != 0u) {
+                resp.diagnostic_flags |= kDiagnosticFlagLiveUsbEnabled;
+            }
+            if (info.reset_cause == static_cast<uint8_t>(DiagnosticResetCause::Watchdog) ||
+                info.reset_cause == static_cast<uint8_t>(DiagnosticResetCause::WatchdogTimeout)) {
+                resp.diagnostic_flags |= kDiagnosticFlagWatchdogReset;
+            }
+        }
+        if (resp.last_progress_ms_ago >= kDiagnosticStallThresholdMs) {
+            resp.diagnostic_flags |= kDiagnosticFlagSampleStall;
+        }
+        if (stats.consecutive_no_data_reads > 0 ||
+            stats.consecutive_sensor_errors > 0 ||
+            (stats.last_soft_recover_ms > 0 &&
+             (uptime_ms - stats.last_soft_recover_ms) < kDiagnosticDegradedWindowMs)) {
+            resp.diagnostic_flags |= kDiagnosticFlagDegradedAcquisition;
+        }
+        if (stats.fifo_poll_fallback_reads > 0 &&
+            sample_stall_ms_ago(stats) < kDiagnosticStallThresholdMs &&
+            stats.last_irq_event_ms > 0 &&
+            (uptime_ms - stats.last_irq_event_ms) >= kDiagnosticStallThresholdMs) {
+            resp.diagnostic_flags |= kDiagnosticFlagIrqFallbackActive;
+        }
+        resp.fifo_poll_fallback_reads = stats.fifo_poll_fallback_reads;
+        resp.soft_recover_count = stats.soft_recover_count;
+        resp.no_data_with_irq = stats.no_data_with_irq;
+        resp.no_data_without_irq = stats.no_data_without_irq;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -940,6 +1115,16 @@ private:
             ? rs485_port_->rx_overflow_count()
             : 0;
         resp.packet_overwrite_count = data_plane_.state().packet_overwrite_count;
+        resp.last_sample_seq = st.last_sample_seq;
+        resp.last_progress_ms = st.last_progress_ms;
+        resp.consecutive_no_data_reads = st.consecutive_no_data_reads;
+        resp.consecutive_sensor_errors = st.consecutive_sensor_errors;
+        resp.fifo_poll_fallback_reads = st.fifo_poll_fallback_reads;
+        resp.no_data_with_irq = st.no_data_with_irq;
+        resp.no_data_without_irq = st.no_data_without_irq;
+        resp.soft_recover_count = st.soft_recover_count;
+        resp.last_irq_event_ms = st.last_irq_event_ms;
+        resp.last_soft_recover_ms = st.last_soft_recover_ms;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -950,6 +1135,14 @@ private:
         TemperatureSample t{};
         const auto st = temperature_sensor_.read_temperature(t);
         if (st != SensorStatus::Ok) {
+            ++temperature_error_streak_;
+            if (diagnostics_ != nullptr && ((temperature_error_streak_ & (temperature_error_streak_ - 1u)) == 0u)) {
+                diagnostics_->record_fault(
+                    DiagnosticSeverity::Warn,
+                    DiagnosticEventCode::TemperatureReadFailed,
+                    current_fault_context(static_cast<int32_t>(st), static_cast<int32_t>(temperature_error_streak_))
+                );
+            }
             return build_error_response(
                 static_cast<uint8_t>(CommandType::GetTemperature),
                 map_sensor_status(st),
@@ -957,6 +1150,17 @@ private:
                 out_len
             );
         }
+
+        if (diagnostics_ != nullptr && temperature_error_streak_ > 0) {
+            diagnostics_->record(
+                DiagnosticSeverity::Info,
+                DiagnosticEventCode::TemperatureReadRecovered,
+                acquisition_.stats().last_sample_seq,
+                static_cast<int32_t>(temperature_error_streak_),
+                static_cast<int32_t>(t.raw)
+            );
+        }
+        temperature_error_streak_ = 0;
 
         GetTemperatureResponsePayload resp{};
         resp.command = static_cast<uint8_t>(CommandType::GetTemperature);
@@ -967,6 +1171,201 @@ private:
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
         return StatusCode::Ok;
+    }
+
+    StatusCode handle_get_diagnostic_info(uint8_t* out, size_t& out_len) {
+        GetDiagnosticInfoResponsePayload resp{};
+        resp.command = static_cast<uint8_t>(CommandType::GetDiagnosticInfo);
+        resp.status = static_cast<uint8_t>(StatusCode::Ok);
+        resp.uptime_ms = current_uptime_ms();
+        if (diagnostics_ != nullptr) {
+            const auto info = diagnostics_->info();
+            resp.reset_cause = info.reset_cause;
+            resp.live_usb_enabled = info.live_usb_enabled;
+            resp.stored_event_count = info.stored_event_count;
+            resp.event_capacity = info.event_capacity;
+            resp.dropped_event_count = info.dropped_event_count;
+            resp.first_event_id = info.first_event_id;
+            resp.next_event_id = info.next_event_id;
+            resp.last_error_event_id = info.last_error_event_id;
+            resp.last_error_code = info.last_error_code;
+        }
+
+        std::memcpy(out, &resp, sizeof(resp));
+        out_len = sizeof(resp);
+        return StatusCode::Ok;
+    }
+
+    StatusCode handle_get_fault_snapshot(uint8_t* out, size_t& out_len) {
+        if (diagnostics_ == nullptr || !diagnostics_->has_fault_snapshot()) {
+            return build_error_response(
+                static_cast<uint8_t>(CommandType::GetFaultSnapshot),
+                StatusCode::NoData,
+                out,
+                out_len
+            );
+        }
+
+        const auto snapshot = diagnostics_->fault_snapshot();
+
+        GetFaultSnapshotResponsePayload resp{};
+        resp.command = static_cast<uint8_t>(CommandType::GetFaultSnapshot);
+        resp.status = static_cast<uint8_t>(StatusCode::Ok);
+        resp.event_id = snapshot.event_id;
+        resp.time_ms = snapshot.time_ms;
+        resp.event_code = snapshot.code;
+        resp.severity = snapshot.severity;
+        resp.reset_cause = snapshot.reset_cause;
+        resp.sample_seq = snapshot.sample_seq;
+        resp.last_progress_ms = snapshot.last_progress_ms;
+        resp.fifo_no_data = snapshot.fifo_no_data;
+        resp.sensor_errors = snapshot.sensor_errors;
+        resp.dropped_samples = snapshot.dropped_samples;
+        resp.rx_overflow_count = snapshot.rx_overflow_count;
+        resp.packet_overwrite_count = snapshot.packet_overwrite_count;
+        resp.arg0 = snapshot.arg0;
+        resp.arg1 = snapshot.arg1;
+
+        std::memcpy(out, &resp, sizeof(resp));
+        out_len = sizeof(resp);
+        return StatusCode::Ok;
+    }
+
+    StatusCode handle_read_diagnostic_events(const uint8_t* payload,
+                                             size_t len,
+                                             uint8_t* out,
+                                             size_t& out_len) {
+        if (payload == nullptr || len < sizeof(ReadDiagnosticEventsCommandPayload)) {
+            return build_error_response(
+                static_cast<uint8_t>(CommandType::ReadDiagnosticEvents),
+                StatusCode::InvalidParam,
+                out,
+                out_len
+            );
+        }
+
+        ReadDiagnosticEventsResponseHeader header{};
+        header.command = static_cast<uint8_t>(CommandType::ReadDiagnosticEvents);
+        header.status = static_cast<uint8_t>(StatusCode::Ok);
+
+        if (diagnostics_ == nullptr) {
+            std::memcpy(out, &header, sizeof(header));
+            out_len = sizeof(header);
+            return StatusCode::Ok;
+        }
+
+        const auto* cmd = reinterpret_cast<const ReadDiagnosticEventsCommandPayload*>(payload);
+        const size_t requested_max = (cmd->max_events == 0)
+            ? kMaxDiagnosticEventsPerResponse
+            : ((cmd->max_events > kMaxDiagnosticEventsPerResponse)
+                ? kMaxDiagnosticEventsPerResponse
+                : cmd->max_events);
+
+        DiagnosticEvent events[kMaxDiagnosticEventsPerResponse]{};
+        uint32_t next_event_id = 0;
+        uint32_t first_event_id = 0;
+        const size_t copied = diagnostics_->read_events(
+            cmd->start_event_id,
+            events,
+            requested_max,
+            next_event_id,
+            first_event_id
+        );
+
+        header.returned_count = static_cast<uint8_t>(copied);
+        header.first_event_id = first_event_id;
+        header.next_event_id = next_event_id;
+
+        size_t offset = 0;
+        std::memcpy(out + offset, &header, sizeof(header));
+        offset += sizeof(header);
+
+        for (size_t i = 0; i < copied; ++i) {
+            DiagnosticEventWirePayload wire{};
+            wire.event_id = events[i].event_id;
+            wire.time_ms = events[i].time_ms;
+            wire.event_code = events[i].code;
+            wire.severity = events[i].severity;
+            wire.repeat_count = events[i].repeat_count;
+            wire.sample_seq = events[i].sample_seq;
+            wire.arg0 = events[i].arg0;
+            wire.arg1 = events[i].arg1;
+            std::memcpy(out + offset, &wire, sizeof(wire));
+            offset += sizeof(wire);
+        }
+
+        out_len = offset;
+        return StatusCode::Ok;
+    }
+
+    StatusCode handle_clear_diagnostic_events(uint8_t* out, size_t& out_len) {
+        if (diagnostics_ != nullptr) {
+            diagnostics_->clear();
+        }
+        return build_simple_ok(static_cast<uint8_t>(CommandType::ClearDiagnosticEvents), out, out_len);
+    }
+
+    StatusCode handle_get_persistent_diagnostic_record(uint8_t* out, size_t& out_len) {
+        if (diagnostics_ == nullptr) {
+            return build_error_response(
+                static_cast<uint8_t>(CommandType::GetPersistentDiagnosticRecord),
+                StatusCode::NoData,
+                out,
+                out_len
+            );
+        }
+
+        PersistentDiagnosticRecord record{};
+        if (!diagnostics_->persistent_record(record)) {
+            return build_error_response(
+                static_cast<uint8_t>(CommandType::GetPersistentDiagnosticRecord),
+                StatusCode::NoData,
+                out,
+                out_len
+            );
+        }
+
+        GetPersistentDiagnosticRecordResponsePayload resp{};
+        resp.command = static_cast<uint8_t>(CommandType::GetPersistentDiagnosticRecord);
+        resp.status = static_cast<uint8_t>(StatusCode::Ok);
+        resp.generation = record.generation;
+        resp.boot_counter = record.boot_counter;
+        resp.firmware_version = record.firmware_version;
+        resp.event_id = record.event_id;
+        resp.time_ms = record.time_ms;
+        resp.event_code = record.event_code;
+        resp.severity = record.severity;
+        resp.repeat_count = record.repeat_count;
+        resp.reset_cause = record.reset_cause;
+        resp.sample_seq = record.sample_seq;
+        resp.last_progress_ms = record.last_progress_ms;
+        resp.fifo_no_data = record.fifo_no_data;
+        resp.sensor_errors = record.sensor_errors;
+        resp.dropped_samples = record.dropped_samples;
+        resp.rx_overflow_count = record.rx_overflow_count;
+        resp.packet_overwrite_count = record.packet_overwrite_count;
+        resp.arg0 = record.arg0;
+        resp.arg1 = record.arg1;
+
+        std::memcpy(out, &resp, sizeof(resp));
+        out_len = sizeof(resp);
+        return StatusCode::Ok;
+    }
+
+    StatusCode handle_clear_persistent_diagnostic_record(uint8_t* out, size_t& out_len) {
+        if (diagnostics_ == nullptr || !diagnostics_->clear_persistent_record()) {
+            return build_error_response(
+                static_cast<uint8_t>(CommandType::ClearPersistentDiagnosticRecord),
+                StatusCode::InternalError,
+                out,
+                out_len
+            );
+        }
+        return build_simple_ok(
+            static_cast<uint8_t>(CommandType::ClearPersistentDiagnosticRecord),
+            out,
+            out_len
+        );
     }
 
     StatusCode handle_read_latest(const uint8_t* payload,
@@ -1125,7 +1524,9 @@ private:
     ITemperatureSensor& temperature_sensor_;
     IDataPlane& data_plane_;
     Rs485Port* rs485_port_ = nullptr;
+    DiagnosticStore* diagnostics_ = nullptr;
     SensorStatus init_status_ = SensorStatus::NotInitialized;
     DeferredAction deferred_action_ = DeferredAction::None;
     uint32_t deferred_baudrate_ = 0;
+    uint32_t temperature_error_streak_ = 0;
 };

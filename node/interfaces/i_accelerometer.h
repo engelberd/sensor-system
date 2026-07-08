@@ -24,6 +24,7 @@ public:
     virtual bool supports_data_ready_interrupt() const = 0;
     virtual bool consume_data_ready_event() = 0;
     virtual SensorStatus read_status(uint8_t& status) = 0;
+    virtual SensorDiagnosticSnapshot diagnostic_snapshot() const = 0;
 
     virtual SensorStatus set_offset(int32_t x, int32_t y, int32_t z) = 0;
 

@@ -8,10 +8,13 @@
 
 #include "acquisition/acquisition_engine.h"
 #include "adxl355/adxl355_driver.h"
+#include "boot_shared/boot_shared_metadata_io.h"
 #include "boot_shared/boot_runtime_api.h"
 #include "config/config_manager.h"
 #include "config/config_store_flash.h"
 #include "controller/node_controller.h"
+#include "diagnostics/diagnostic_store.h"
+#include "diagnostics/persistent_diagnostic_store.h"
 #include "runtime/core0_acquisition_loop.h"
 #include "runtime/core1_transport_loop.h"
 #include "storage/acquisition_buffer.h"
@@ -23,15 +26,15 @@
 #define SPI_PORT   spi1
 #define PIN_MISO   12
 #define PIN_CS     13
-#define PIN_SCK    10
-#define PIN_MOSI   11
-#define PIN_DRDY   14
-#define PIN_INT1   15  // preferred: FIFO watermark/overrun interrupt (INT1)
+#define PIN_SCK    14
+#define PIN_MOSI   15
+#define PIN_DRDY   11
+#define PIN_INT1   10  // preferred: FIFO watermark/overrun interrupt (INT1)
 
 #define RS485_UART uart0
 #define PIN_RS485_TX 0
 #define PIN_RS485_RX 1
-#define PIN_RS485_DE 2
+#define PIN_RS485_DE -1
 
 static constexpr uint32_t SAFE_BOOT_DELAY_MS = 5000;
 static constexpr uint32_t WATCHDOG_TIMEOUT_MS = 3000;
@@ -95,6 +98,12 @@ static void core1_entry() {
     }
 }
 
+static uint32_t packed_firmware_version() {
+    return (static_cast<uint32_t>(FW_VERSION_MAJOR) << 16) |
+           (static_cast<uint32_t>(FW_VERSION_MINOR) << 8) |
+           static_cast<uint32_t>(FW_VERSION_PATCH);
+}
+
 int main() {
     stdio_init_all();
     multicore_lockout_victim_init();
@@ -103,6 +112,13 @@ int main() {
     sleep_ms(SAFE_BOOT_DELAY_MS);
 
     printf("\n=== ADXL355 NODE START ===\n");
+
+    DiagnosticResetCause reset_cause = DiagnosticResetCause::PowerOn;
+    if (watchdog_enable_caused_reboot()) {
+        reset_cause = DiagnosticResetCause::WatchdogTimeout;
+    } else if (watchdog_caused_reboot()) {
+        reset_cause = DiagnosticResetCause::Watchdog;
+    }
 
     watchdog_enable(WATCHDOG_TIMEOUT_MS, 1);
 
@@ -114,10 +130,27 @@ int main() {
     const bool loaded = config_manager.init();
     printf("config.init() -> %s\n", loaded ? "loaded" : "defaults");
 
+    boot::BootMetadata boot_metadata{};
+    const bool boot_metadata_loaded = boot::app_boot_metadata_load(boot_metadata);
+
+    static PersistentDiagnosticStore persistent_diagnostics;
+    static DiagnosticStore diagnostics;
+    diagnostics.set_reset_cause(reset_cause);
+    diagnostics.set_persistent_store(&persistent_diagnostics);
+    diagnostics.set_boot_counter(boot_metadata_loaded ? boot_metadata.boot_counter : 0u);
+    diagnostics.set_firmware_version(packed_firmware_version());
+    diagnostics.record(
+        DiagnosticSeverity::Info,
+        DiagnosticEventCode::Boot,
+        0,
+        static_cast<int32_t>(reset_cause),
+        static_cast<int32_t>(WATCHDOG_TIMEOUT_MS)
+    );
+
     static AcquisitionBuffer<ACQ_BUFFER_CAPACITY> acq_buffer;
     static Adxl355Driver driver(SPI_PORT, PIN_CS, PIN_DRDY, PIN_INT1);
     static DataPlaneT data_plane;
-    static AcquisitionT acquisition(driver, acq_buffer, &data_plane);
+    static AcquisitionT acquisition(driver, acq_buffer, &data_plane, &diagnostics);
 
     static Rs485Port rs485_port(
         RS485_UART,
@@ -129,6 +162,11 @@ int main() {
 
     if (!rs485_port.init()) {
         printf("rs485_port.init() failed\n");
+        diagnostics.record_fault(
+            DiagnosticSeverity::Critical,
+            DiagnosticEventCode::Rs485InitFailed,
+            DiagnosticFaultContext{}
+        );
         set_status_led(false);
         while (true) {
             sleep_ms(100);
@@ -140,7 +178,8 @@ int main() {
         acquisition,
         driver,
         data_plane,
-        &rs485_port
+        &rs485_port,
+        &diagnostics
     );
 
     const bool controller_ready = controller.init();
@@ -184,6 +223,11 @@ int main() {
 
     if (!transport.init()) {
         printf("transport.init() failed\n");
+        diagnostics.record_fault(
+            DiagnosticSeverity::Critical,
+            DiagnosticEventCode::TransportInitFailed,
+            DiagnosticFaultContext{}
+        );
         set_status_led(false);
         while (true) {
             sleep_ms(100);

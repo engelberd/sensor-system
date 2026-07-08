@@ -27,6 +27,12 @@ enum class CommandType : uint8_t {
     GetTemperature = 0x41,
     GetBufferState = 0x42,
     GetStats = 0x43,
+    GetDiagnosticInfo = 0x44,
+    GetFaultSnapshot = 0x45,
+    ReadDiagnosticEvents = 0x46,
+    ClearDiagnosticEvents = 0x47,
+    GetPersistentDiagnosticRecord = 0x48,
+    ClearPersistentDiagnosticRecord = 0x49,
 
     ReadLatest = 0x50,
     ReadFromSeq = 0x51,

@@ -30,6 +30,7 @@ public:
     bool supports_data_ready_interrupt() const override;
     bool consume_data_ready_event() override;
     SensorStatus read_status(uint8_t& status) override;
+    SensorDiagnosticSnapshot diagnostic_snapshot() const override;
 
     SensorStatus set_offset(int32_t x, int32_t y, int32_t z) override;
     SensorStatus run_self_test(SelfTestResult& result) override;
@@ -52,6 +53,7 @@ private:
     int int1_pin_;
     bool initialized_ = false;
     uint8_t current_range_g_ = 2;
+    SensorDiagnosticSnapshot diag_{};
 
     static Adxl355Driver* active_instance_;
     volatile bool data_ready_flag_ = false;

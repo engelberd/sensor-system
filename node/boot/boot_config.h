@@ -33,6 +33,8 @@ static constexpr uint32_t METADATA_SECONDARY_OFFSET = METADATA_OFFSET + 0x1000u;
 // Persistent config copies stored outside application slots.
 static constexpr uint32_t CONFIG_PRIMARY_OFFSET     = METADATA_OFFSET + 0x2000u;
 static constexpr uint32_t CONFIG_SECONDARY_OFFSET   = METADATA_OFFSET + 0x3000u;
+static constexpr uint32_t DIAG_PRIMARY_OFFSET       = METADATA_OFFSET + 0x4000u;
+static constexpr uint32_t DIAG_SECONDARY_OFFSET     = METADATA_OFFSET + 0x5000u;
 
 // Flash program / erase assumptions
 static constexpr uint32_t FLASH_PAGE_SIZE   = 256u;
@@ -73,5 +75,11 @@ static_assert((CONFIG_PRIMARY_OFFSET + FLASH_SECTOR_SIZE) <= METADATA_OFFSET + M
 
 static_assert((CONFIG_SECONDARY_OFFSET + FLASH_SECTOR_SIZE) <= METADATA_OFFSET + METADATA_SIZE,
               "Secondary config copy must fit metadata region");
+
+static_assert((DIAG_PRIMARY_OFFSET + FLASH_SECTOR_SIZE) <= METADATA_OFFSET + METADATA_SIZE,
+              "Primary diagnostic copy must fit metadata region");
+
+static_assert((DIAG_SECONDARY_OFFSET + FLASH_SECTOR_SIZE) <= METADATA_OFFSET + METADATA_SIZE,
+              "Secondary diagnostic copy must fit metadata region");
 
 } // namespace boot

@@ -48,7 +48,9 @@ SAMPLE_ENCODING_RAW_XYZ24 = 0x01
 SAMPLES_PER_PACKET = 32
 
 BUFFER_STATE_FORMAT = "<BBQQIIIQQQIII"
-STATS_FORMAT = "<BBQ" + ("I" * 12)
+STATS_FORMAT_V1 = "<BBQ" + ("I" * 12)
+STATS_FORMAT_V2 = "<BBQ" + ("I" * 12) + "Q" + ("I" * 3)
+STATS_FORMAT_V3 = "<BBQ" + ("I" * 12) + "Q" + ("I" * 9)
 GRANT_BURST_RESPONSE_FORMAT = "<BBQH"
 COMMIT_READ_RESPONSE_FORMAT = "<BBQ"
 BURST_HEADER_FORMAT = "<BBIQHB"
@@ -161,6 +163,16 @@ class NodeStats:
     fifo_samples_read: int
     rx_overflow_count: int
     packet_overwrite_count: int
+    last_sample_seq: int = 0
+    last_progress_ms: int = 0
+    consecutive_no_data_reads: int = 0
+    consecutive_sensor_errors: int = 0
+    fifo_poll_fallback_reads: int = 0
+    no_data_with_irq: int = 0
+    no_data_without_irq: int = 0
+    soft_recover_count: int = 0
+    last_irq_event_ms: int = 0
+    last_soft_recover_ms: int = 0
 
 
 @dataclass
@@ -506,7 +518,35 @@ def parse_buffer_state(payload: bytes) -> BufferState:
 
 
 def parse_stats(payload: bytes) -> NodeStats:
-    values = struct.unpack(STATS_FORMAT, payload[: struct.calcsize(STATS_FORMAT)])
+    if len(payload) >= struct.calcsize(STATS_FORMAT_V3):
+        values = struct.unpack(STATS_FORMAT_V3, payload[: struct.calcsize(STATS_FORMAT_V3)])
+        return NodeStats(*values)
+
+    if len(payload) >= struct.calcsize(STATS_FORMAT_V2):
+        values = struct.unpack(STATS_FORMAT_V2, payload[: struct.calcsize(STATS_FORMAT_V2)])
+        return NodeStats(
+            command=values[0],
+            status=values[1],
+            next_sample_seq=values[2],
+            pushed_samples=values[3],
+            dropped_samples=values[4],
+            sample_buffer_overwrite_count=values[5],
+            update_calls=values[6],
+            fifo_reads=values[7],
+            fifo_no_data=values[8],
+            sensor_errors=values[9],
+            fifo_irq_events=values[10],
+            fifo_batches=values[11],
+            fifo_samples_read=values[12],
+            rx_overflow_count=values[13],
+            packet_overwrite_count=values[14],
+            last_sample_seq=values[15],
+            last_progress_ms=values[16],
+            consecutive_no_data_reads=values[17],
+            consecutive_sensor_errors=values[18],
+        )
+
+    values = struct.unpack(STATS_FORMAT_V1, payload[: struct.calcsize(STATS_FORMAT_V1)])
     return NodeStats(*values)
 
 

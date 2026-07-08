@@ -1127,6 +1127,10 @@ def print_status(nodes: Iterable[RecorderNode], started_at: float) -> None:
                 f" sensor_loss={node_session_sensor_loss(node)}"
                 f" rx_ovf={node_session_rx_overflow(node)}"
                 f" pkt_ovf={node_session_packet_overwrite(node)}"
+                f" poll={node.last_stats.fifo_poll_fallback_reads}"
+                f" recov={node.last_stats.soft_recover_count}"
+                f" nd_irq={node.last_stats.no_data_with_irq}"
+                f" nd_poll={node.last_stats.no_data_without_irq}"
                 f" totals=({node_total_sensor_loss(node)}/{node_total_rx_overflow(node)}/{node_total_packet_overwrite(node)})"
             )
         print(

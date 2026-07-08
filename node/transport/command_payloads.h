@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "common/device_identity.h"
+#include "diagnostics/diagnostic_types.h"
 #include "transport/command_types.h"
 #include "transport/status_codes.h"
 
@@ -142,6 +143,16 @@ struct GetStatusResponsePayload {
     uint32_t protocol_version;
     uint32_t firmware_version;
     uint32_t dropped_samples;
+    uint32_t uptime_ms;
+    uint64_t last_sample_seq;
+    uint32_t last_progress_ms_ago;
+    uint16_t last_error_code;
+    uint8_t reset_cause;
+    uint8_t diagnostic_flags;
+    uint32_t fifo_poll_fallback_reads;
+    uint32_t soft_recover_count;
+    uint32_t no_data_with_irq;
+    uint32_t no_data_without_irq;
 };
 
 struct GetTemperatureResponsePayload {
@@ -183,6 +194,101 @@ struct GetStatsResponsePayload {
     uint32_t fifo_samples_read;
     uint32_t rx_overflow_count;
     uint32_t packet_overwrite_count;
+    uint64_t last_sample_seq;
+    uint32_t last_progress_ms;
+    uint32_t consecutive_no_data_reads;
+    uint32_t consecutive_sensor_errors;
+    uint32_t fifo_poll_fallback_reads;
+    uint32_t no_data_with_irq;
+    uint32_t no_data_without_irq;
+    uint32_t soft_recover_count;
+    uint32_t last_irq_event_ms;
+    uint32_t last_soft_recover_ms;
+};
+
+struct GetDiagnosticInfoResponsePayload {
+    uint8_t command;
+    uint8_t status;
+    uint32_t uptime_ms;
+    uint8_t reset_cause;
+    uint8_t live_usb_enabled;
+    uint16_t stored_event_count;
+    uint16_t event_capacity;
+    uint32_t dropped_event_count;
+    uint32_t first_event_id;
+    uint32_t next_event_id;
+    uint32_t last_error_event_id;
+    uint16_t last_error_code;
+};
+
+struct GetFaultSnapshotResponsePayload {
+    uint8_t command;
+    uint8_t status;
+    uint32_t event_id;
+    uint32_t time_ms;
+    uint16_t event_code;
+    uint8_t severity;
+    uint8_t reset_cause;
+    uint64_t sample_seq;
+    uint32_t last_progress_ms;
+    uint32_t fifo_no_data;
+    uint32_t sensor_errors;
+    uint32_t dropped_samples;
+    uint32_t rx_overflow_count;
+    uint32_t packet_overwrite_count;
+    int32_t arg0;
+    int32_t arg1;
+};
+
+struct GetPersistentDiagnosticRecordResponsePayload {
+    uint8_t command;
+    uint8_t status;
+    uint32_t generation;
+    uint32_t boot_counter;
+    uint32_t firmware_version;
+    uint32_t event_id;
+    uint32_t time_ms;
+    uint16_t event_code;
+    uint8_t severity;
+    uint8_t repeat_count;
+    uint8_t reset_cause;
+    uint8_t reserved0;
+    uint16_t reserved1;
+    uint64_t sample_seq;
+    uint32_t last_progress_ms;
+    uint32_t fifo_no_data;
+    uint32_t sensor_errors;
+    uint32_t dropped_samples;
+    uint32_t rx_overflow_count;
+    uint32_t packet_overwrite_count;
+    int32_t arg0;
+    int32_t arg1;
+};
+
+struct ReadDiagnosticEventsCommandPayload {
+    uint8_t command;
+    uint32_t start_event_id;
+    uint8_t max_events;
+};
+
+struct DiagnosticEventWirePayload {
+    uint32_t event_id;
+    uint32_t time_ms;
+    uint16_t event_code;
+    uint8_t severity;
+    uint8_t repeat_count;
+    uint64_t sample_seq;
+    int32_t arg0;
+    int32_t arg1;
+};
+
+struct ReadDiagnosticEventsResponseHeader {
+    uint8_t command;
+    uint8_t status;
+    uint8_t returned_count;
+    uint8_t reserved;
+    uint32_t first_event_id;
+    uint32_t next_event_id;
 };
 
 struct ReadSamplesResponseHeader {

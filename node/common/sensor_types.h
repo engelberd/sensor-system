@@ -33,6 +33,18 @@ struct TemperatureSample {
     float celsius = 0.0f;
 };
 
+enum : uint8_t {
+    SENSOR_DIAG_FLAG_FIFO_EMPTY_ENTRY = 0x01,
+    SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH = 0x02,
+};
+
+struct SensorDiagnosticSnapshot {
+    uint8_t last_status_reg = 0;
+    uint8_t last_fifo_entries = 0;
+    uint8_t last_fifo_read_status = 0;
+    uint8_t flags = 0;
+};
+
 struct SelfTestResult {
     AccelSample baseline;
     AccelSample st1;
