@@ -153,6 +153,15 @@ struct GetStatusResponsePayload {
     uint32_t soft_recover_count;
     uint32_t no_data_with_irq;
     uint32_t no_data_without_irq;
+    uint32_t irq_int1_events;
+    uint32_t irq_drdy_events;
+    uint32_t gpio_int1_edges;
+    uint32_t gpio_drdy_edges;
+    uint32_t debug_config_snapshot;
+    uint32_t irq_status_not_full;
+    uint32_t irq_fifo_entries_lt_3;
+    uint32_t irq_fifo_entries_lt_watermark;
+    uint32_t debug_irq_snapshot;
 };
 
 struct GetTemperatureResponsePayload {
@@ -192,6 +201,8 @@ struct GetStatsResponsePayload {
     uint32_t fifo_irq_events;
     uint32_t fifo_batches;
     uint32_t fifo_samples_read;
+    uint32_t fifo_int1_events;
+    uint32_t fifo_drdy_events;
     uint32_t rx_overflow_count;
     uint32_t packet_overwrite_count;
     uint64_t last_sample_seq;
@@ -204,6 +215,13 @@ struct GetStatsResponsePayload {
     uint32_t soft_recover_count;
     uint32_t last_irq_event_ms;
     uint32_t last_soft_recover_ms;
+    uint32_t gpio_int1_edges;
+    uint32_t gpio_drdy_edges;
+    uint32_t debug_config_snapshot;
+    uint32_t irq_status_not_full;
+    uint32_t irq_fifo_entries_lt_3;
+    uint32_t irq_fifo_entries_lt_watermark;
+    uint32_t debug_irq_snapshot;
 };
 
 struct GetDiagnosticInfoResponsePayload {
@@ -236,6 +254,10 @@ struct GetFaultSnapshotResponsePayload {
     uint32_t dropped_samples;
     uint32_t rx_overflow_count;
     uint32_t packet_overwrite_count;
+    uint32_t debug_gpio_int1_edges;
+    uint32_t debug_gpio_drdy_edges;
+    uint32_t debug_config_snapshot;
+    uint32_t debug_irq_snapshot;
     int32_t arg0;
     int32_t arg1;
 };
@@ -261,6 +283,10 @@ struct GetPersistentDiagnosticRecordResponsePayload {
     uint32_t dropped_samples;
     uint32_t rx_overflow_count;
     uint32_t packet_overwrite_count;
+    uint32_t debug_gpio_int1_edges;
+    uint32_t debug_gpio_drdy_edges;
+    uint32_t debug_config_snapshot;
+    uint32_t debug_irq_snapshot;
     int32_t arg0;
     int32_t arg1;
 };

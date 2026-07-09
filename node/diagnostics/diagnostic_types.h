@@ -66,6 +66,10 @@ struct DiagnosticFaultContext {
     uint32_t dropped_samples = 0;
     uint32_t rx_overflow_count = 0;
     uint32_t packet_overwrite_count = 0;
+    uint32_t debug_gpio_int1_edges = 0;
+    uint32_t debug_gpio_drdy_edges = 0;
+    uint32_t debug_config_snapshot = 0;
+    uint32_t debug_irq_snapshot = 0;
     int32_t arg0 = 0;
     int32_t arg1 = 0;
 };
@@ -83,6 +87,10 @@ struct DiagnosticFaultSnapshot {
     uint32_t dropped_samples = 0;
     uint32_t rx_overflow_count = 0;
     uint32_t packet_overwrite_count = 0;
+    uint32_t debug_gpio_int1_edges = 0;
+    uint32_t debug_gpio_drdy_edges = 0;
+    uint32_t debug_config_snapshot = 0;
+    uint32_t debug_irq_snapshot = 0;
     int32_t arg0 = 0;
     int32_t arg1 = 0;
 };
@@ -100,7 +108,7 @@ struct DiagnosticInfoSnapshot {
 };
 
 static constexpr uint32_t PERSISTENT_DIAGNOSTIC_MAGIC = 0x47414944; // DIAG
-static constexpr uint16_t PERSISTENT_DIAGNOSTIC_VERSION = 1;
+static constexpr uint16_t PERSISTENT_DIAGNOSTIC_VERSION = 3;
 
 #pragma pack(push, 1)
 struct PersistentDiagnosticRecord {
@@ -123,6 +131,10 @@ struct PersistentDiagnosticRecord {
     uint32_t dropped_samples = 0;
     uint32_t rx_overflow_count = 0;
     uint32_t packet_overwrite_count = 0;
+    uint32_t debug_gpio_int1_edges = 0;
+    uint32_t debug_gpio_drdy_edges = 0;
+    uint32_t debug_config_snapshot = 0;
+    uint32_t debug_irq_snapshot = 0;
     int32_t arg0 = 0;
     int32_t arg1 = 0;
     uint32_t crc32 = 0;

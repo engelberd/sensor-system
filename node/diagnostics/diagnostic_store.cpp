@@ -96,7 +96,7 @@ void DiagnosticStore::record_fault(DiagnosticSeverity severity,
     record_internal(severity, code, &context, emitted, should_log_usb);
     if (should_log_usb) {
         std::printf(
-            "[DIAG][%lu ms][%s][%s] event_id=%lu seq=%llu last_progress_ms=%lu fifo_no_data=%lu sensor_errors=%lu dropped=%lu rx_overflow=%lu packet_overwrite=%lu arg0=%ld arg1=%ld\n",
+            "[DIAG][%lu ms][%s][%s] event_id=%lu seq=%llu last_progress_ms=%lu fifo_no_data=%lu sensor_errors=%lu dropped=%lu rx_overflow=%lu packet_overwrite=%lu gpio_int1_edges=%lu gpio_drdy_edges=%lu debug_cfg=0x%08lx debug_irq=0x%08lx arg0=%ld arg1=%ld\n",
             static_cast<unsigned long>(emitted.time_ms),
             severity_name(severity),
             event_name(code),
@@ -108,6 +108,10 @@ void DiagnosticStore::record_fault(DiagnosticSeverity severity,
             static_cast<unsigned long>(context.dropped_samples),
             static_cast<unsigned long>(context.rx_overflow_count),
             static_cast<unsigned long>(context.packet_overwrite_count),
+            static_cast<unsigned long>(context.debug_gpio_int1_edges),
+            static_cast<unsigned long>(context.debug_gpio_drdy_edges),
+            static_cast<unsigned long>(context.debug_config_snapshot),
+            static_cast<unsigned long>(context.debug_irq_snapshot),
             static_cast<long>(context.arg0),
             static_cast<long>(context.arg1)
         );
@@ -384,6 +388,10 @@ void DiagnosticStore::record_internal(DiagnosticSeverity severity,
         last_fault_.dropped_samples = fault_context->dropped_samples;
         last_fault_.rx_overflow_count = fault_context->rx_overflow_count;
         last_fault_.packet_overwrite_count = fault_context->packet_overwrite_count;
+        last_fault_.debug_gpio_int1_edges = fault_context->debug_gpio_int1_edges;
+        last_fault_.debug_gpio_drdy_edges = fault_context->debug_gpio_drdy_edges;
+        last_fault_.debug_config_snapshot = fault_context->debug_config_snapshot;
+        last_fault_.debug_irq_snapshot = fault_context->debug_irq_snapshot;
         last_fault_.arg0 = fault_context->arg0;
         last_fault_.arg1 = fault_context->arg1;
         has_fault_snapshot_ = true;
@@ -406,6 +414,10 @@ void DiagnosticStore::record_internal(DiagnosticSeverity severity,
         persistent.dropped_samples = fault_context->dropped_samples;
         persistent.rx_overflow_count = fault_context->rx_overflow_count;
         persistent.packet_overwrite_count = fault_context->packet_overwrite_count;
+        persistent.debug_gpio_int1_edges = fault_context->debug_gpio_int1_edges;
+        persistent.debug_gpio_drdy_edges = fault_context->debug_gpio_drdy_edges;
+        persistent.debug_config_snapshot = fault_context->debug_config_snapshot;
+        persistent.debug_irq_snapshot = fault_context->debug_irq_snapshot;
         persistent.arg0 = fault_context->arg0;
         persistent.arg1 = fault_context->arg1;
         persistent_record_written_ = persistent_store_->save(persistent);

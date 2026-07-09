@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from host import host_bootloader as hb
@@ -205,6 +207,30 @@ class BootloaderSim:
 
 
 class HostBootloaderTests(unittest.TestCase):
+    def _write_system_config(self, root: Path, *, port: str = "/dev/ttyTEST0") -> Path:
+        payload = {
+            "system": {"name": "test"},
+            "storage": {"root_dir": str(root / "runs")},
+            "supervisor": {
+                "status_file": str(root / "supervisor-status.json"),
+                "event_log": str(root / "supervisor-events.jsonl"),
+                "channel_runtime_dir": str(root / "channels"),
+            },
+            "channels": [
+                {
+                    "name": "line-e",
+                    "label": "Linia E",
+                    "enabled": True,
+                    "port": port,
+                    "baud": 115200,
+                    "nodes": [{"id": 1, "enabled": True}],
+                }
+            ],
+        }
+        path = root / "system_config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
     def test_transport_codec_resync(self) -> None:
         payload = b"\x01\x02\x03"
         encoded = hb.TransportCodec.encode(
@@ -262,6 +288,62 @@ class HostBootloaderTests(unittest.TestCase):
         client = hb.UpdateClient(fake)
         hb.send_hello(client, 1, timeout_s=0.2)
         hb.abort_update(client, 1, timeout_s=0.2)
+
+    def test_detect_runtime_conflict_when_supervisor_reports_running(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            system_config = self._write_system_config(root)
+            supervisor_status = {
+                "channels": [
+                    {"name": "line-e", "running": True},
+                ]
+            }
+            (root / "supervisor-status.json").write_text(json.dumps(supervisor_status), encoding="utf-8")
+
+            conflict = hb.detect_runtime_conflict("/dev/ttyTEST0", system_config)
+
+            self.assertIsNotNone(conflict)
+            assert conflict is not None
+            self.assertIn("line-e", conflict)
+            self.assertIn("recording", conflict)
+
+    def test_detect_runtime_conflict_ignores_stale_recorder_status(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            system_config = self._write_system_config(root)
+            channels_dir = root / "channels"
+            channels_dir.mkdir(parents=True, exist_ok=True)
+            stale_status = {
+                "channel_name": "line-e",
+                "port": "/dev/ttyTEST0",
+                "updated_utc": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+                "nodes": [{"node_id": 1}],
+            }
+            (channels_dir / "line-e.status.json").write_text(json.dumps(stale_status), encoding="utf-8")
+
+            conflict = hb.detect_runtime_conflict("/dev/ttyTEST0", system_config)
+
+            self.assertIsNone(conflict)
+
+    def test_detect_runtime_conflict_when_fresh_channel_status_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            system_config = self._write_system_config(root)
+            channels_dir = root / "channels"
+            channels_dir.mkdir(parents=True, exist_ok=True)
+            fresh_status = {
+                "channel_name": "line-e",
+                "port": "/dev/ttyTEST0",
+                "updated_utc": datetime.now(timezone.utc).isoformat(),
+                "nodes": [{"node_id": 1}],
+            }
+            (channels_dir / "line-e.status.json").write_text(json.dumps(fresh_status), encoding="utf-8")
+
+            conflict = hb.detect_runtime_conflict("/dev/ttyTEST0", system_config)
+
+            self.assertIsNotNone(conflict)
+            assert conflict is not None
+            self.assertIn("active runtime status", conflict)
 
 
 if __name__ == "__main__":

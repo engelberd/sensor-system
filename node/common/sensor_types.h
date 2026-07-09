@@ -36,6 +36,8 @@ struct TemperatureSample {
 enum : uint8_t {
     SENSOR_DIAG_FLAG_FIFO_EMPTY_ENTRY = 0x01,
     SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH = 0x02,
+    SENSOR_DIAG_FLAG_INT1_EVENT = 0x04,
+    SENSOR_DIAG_FLAG_DRDY_EVENT = 0x08,
 };
 
 struct SensorDiagnosticSnapshot {
@@ -43,6 +45,12 @@ struct SensorDiagnosticSnapshot {
     uint8_t last_fifo_entries = 0;
     uint8_t last_fifo_read_status = 0;
     uint8_t flags = 0;
+    uint8_t last_int_map = 0;
+    uint8_t last_fifo_samples = 0;
+    uint8_t last_int1_level = 0;
+    uint8_t last_drdy_level = 0;
+    uint32_t int1_gpio_edges = 0;
+    uint32_t drdy_gpio_edges = 0;
 };
 
 struct SelfTestResult {

@@ -69,9 +69,16 @@ GET_CONFIG_FORMAT = "<BBBHb"  # placeholder, replaced below
 GET_STATUS_FORMAT = "<BBBBHIBBI"  # placeholder, replaced below
 GET_STATUS_FORMAT_V2 = "<BBBBHBIIIIQIHBB"
 GET_STATUS_FORMAT_V3 = "<BBBBHBIIIIQIHBBIIII"
+GET_STATUS_FORMAT_V4 = "<BBBBHBIIIIQIHBBIIIIII"
+GET_STATUS_FORMAT_V5 = GET_STATUS_FORMAT_V4 + "III"
+GET_STATUS_FORMAT_V6 = GET_STATUS_FORMAT_V5 + "IIII"
 GET_DIAGNOSTIC_INFO_FORMAT = "<BBIBBHHIIIIH"
 GET_FAULT_SNAPSHOT_FORMAT = "<BBIIHBBQIIIIIIii"
+GET_FAULT_SNAPSHOT_FORMAT_V2 = GET_FAULT_SNAPSHOT_FORMAT + "III"
+GET_FAULT_SNAPSHOT_FORMAT_V3 = GET_FAULT_SNAPSHOT_FORMAT_V2 + "I"
 GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT = "<BBIIIIIHBBBBHQIIIIIIii"
+GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2 = GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT + "III"
+GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3 = GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2 + "I"
 READ_DIAGNOSTIC_EVENTS_REQUEST_FORMAT = "<BIB"
 READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT = "<BBBBII"
 READ_DIAGNOSTIC_EVENT_FORMAT = "<IIHBBQii"
@@ -224,6 +231,15 @@ class StatusView:
     soft_recover_count: int = 0
     no_data_with_irq: int = 0
     no_data_without_irq: int = 0
+    irq_int1_events: int = 0
+    irq_drdy_events: int = 0
+    gpio_int1_edges: int = 0
+    gpio_drdy_edges: int = 0
+    debug_config_snapshot: int = 0
+    irq_status_not_full: int = 0
+    irq_fifo_entries_lt_3: int = 0
+    irq_fifo_entries_lt_watermark: int = 0
+    debug_irq_snapshot: int = 0
 
 
 @dataclass
@@ -254,8 +270,12 @@ class FaultSnapshotView:
     dropped_samples: int
     rx_overflow_count: int
     packet_overwrite_count: int
-    arg0: int
-    arg1: int
+    debug_gpio_int1_edges: int = 0
+    debug_gpio_drdy_edges: int = 0
+    debug_config_snapshot: int = 0
+    debug_irq_snapshot: int = 0
+    arg0: int = 0
+    arg1: int = 0
 
 
 @dataclass
@@ -276,8 +296,12 @@ class PersistentDiagnosticRecordView:
     dropped_samples: int
     rx_overflow_count: int
     packet_overwrite_count: int
-    arg0: int
-    arg1: int
+    debug_gpio_int1_edges: int = 0
+    debug_gpio_drdy_edges: int = 0
+    debug_config_snapshot: int = 0
+    debug_irq_snapshot: int = 0
+    arg0: int = 0
+    arg1: int = 0
 
 
 @dataclass
@@ -546,6 +570,88 @@ def parse_config_view(payload: bytes) -> ConfigView:
 
 
 def parse_status_view(payload: bytes) -> StatusView:
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V6):
+        values = struct.unpack(GET_STATUS_FORMAT_V6, payload[: struct.calcsize(GET_STATUS_FORMAT_V6)])
+        return StatusView(
+            node_id=values[2],
+            node_state=values[3],
+            odr_hz=values[4],
+            range_g=values[5],
+            protocol_version=values[6],
+            firmware_version=values[7],
+            dropped_samples=values[8],
+            uptime_ms=values[9],
+            last_sample_seq=values[10],
+            last_progress_ms_ago=values[11],
+            last_error_code=values[12],
+            reset_cause=values[13],
+            diagnostic_flags=values[14],
+            fifo_poll_fallback_reads=values[15],
+            soft_recover_count=values[16],
+            no_data_with_irq=values[17],
+            no_data_without_irq=values[18],
+            irq_int1_events=values[19],
+            irq_drdy_events=values[20],
+            gpio_int1_edges=values[21],
+            gpio_drdy_edges=values[22],
+            debug_config_snapshot=values[23],
+            irq_status_not_full=values[24],
+            irq_fifo_entries_lt_3=values[25],
+            irq_fifo_entries_lt_watermark=values[26],
+            debug_irq_snapshot=values[27],
+        )
+
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V5):
+        values = struct.unpack(GET_STATUS_FORMAT_V5, payload[: struct.calcsize(GET_STATUS_FORMAT_V5)])
+        return StatusView(
+            node_id=values[2],
+            node_state=values[3],
+            odr_hz=values[4],
+            range_g=values[5],
+            protocol_version=values[6],
+            firmware_version=values[7],
+            dropped_samples=values[8],
+            uptime_ms=values[9],
+            last_sample_seq=values[10],
+            last_progress_ms_ago=values[11],
+            last_error_code=values[12],
+            reset_cause=values[13],
+            diagnostic_flags=values[14],
+            fifo_poll_fallback_reads=values[15],
+            soft_recover_count=values[16],
+            no_data_with_irq=values[17],
+            no_data_without_irq=values[18],
+            irq_int1_events=values[19],
+            irq_drdy_events=values[20],
+            gpio_int1_edges=values[21],
+            gpio_drdy_edges=values[22],
+            debug_config_snapshot=values[23],
+        )
+
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V4):
+        values = struct.unpack(GET_STATUS_FORMAT_V4, payload[: struct.calcsize(GET_STATUS_FORMAT_V4)])
+        return StatusView(
+            node_id=values[2],
+            node_state=values[3],
+            odr_hz=values[4],
+            range_g=values[5],
+            protocol_version=values[6],
+            firmware_version=values[7],
+            dropped_samples=values[8],
+            uptime_ms=values[9],
+            last_sample_seq=values[10],
+            last_progress_ms_ago=values[11],
+            last_error_code=values[12],
+            reset_cause=values[13],
+            diagnostic_flags=values[14],
+            fifo_poll_fallback_reads=values[15],
+            soft_recover_count=values[16],
+            no_data_with_irq=values[17],
+            no_data_without_irq=values[18],
+            irq_int1_events=values[19],
+            irq_drdy_events=values[20],
+        )
+
     if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V3):
         values = struct.unpack(GET_STATUS_FORMAT_V3, payload[: struct.calcsize(GET_STATUS_FORMAT_V3)])
         return StatusView(
@@ -618,6 +724,57 @@ def parse_diagnostic_info_view(payload: bytes) -> DiagnosticInfoView:
 
 
 def parse_fault_snapshot_view(payload: bytes) -> FaultSnapshotView:
+    if len(payload) >= struct.calcsize(GET_FAULT_SNAPSHOT_FORMAT_V3):
+        values = struct.unpack(
+            GET_FAULT_SNAPSHOT_FORMAT_V3,
+            payload[: struct.calcsize(GET_FAULT_SNAPSHOT_FORMAT_V3)],
+        )
+        return FaultSnapshotView(
+            event_id=values[2],
+            time_ms=values[3],
+            event_code=values[4],
+            severity=values[5],
+            reset_cause=values[6],
+            sample_seq=values[7],
+            last_progress_ms=values[8],
+            fifo_no_data=values[9],
+            sensor_errors=values[10],
+            dropped_samples=values[11],
+            rx_overflow_count=values[12],
+            packet_overwrite_count=values[13],
+            arg0=values[14],
+            arg1=values[15],
+            debug_gpio_int1_edges=values[16],
+            debug_gpio_drdy_edges=values[17],
+            debug_config_snapshot=values[18],
+            debug_irq_snapshot=values[19],
+        )
+
+    if len(payload) >= struct.calcsize(GET_FAULT_SNAPSHOT_FORMAT_V2):
+        values = struct.unpack(
+            GET_FAULT_SNAPSHOT_FORMAT_V2,
+            payload[: struct.calcsize(GET_FAULT_SNAPSHOT_FORMAT_V2)],
+        )
+        return FaultSnapshotView(
+            event_id=values[2],
+            time_ms=values[3],
+            event_code=values[4],
+            severity=values[5],
+            reset_cause=values[6],
+            sample_seq=values[7],
+            last_progress_ms=values[8],
+            fifo_no_data=values[9],
+            sensor_errors=values[10],
+            dropped_samples=values[11],
+            rx_overflow_count=values[12],
+            packet_overwrite_count=values[13],
+            arg0=values[14],
+            arg1=values[15],
+            debug_gpio_int1_edges=values[16],
+            debug_gpio_drdy_edges=values[17],
+            debug_config_snapshot=values[18],
+        )
+
     values = struct.unpack(
         GET_FAULT_SNAPSHOT_FORMAT,
         payload[: struct.calcsize(GET_FAULT_SNAPSHOT_FORMAT)],
@@ -641,6 +798,65 @@ def parse_fault_snapshot_view(payload: bytes) -> FaultSnapshotView:
 
 
 def parse_persistent_diagnostic_record_view(payload: bytes) -> PersistentDiagnosticRecordView:
+    if len(payload) >= struct.calcsize(GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3):
+        values = struct.unpack(
+            GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3,
+            payload[: struct.calcsize(GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3)],
+        )
+        return PersistentDiagnosticRecordView(
+            generation=values[2],
+            boot_counter=values[3],
+            firmware_version=values[4],
+            event_id=values[5],
+            time_ms=values[6],
+            event_code=values[7],
+            severity=values[8],
+            repeat_count=values[9],
+            reset_cause=values[10],
+            sample_seq=values[13],
+            last_progress_ms=values[14],
+            fifo_no_data=values[15],
+            sensor_errors=values[16],
+            dropped_samples=values[17],
+            rx_overflow_count=values[18],
+            packet_overwrite_count=values[19],
+            arg0=values[20],
+            arg1=values[21],
+            debug_gpio_int1_edges=values[22],
+            debug_gpio_drdy_edges=values[23],
+            debug_config_snapshot=values[24],
+            debug_irq_snapshot=values[25],
+        )
+
+    if len(payload) >= struct.calcsize(GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2):
+        values = struct.unpack(
+            GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2,
+            payload[: struct.calcsize(GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2)],
+        )
+        return PersistentDiagnosticRecordView(
+            generation=values[2],
+            boot_counter=values[3],
+            firmware_version=values[4],
+            event_id=values[5],
+            time_ms=values[6],
+            event_code=values[7],
+            severity=values[8],
+            repeat_count=values[9],
+            reset_cause=values[10],
+            sample_seq=values[13],
+            last_progress_ms=values[14],
+            fifo_no_data=values[15],
+            sensor_errors=values[16],
+            dropped_samples=values[17],
+            rx_overflow_count=values[18],
+            packet_overwrite_count=values[19],
+            arg0=values[20],
+            arg1=values[21],
+            debug_gpio_int1_edges=values[22],
+            debug_gpio_drdy_edges=values[23],
+            debug_config_snapshot=values[24],
+        )
+
     values = struct.unpack(
         GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT,
         payload[: struct.calcsize(GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT)],
@@ -902,6 +1118,8 @@ def print_config(config: ConfigView) -> None:
 
 def print_status(status: StatusView) -> None:
     firmware_version = format_firmware_version(status.firmware_version)
+    debug = decode_debug_config_snapshot(status.debug_config_snapshot)
+    irq_debug = decode_irq_debug_snapshot(status.debug_irq_snapshot)
     print("Status:")
     print(f"  node_id          : {status.node_id}")
     print(f"  node_state       : {status.node_state}")
@@ -922,6 +1140,21 @@ def print_status(status: StatusView) -> None:
     print(f"  soft_recovers    : {status.soft_recover_count}")
     print(f"  no_data_irq      : {status.no_data_with_irq}")
     print(f"  no_data_poll     : {status.no_data_without_irq}")
+    print(f"  irq_int1_events  : {status.irq_int1_events}")
+    print(f"  irq_drdy_events  : {status.irq_drdy_events}")
+    print(f"  gpio_int1_edges  : {status.gpio_int1_edges}")
+    print(f"  gpio_drdy_edges  : {status.gpio_drdy_edges}")
+    print(f"  int_map          : 0x{debug['int_map']:02X}")
+    print(f"  fifo_samples     : {debug['fifo_samples']}")
+    print(f"  int1_level       : {debug['int1_level']}")
+    print(f"  drdy_level       : {debug['drdy_level']}")
+    print(f"  irq_status_nf    : {status.irq_status_not_full}")
+    print(f"  irq_entries_lt3  : {status.irq_fifo_entries_lt_3}")
+    print(f"  irq_entries_ltwm : {status.irq_fifo_entries_lt_watermark}")
+    print(f"  irq_last_status  : 0x{irq_debug['status_reg']:02X}")
+    print(f"  irq_last_entries : {irq_debug['fifo_entries']}")
+    print(f"  irq_last_wm      : {irq_debug['watermark']}")
+    print(f"  irq_last_flags   : {format_irq_debug_flags(irq_debug['flags'])}")
 
 
 def format_reset_cause(reset_cause: int) -> str:
@@ -956,6 +1189,39 @@ def format_firmware_version(raw_version: int) -> str:
         f"{(raw_version >> 8) & 0xFF}."
         f"{raw_version & 0xFF}"
     )
+
+
+def decode_debug_config_snapshot(raw_value: int) -> dict[str, int]:
+    raw = raw_value & 0xFFFFFFFF
+    return {
+        "int_map": raw & 0xFF,
+        "fifo_samples": (raw >> 8) & 0xFF,
+        "int1_level": (raw >> 16) & 0xFF,
+        "drdy_level": (raw >> 24) & 0xFF,
+    }
+
+
+def decode_irq_debug_snapshot(raw_value: int) -> dict[str, int]:
+    raw = raw_value & 0xFFFFFFFF
+    return {
+        "status_reg": raw & 0xFF,
+        "fifo_entries": (raw >> 8) & 0xFF,
+        "watermark": (raw >> 16) & 0xFF,
+        "flags": (raw >> 24) & 0xFF,
+    }
+
+
+def format_irq_debug_flags(flags: int) -> str:
+    names: list[str] = []
+    if flags & 0x01:
+        names.append("status_fifo_full")
+    if flags & 0x02:
+        names.append("status_fifo_ovr")
+    if flags & 0x04:
+        names.append("entries_lt3")
+    if flags & 0x08:
+        names.append("entries_lt_watermark")
+    return ",".join(names) if names else "none"
 
 
 def format_diagnostic_severity(severity: int) -> str:
@@ -1008,6 +1274,8 @@ def decode_sensor_snapshot_arg(arg0: int) -> dict[str, object]:
         "irq_seen": bool(flags & 0x80),
         "empty_entry": bool(flags & 0x01),
         "axis_mismatch": bool(flags & 0x02),
+        "int1_event": bool(flags & 0x04),
+        "drdy_event": bool(flags & 0x08),
     }
 
 
@@ -1028,6 +1296,8 @@ def format_diagnostic_detail(event_code: int, arg0: int, arg1: int) -> str | Non
             f"irq_seen={snapshot['irq_seen']}",
             f"empty_entry={snapshot['empty_entry']}",
             f"axis_mismatch={snapshot['axis_mismatch']}",
+            f"int1_event={snapshot['int1_event']}",
+            f"drdy_event={snapshot['drdy_event']}",
         ]
         if event_code == 32:
             parts.append(f"dropped_counter={arg1}")
@@ -1060,6 +1330,8 @@ def print_diagnostic_info(info: DiagnosticInfoView) -> None:
 
 
 def print_fault_snapshot(snapshot: FaultSnapshotView) -> None:
+    debug = decode_debug_config_snapshot(snapshot.debug_config_snapshot)
+    irq_debug = decode_irq_debug_snapshot(snapshot.debug_irq_snapshot)
     print("Fault Snapshot:")
     print(f"  event_id               : {snapshot.event_id}")
     print(f"  time_ms                : {snapshot.time_ms}")
@@ -1073,6 +1345,16 @@ def print_fault_snapshot(snapshot: FaultSnapshotView) -> None:
     print(f"  dropped_samples        : {snapshot.dropped_samples}")
     print(f"  rx_overflow_count      : {snapshot.rx_overflow_count}")
     print(f"  packet_overwrite_count : {snapshot.packet_overwrite_count}")
+    print(f"  debug_gpio_int1_edges  : {snapshot.debug_gpio_int1_edges}")
+    print(f"  debug_gpio_drdy_edges  : {snapshot.debug_gpio_drdy_edges}")
+    print(f"  debug_int_map          : 0x{debug['int_map']:02X}")
+    print(f"  debug_fifo_samples     : {debug['fifo_samples']}")
+    print(f"  debug_int1_level       : {debug['int1_level']}")
+    print(f"  debug_drdy_level       : {debug['drdy_level']}")
+    print(f"  debug_irq_status       : 0x{irq_debug['status_reg']:02X}")
+    print(f"  debug_irq_entries      : {irq_debug['fifo_entries']}")
+    print(f"  debug_irq_watermark    : {irq_debug['watermark']}")
+    print(f"  debug_irq_flags        : {format_irq_debug_flags(irq_debug['flags'])}")
     print(f"  arg0                   : {snapshot.arg0}")
     print(f"  arg1                   : {snapshot.arg1}")
     detail = format_diagnostic_detail(snapshot.event_code, snapshot.arg0, snapshot.arg1)
@@ -1081,6 +1363,8 @@ def print_fault_snapshot(snapshot: FaultSnapshotView) -> None:
 
 
 def print_persistent_diagnostic_record(record: PersistentDiagnosticRecordView) -> None:
+    debug = decode_debug_config_snapshot(record.debug_config_snapshot)
+    irq_debug = decode_irq_debug_snapshot(record.debug_irq_snapshot)
     print("Persistent Diagnostic Record:")
     print(f"  generation             : {record.generation}")
     print(f"  boot_counter           : {record.boot_counter}")
@@ -1098,6 +1382,16 @@ def print_persistent_diagnostic_record(record: PersistentDiagnosticRecordView) -
     print(f"  dropped_samples        : {record.dropped_samples}")
     print(f"  rx_overflow_count      : {record.rx_overflow_count}")
     print(f"  packet_overwrite_count : {record.packet_overwrite_count}")
+    print(f"  debug_gpio_int1_edges  : {record.debug_gpio_int1_edges}")
+    print(f"  debug_gpio_drdy_edges  : {record.debug_gpio_drdy_edges}")
+    print(f"  debug_int_map          : 0x{debug['int_map']:02X}")
+    print(f"  debug_fifo_samples     : {debug['fifo_samples']}")
+    print(f"  debug_int1_level       : {debug['int1_level']}")
+    print(f"  debug_drdy_level       : {debug['drdy_level']}")
+    print(f"  debug_irq_status       : 0x{irq_debug['status_reg']:02X}")
+    print(f"  debug_irq_entries      : {irq_debug['fifo_entries']}")
+    print(f"  debug_irq_watermark    : {irq_debug['watermark']}")
+    print(f"  debug_irq_flags        : {format_irq_debug_flags(irq_debug['flags'])}")
     print(f"  arg0                   : {record.arg0}")
     print(f"  arg1                   : {record.arg1}")
     detail = format_diagnostic_detail(record.event_code, record.arg0, record.arg1)

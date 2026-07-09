@@ -17,13 +17,15 @@ public:
     virtual SensorStatus read_fifo_samples(AccelSample* samples,
                                            size_t max_samples,
                                            size_t& samples_read) = 0;
+    virtual SensorStatus read_fifo_entries(uint8_t& entries) = 0;
 
     virtual bool supports_fifo() const = 0;
     virtual SensorStatus configure_fifo(uint8_t watermark) = 0;
 
     virtual bool supports_data_ready_interrupt() const = 0;
-    virtual bool consume_data_ready_event() = 0;
+    virtual uint8_t consume_data_ready_event_sources() = 0;
     virtual SensorStatus read_status(uint8_t& status) = 0;
+    virtual SensorStatus refresh_diagnostic_snapshot() = 0;
     virtual SensorDiagnosticSnapshot diagnostic_snapshot() const = 0;
 
     virtual SensorStatus set_offset(int32_t x, int32_t y, int32_t z) = 0;

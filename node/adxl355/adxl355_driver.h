@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "hardware/sync.h"
 #include "hardware/spi.h"
 
 #include "common/sensor_types.h"
@@ -28,8 +29,9 @@ public:
     SensorStatus configure_fifo(uint8_t watermark) override;
 
     bool supports_data_ready_interrupt() const override;
-    bool consume_data_ready_event() override;
+    uint8_t consume_data_ready_event_sources() override;
     SensorStatus read_status(uint8_t& status) override;
+    SensorStatus refresh_diagnostic_snapshot() override;
     SensorDiagnosticSnapshot diagnostic_snapshot() const override;
 
     SensorStatus set_offset(int32_t x, int32_t y, int32_t z) override;
@@ -37,7 +39,7 @@ public:
 
     SensorStatus read_temperature(TemperatureSample& temperature) override;
 
-    SensorStatus read_fifo_entries(uint8_t& entries);
+    SensorStatus read_fifo_entries(uint8_t& entries) override;
 
 private:
     struct FifoEntry {
@@ -56,7 +58,7 @@ private:
     SensorDiagnosticSnapshot diag_{};
 
     static Adxl355Driver* active_instance_;
-    volatile bool data_ready_flag_ = false;
+    volatile uint8_t data_ready_sources_ = 0;
 
     static void gpio_irq_handler(uint gpio, uint32_t events);
 
@@ -79,6 +81,8 @@ private:
 
     SensorStatus reset_device();
     SensorStatus read_status_register(uint8_t& status);
+    void capture_gpio_debug_levels();
+    SensorStatus refresh_interrupt_debug_registers();
 
     SensorStatus set_self_test(bool st1, bool st2);
     SensorStatus read_average_sample(AccelSample& avg, size_t count);
@@ -89,6 +93,7 @@ private:
     SensorStatus set_range_internal(uint8_t range_bits);
     SensorStatus set_odr_internal(uint8_t odr_bits);
     SensorStatus set_int1_active_high_internal();
+    SensorStatus set_drdy_enabled_internal(bool enabled);
     SensorStatus set_hpf_disabled();
     SensorStatus set_hpf_corner_internal(uint8_t high_pass_corner);
     SensorStatus write_offset_axis(uint8_t reg_h, uint8_t reg_l, int32_t value_16bit);

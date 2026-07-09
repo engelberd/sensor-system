@@ -51,6 +51,9 @@ BUFFER_STATE_FORMAT = "<BBQQIIIQQQIII"
 STATS_FORMAT_V1 = "<BBQ" + ("I" * 12)
 STATS_FORMAT_V2 = "<BBQ" + ("I" * 12) + "Q" + ("I" * 3)
 STATS_FORMAT_V3 = "<BBQ" + ("I" * 12) + "Q" + ("I" * 9)
+STATS_FORMAT_V4 = "<BBQ" + ("I" * 14) + "Q" + ("I" * 9)
+STATS_FORMAT_V5 = STATS_FORMAT_V4 + ("I" * 3)
+STATS_FORMAT_V6 = STATS_FORMAT_V5 + ("I" * 4)
 GRANT_BURST_RESPONSE_FORMAT = "<BBQH"
 COMMIT_READ_RESPONSE_FORMAT = "<BBQ"
 BURST_HEADER_FORMAT = "<BBIQHB"
@@ -161,8 +164,10 @@ class NodeStats:
     fifo_irq_events: int
     fifo_batches: int
     fifo_samples_read: int
-    rx_overflow_count: int
-    packet_overwrite_count: int
+    fifo_int1_events: int = 0
+    fifo_drdy_events: int = 0
+    rx_overflow_count: int = 0
+    packet_overwrite_count: int = 0
     last_sample_seq: int = 0
     last_progress_ms: int = 0
     consecutive_no_data_reads: int = 0
@@ -173,6 +178,13 @@ class NodeStats:
     soft_recover_count: int = 0
     last_irq_event_ms: int = 0
     last_soft_recover_ms: int = 0
+    gpio_int1_edges: int = 0
+    gpio_drdy_edges: int = 0
+    debug_config_snapshot: int = 0
+    irq_status_not_full: int = 0
+    irq_fifo_entries_lt_3: int = 0
+    irq_fifo_entries_lt_watermark: int = 0
+    debug_irq_snapshot: int = 0
 
 
 @dataclass
@@ -518,9 +530,47 @@ def parse_buffer_state(payload: bytes) -> BufferState:
 
 
 def parse_stats(payload: bytes) -> NodeStats:
+    if len(payload) >= struct.calcsize(STATS_FORMAT_V6):
+        values = struct.unpack(STATS_FORMAT_V6, payload[: struct.calcsize(STATS_FORMAT_V6)])
+        return NodeStats(*values)
+
+    if len(payload) >= struct.calcsize(STATS_FORMAT_V5):
+        values = struct.unpack(STATS_FORMAT_V5, payload[: struct.calcsize(STATS_FORMAT_V5)])
+        return NodeStats(*values)
+
+    if len(payload) >= struct.calcsize(STATS_FORMAT_V4):
+        values = struct.unpack(STATS_FORMAT_V4, payload[: struct.calcsize(STATS_FORMAT_V4)])
+        return NodeStats(*values)
+
     if len(payload) >= struct.calcsize(STATS_FORMAT_V3):
         values = struct.unpack(STATS_FORMAT_V3, payload[: struct.calcsize(STATS_FORMAT_V3)])
-        return NodeStats(*values)
+        return NodeStats(
+            command=values[0],
+            status=values[1],
+            next_sample_seq=values[2],
+            pushed_samples=values[3],
+            dropped_samples=values[4],
+            sample_buffer_overwrite_count=values[5],
+            update_calls=values[6],
+            fifo_reads=values[7],
+            fifo_no_data=values[8],
+            sensor_errors=values[9],
+            fifo_irq_events=values[10],
+            fifo_batches=values[11],
+            fifo_samples_read=values[12],
+            rx_overflow_count=values[13],
+            packet_overwrite_count=values[14],
+            last_sample_seq=values[15],
+            last_progress_ms=values[16],
+            consecutive_no_data_reads=values[17],
+            consecutive_sensor_errors=values[18],
+            fifo_poll_fallback_reads=values[19],
+            no_data_with_irq=values[20],
+            no_data_without_irq=values[21],
+            soft_recover_count=values[22],
+            last_irq_event_ms=values[23],
+            last_soft_recover_ms=values[24],
+        )
 
     if len(payload) >= struct.calcsize(STATS_FORMAT_V2):
         values = struct.unpack(STATS_FORMAT_V2, payload[: struct.calcsize(STATS_FORMAT_V2)])

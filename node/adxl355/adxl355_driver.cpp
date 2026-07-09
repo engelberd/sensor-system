@@ -52,23 +52,13 @@ SensorStatus Adxl355Driver::init() {
         );
     }
 
-    // Prefer INT1 when available. DRDY can trigger at ODR rate and is not
-    // needed for FIFO watermark mode (which is our default acquisition mode).
-    if (drdy_pin_ >= 0 && int1_pin_ < 0) {
+    if (drdy_pin_ >= 0) {
         gpio_init(static_cast<uint>(drdy_pin_));
         gpio_set_dir(static_cast<uint>(drdy_pin_), GPIO_IN);
         gpio_pull_up(static_cast<uint>(drdy_pin_));
-
-        active_instance_ = this;
-
-        gpio_set_irq_enabled_with_callback(
-            static_cast<uint>(drdy_pin_),
-            GPIO_IRQ_EDGE_RISE,
-            true,
-            &Adxl355Driver::gpio_irq_handler
-        );
     }
 
+    capture_gpio_debug_levels();
     initialized_ = true;
 
     SensorStatus st = reset_device();
@@ -150,7 +140,7 @@ SensorStatus Adxl355Driver::configure(const AccelerometerConfig& config) {
     st = enter_measurement_mode();
     if (st != SensorStatus::Ok) return st;
 
-    return SensorStatus::Ok;
+    return refresh_diagnostic_snapshot();
 }
 
 SensorStatus Adxl355Driver::read_sample(AccelSample& sample) {
@@ -249,45 +239,45 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         st = decode_fifo_entry(&buffer[base + 0], x_entry);
         if (st != SensorStatus::Ok) {
             diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-            return st;
+            return samples_read > 0 ? SensorStatus::Ok : st;
         }
 
         st = decode_fifo_entry(&buffer[base + 3], y_entry);
         if (st != SensorStatus::Ok) {
             diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-            return st;
+            return samples_read > 0 ? SensorStatus::Ok : st;
         }
 
         st = decode_fifo_entry(&buffer[base + 6], z_entry);
         if (st != SensorStatus::Ok) {
             diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-            return st;
+            return samples_read > 0 ? SensorStatus::Ok : st;
         }
 
         if (x_entry.is_empty || y_entry.is_empty || z_entry.is_empty) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_EMPTY_ENTRY;
             diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
-            return SensorStatus::NoData;
+            return samples_read > 0 ? SensorStatus::Ok : SensorStatus::NoData;
         }
 
         if (!x_entry.is_x_axis) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
             diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
-            return SensorStatus::InvalidSample;
+            return samples_read > 0 ? SensorStatus::Ok : SensorStatus::InvalidSample;
         }
 
         if (y_entry.is_x_axis || z_entry.is_x_axis) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
             diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
-            return SensorStatus::InvalidSample;
+            return samples_read > 0 ? SensorStatus::Ok : SensorStatus::InvalidSample;
         }
 
         samples[i].x = x_entry.value;
         samples[i].y = y_entry.value;
         samples[i].z = z_entry.value;
+        samples_read = i + 1;
     }
 
-    samples_read = to_read;
     diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::Ok);
     return SensorStatus::Ok;
 }
@@ -296,13 +286,17 @@ bool Adxl355Driver::supports_fifo() const {
     return true;
 }
 bool Adxl355Driver::supports_data_ready_interrupt() const {
-    return drdy_pin_ >= 0 || int1_pin_ >= 0;
+    return int1_pin_ >= 0;
 }
 
-bool Adxl355Driver::consume_data_ready_event() {
-    const bool was_set = data_ready_flag_;
-    data_ready_flag_ = false;
-    return was_set;
+uint8_t Adxl355Driver::consume_data_ready_event_sources() {
+    const uint32_t irq_state = save_and_disable_interrupts();
+    const uint8_t sources = data_ready_sources_;
+    data_ready_sources_ = 0;
+    restore_interrupts(irq_state);
+    diag_.flags &= static_cast<uint8_t>(~(SENSOR_DIAG_FLAG_INT1_EVENT | SENSOR_DIAG_FLAG_DRDY_EVENT));
+    diag_.flags |= sources;
+    return sources;
 }
 
 SensorStatus Adxl355Driver::set_offset(int32_t x, int32_t y, int32_t z) {
@@ -445,6 +439,7 @@ SensorStatus Adxl355Driver::read_fifo_entries(uint8_t& entries) {
 
     entries &= 0x7F;
     diag_.last_fifo_entries = entries;
+    capture_gpio_debug_levels();
     return SensorStatus::Ok;
 }
 
@@ -452,8 +447,18 @@ SensorStatus Adxl355Driver::read_status(uint8_t& status) {
     const SensorStatus st = read_status_register(status);
     if (st == SensorStatus::Ok) {
         diag_.last_status_reg = status;
+        capture_gpio_debug_levels();
     }
     return st;
+}
+
+SensorStatus Adxl355Driver::refresh_diagnostic_snapshot() {
+    if (!initialized_) {
+        return SensorStatus::NotInitialized;
+    }
+
+    capture_gpio_debug_levels();
+    return refresh_interrupt_debug_registers();
 }
 
 SensorDiagnosticSnapshot Adxl355Driver::diagnostic_snapshot() const {
@@ -492,10 +497,16 @@ SensorStatus Adxl355Driver::configure_fifo(uint8_t watermark) {
         int_map = ADXL355::INT_FULL_EN1 | ADXL355::INT_OVR_EN1;
     }
 
+    st = set_drdy_enabled_internal(false);
+    if (st != SensorStatus::Ok) return st;
+
     st = write_register(ADXL355::INT_MAP, int_map);
     if (st != SensorStatus::Ok) return st;
 
-    return enter_measurement_mode();
+    st = enter_measurement_mode();
+    if (st != SensorStatus::Ok) return st;
+
+    return refresh_diagnostic_snapshot();
 }
 
 void Adxl355Driver::gpio_irq_handler(uint gpio, uint32_t events) {
@@ -509,10 +520,50 @@ void Adxl355Driver::gpio_irq_handler(uint gpio, uint32_t events) {
         return;
     }
 
-    if (gpio == static_cast<uint>(active_instance_->drdy_pin_) ||
-        gpio == static_cast<uint>(active_instance_->int1_pin_)) {
-        active_instance_->data_ready_flag_ = true;
+    if (gpio == static_cast<uint>(active_instance_->drdy_pin_)) {
+        ++active_instance_->diag_.drdy_gpio_edges;
+        active_instance_->data_ready_sources_ |= SENSOR_DIAG_FLAG_DRDY_EVENT;
+        active_instance_->diag_.last_drdy_level = static_cast<uint8_t>(gpio_get(gpio) ? 1u : 0u);
     }
+    if (gpio == static_cast<uint>(active_instance_->int1_pin_)) {
+        ++active_instance_->diag_.int1_gpio_edges;
+        active_instance_->data_ready_sources_ |= SENSOR_DIAG_FLAG_INT1_EVENT;
+        active_instance_->diag_.last_int1_level = static_cast<uint8_t>(gpio_get(gpio) ? 1u : 0u);
+    }
+}
+
+void Adxl355Driver::capture_gpio_debug_levels() {
+    if (int1_pin_ >= 0) {
+        diag_.last_int1_level = static_cast<uint8_t>(
+            gpio_get(static_cast<uint>(int1_pin_)) ? 1u : 0u
+        );
+    } else {
+        diag_.last_int1_level = 0;
+    }
+
+    if (drdy_pin_ >= 0) {
+        diag_.last_drdy_level = static_cast<uint8_t>(
+            gpio_get(static_cast<uint>(drdy_pin_)) ? 1u : 0u
+        );
+    } else {
+        diag_.last_drdy_level = 0;
+    }
+}
+
+SensorStatus Adxl355Driver::refresh_interrupt_debug_registers() {
+    uint8_t value = 0;
+    SensorStatus st = read_register(ADXL355::INT_MAP, value);
+    if (st != SensorStatus::Ok) {
+        return st;
+    }
+    diag_.last_int_map = value;
+
+    st = read_register(ADXL355::FIFO_SAMPLES, value);
+    if (st != SensorStatus::Ok) {
+        return st;
+    }
+    diag_.last_fifo_samples = static_cast<uint8_t>(value & ADXL355::FIFO_SAMPLES_MASK);
+    return SensorStatus::Ok;
 }
 
 // ============================================================
@@ -787,6 +838,22 @@ SensorStatus Adxl355Driver::set_int1_active_high_internal() {
 
     value |= ADXL355::RANGE_INT_POL_MASK;
     return write_register(ADXL355::RANGE, value);
+}
+
+SensorStatus Adxl355Driver::set_drdy_enabled_internal(bool enabled) {
+    uint8_t value = 0;
+
+    SensorStatus st = read_register(ADXL355::POWER_CTL, value);
+    if (st != SensorStatus::Ok) {
+        return st;
+    }
+
+    if (enabled) {
+        value &= static_cast<uint8_t>(~ADXL355::POWER_DRDY_OFF);
+    } else {
+        value |= ADXL355::POWER_DRDY_OFF;
+    }
+    return write_register(ADXL355::POWER_CTL, value);
 }
 
 SensorStatus Adxl355Driver::set_self_test(bool st1, bool st2) {

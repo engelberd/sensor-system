@@ -34,12 +34,21 @@ struct AcquisitionStats {
     uint32_t fifo_irq_events = 0;
     uint32_t fifo_batches = 0;
     uint32_t fifo_samples_read = 0;
+    uint32_t fifo_int1_events = 0;
+    uint32_t fifo_drdy_events = 0;
     uint32_t fifo_poll_fallback_reads = 0;
     uint32_t no_data_with_irq = 0;
     uint32_t no_data_without_irq = 0;
     uint32_t soft_recover_count = 0;
     uint32_t last_irq_event_ms = 0;
     uint32_t last_soft_recover_ms = 0;
+    uint32_t gpio_int1_edges = 0;
+    uint32_t gpio_drdy_edges = 0;
+    uint32_t debug_config_snapshot = 0;
+    uint32_t irq_status_not_full = 0;
+    uint32_t irq_fifo_entries_lt_3 = 0;
+    uint32_t irq_fifo_entries_lt_watermark = 0;
+    uint32_t debug_irq_snapshot = 0;
 };
 
 template <size_t BufferCapacity>
@@ -248,8 +257,61 @@ private:
         return static_cast<uint32_t>(now - since) >= interval_ms;
     }
 
-    int32_t pack_sensor_snapshot_locked(bool irq_seen) const {
+    static uint32_t pack_debug_config_snapshot(const SensorDiagnosticSnapshot& snapshot) {
+        return
+            static_cast<uint32_t>(snapshot.last_int_map) |
+            (static_cast<uint32_t>(snapshot.last_fifo_samples) << 8) |
+            (static_cast<uint32_t>(snapshot.last_int1_level) << 16) |
+            (static_cast<uint32_t>(snapshot.last_drdy_level) << 24);
+    }
+
+    static uint32_t pack_irq_debug_snapshot(uint8_t status,
+                                            uint8_t fifo_entries,
+                                            uint8_t watermark,
+                                            uint8_t flags) {
+        return
+            static_cast<uint32_t>(status) |
+            (static_cast<uint32_t>(fifo_entries) << 8) |
+            (static_cast<uint32_t>(watermark) << 16) |
+            (static_cast<uint32_t>(flags) << 24);
+    }
+
+    uint32_t fifo_fallback_interval_ms_locked(const SensorDiagnosticSnapshot& snapshot) const {
+        if (!has_last_config_) {
+            return kLegacyPollingIntervalMs;
+        }
+
+        uint32_t odr_hz = last_config_.odr_hz;
+        if (odr_hz == 0) {
+            odr_hz = 250;
+        }
+
+        uint32_t watermark = snapshot.last_fifo_samples;
+        if (watermark == 0) {
+            watermark = last_config_.fifo_watermark;
+        }
+        if (watermark < 3u) {
+            watermark = 3u;
+        }
+
+        const uint32_t fill_time_ms = (watermark * 1000u + odr_hz - 1u) / odr_hz;
+        uint32_t interval_ms = fill_time_ms + (fill_time_ms / 4u) + kIrqFallbackGuardMs;
+        if (interval_ms < kMinIrqFallbackProbeIntervalMs) {
+            interval_ms = kMinIrqFallbackProbeIntervalMs;
+        }
+        return interval_ms;
+    }
+
+    void sync_diagnostic_stats_locked(const SensorDiagnosticSnapshot& snapshot) {
+        stats_.gpio_int1_edges = snapshot.int1_gpio_edges;
+        stats_.gpio_drdy_edges = snapshot.drdy_gpio_edges;
+        stats_.debug_config_snapshot = pack_debug_config_snapshot(snapshot);
+    }
+
+    int32_t pack_sensor_snapshot_locked(bool irq_seen) {
+        (void)accelerometer_.refresh_diagnostic_snapshot();
         const SensorDiagnosticSnapshot snapshot = accelerometer_.diagnostic_snapshot();
+        sync_diagnostic_stats_locked(snapshot);
         uint32_t flags = snapshot.flags;
         if (irq_seen) {
             flags |= 0x80u;
@@ -277,6 +339,10 @@ private:
         context.fifo_no_data = stats_.fifo_no_data;
         context.sensor_errors = stats_.sensor_errors;
         context.dropped_samples = stats_.dropped_samples;
+        context.debug_gpio_int1_edges = stats_.gpio_int1_edges;
+        context.debug_gpio_drdy_edges = stats_.gpio_drdy_edges;
+        context.debug_config_snapshot = stats_.debug_config_snapshot;
+        context.debug_irq_snapshot = stats_.debug_irq_snapshot;
         context.arg0 = arg0;
         context.arg1 = arg1;
         return context;
@@ -401,19 +467,45 @@ private:
 
     void update_fifo_watermark_mode_locked() {
         const uint32_t now_ms_value = now_ms();
+        SensorDiagnosticSnapshot sensor_diag{};
         bool irq_seen = false;
+        uint8_t irq_sources = 0;
         bool should_service_fifo = true;
         if (accelerometer_.supports_data_ready_interrupt()) {
-            irq_seen = accelerometer_.consume_data_ready_event();
+            irq_sources = accelerometer_.consume_data_ready_event_sources();
+            sensor_diag = accelerometer_.diagnostic_snapshot();
+            sync_diagnostic_stats_locked(sensor_diag);
+
+            const bool int1_event = (irq_sources & SENSOR_DIAG_FLAG_INT1_EVENT) != 0;
+            const bool drdy_event = (irq_sources & SENSOR_DIAG_FLAG_DRDY_EVENT) != 0;
+            const bool watermark_irq_configured = sensor_diag.last_int_map != 0;
+
+            if (int1_event) {
+                ++stats_.fifo_int1_events;
+            }
+            if (drdy_event) {
+                ++stats_.fifo_drdy_events;
+            }
+
+            irq_seen = watermark_irq_configured ? int1_event : (int1_event || drdy_event);
             if (irq_seen) {
                 ++stats_.fifo_irq_events;
                 stats_.last_irq_event_ms = now_ms_value;
                 last_fifo_service_ms_ = now_ms_value;
-            } else if (!interval_elapsed(now_ms_value, last_fifo_service_ms_, kFallbackProbeIntervalMs)) {
+            } else if (!interval_elapsed(
+                           now_ms_value,
+                           last_fifo_service_ms_,
+                           watermark_irq_configured
+                               ? fifo_fallback_interval_ms_locked(sensor_diag)
+                               : kLegacyPollingIntervalMs
+                       )) {
                 should_service_fifo = false;
             } else {
                 ++stats_.fifo_poll_fallback_reads;
             }
+        } else {
+            sensor_diag = accelerometer_.diagnostic_snapshot();
+            sync_diagnostic_stats_locked(sensor_diag);
         }
         if (!should_service_fifo) {
             return;
@@ -456,6 +548,39 @@ private:
                             pack_sensor_snapshot_locked(irq_seen),
                             static_cast<int32_t>(stats_.dropped_samples)
                         )
+                    );
+                }
+            }
+
+            if (irq_seen && total_samples_read == 0) {
+                uint8_t fifo_entries_before_read = 0;
+                if (accelerometer_.read_fifo_entries(fifo_entries_before_read) == SensorStatus::Ok) {
+                    const uint8_t configured_watermark =
+                        (sensor_diag.last_fifo_samples != 0)
+                            ? sensor_diag.last_fifo_samples
+                            : static_cast<uint8_t>(last_config_.fifo_watermark);
+                    uint8_t irq_flags = 0;
+                    if ((status & ADXL355::STATUS_FIFO_FULL_MASK) != 0) {
+                        irq_flags |= 0x01u;
+                    } else {
+                        ++stats_.irq_status_not_full;
+                    }
+                    if ((status & ADXL355::STATUS_FIFO_OVR_MASK) != 0) {
+                        irq_flags |= 0x02u;
+                    }
+                    if (fifo_entries_before_read < 3u) {
+                        irq_flags |= 0x04u;
+                        ++stats_.irq_fifo_entries_lt_3;
+                    }
+                    if (fifo_entries_before_read < configured_watermark) {
+                        irq_flags |= 0x08u;
+                        ++stats_.irq_fifo_entries_lt_watermark;
+                    }
+                    stats_.debug_irq_snapshot = pack_irq_debug_snapshot(
+                        status,
+                        fifo_entries_before_read,
+                        configured_watermark,
+                        irq_flags
                     );
                 }
             }
@@ -604,7 +729,9 @@ private:
 private:
     static constexpr DecimationFilterProfile kDefaultFilterProfile =
         DecimationFilterProfile::Balanced;
-    static constexpr uint32_t kFallbackProbeIntervalMs = 8;
+    static constexpr uint32_t kLegacyPollingIntervalMs = 8;
+    static constexpr uint32_t kMinIrqFallbackProbeIntervalMs = 25;
+    static constexpr uint32_t kIrqFallbackGuardMs = 10;
     static constexpr uint32_t kSoftRecoverNoDataThreshold = 32;
     static constexpr uint32_t kSoftRecoverCooldownMs = 1000;
 

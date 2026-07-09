@@ -7,6 +7,7 @@ import struct
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Protocol
 
@@ -16,6 +17,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised in tests without pyserial
     serial = None  # type: ignore[assignment]
     list_ports = None  # type: ignore[assignment]
+
+from host.common.system_config import HostSystemConfig
 
 
 class SerialLike(Protocol):
@@ -88,6 +91,8 @@ UPDATE_STATUS_NAMES = {
 
 FLASH_PAGE_SIZE = 256
 DEFAULT_UPDATE_CHUNK_SIZE = 1024
+DEFAULT_SYSTEM_CONFIG_PATH = Path(__file__).resolve().parent / "system_config.json"
+RUNTIME_STATUS_STALE_AFTER_S = 10.0
 
 
 def crc16_ccitt(data: bytes) -> int:
@@ -134,6 +139,105 @@ def load_json_config(path: Path) -> dict:
 
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def load_json_file(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
+
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return payload if isinstance(payload, dict) else None
+
+
+def resolve_system_config_path(raw_path: str) -> Path:
+    config_path = Path(raw_path)
+    if not config_path.is_absolute() and not config_path.exists():
+        config_path = Path(__file__).resolve().parent.parent / raw_path
+    return config_path
+
+
+def _supervisor_channel_running(status_payload: dict, channel_name: str) -> bool:
+    channels = status_payload.get("channels")
+    if not isinstance(channels, list):
+        return False
+
+    for channel in channels:
+        if not isinstance(channel, dict):
+            continue
+        if str(channel.get("name")) != channel_name:
+            continue
+        return bool(channel.get("running", False))
+    return False
+
+
+def _runtime_status_is_fresh(status_payload: dict) -> bool:
+    raw_updated = status_payload.get("updated_utc")
+    if not isinstance(raw_updated, str) or not raw_updated:
+        return False
+
+    try:
+        updated_at = datetime.fromisoformat(raw_updated)
+    except ValueError:
+        return False
+
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+    age_s = (datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)).total_seconds()
+    return age_s <= RUNTIME_STATUS_STALE_AFTER_S
+
+
+def detect_runtime_conflict(port: str, system_config_path: Path) -> Optional[str]:
+    if not system_config_path.exists():
+        return None
+
+    system_config = HostSystemConfig.load(system_config_path)
+    matching_channels = tuple(
+        channel for channel in system_config.channels if channel.enabled and channel.port == port
+    )
+    if not matching_channels:
+        return None
+
+    supervisor_status = load_json_file(Path(system_config.supervisor.status_file))
+    if supervisor_status is not None:
+        for channel in matching_channels:
+            if _supervisor_channel_running(supervisor_status, channel.name):
+                return (
+                    f"channel '{channel.name}' is recording on port {port}; "
+                    "stop the supervisor/recorder before bootloader actions"
+                )
+
+    runtime_dir = Path(system_config.supervisor.channel_runtime_dir)
+    for channel in matching_channels:
+        channel_status = load_json_file(runtime_dir / f"{channel.name}.status.json")
+        if channel_status is None:
+            continue
+        if channel_status.get("port") != port:
+            continue
+        if not _runtime_status_is_fresh(channel_status):
+            continue
+        status_channel_name = channel_status.get("channel_name")
+        if isinstance(status_channel_name, str) and status_channel_name != channel.name:
+            continue
+        return (
+            f"channel '{channel.name}' has an active runtime status for port {port}; "
+            "stop the recorder before bootloader actions"
+        )
+
+    legacy_status = load_json_file(Path("/tmp/sensor-system_recorder_status.json"))
+    if (
+        legacy_status is not None
+        and legacy_status.get("port") == port
+        and _runtime_status_is_fresh(legacy_status)
+    ):
+        channel_name = str(legacy_status.get("channel_name") or "unknown")
+        return (
+            f"standalone recorder channel '{channel_name}' is using port {port}; "
+            "stop the recorder before bootloader actions"
+        )
+
+    return None
 
 
 def open_serial_port(config: "HostConfig") -> SerialLike:
@@ -590,6 +694,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bootloader action",
     )
     parser.add_argument("--config", default="host_config.json", help="Path to JSON config file")
+    parser.add_argument(
+        "--system-config",
+        default=str(DEFAULT_SYSTEM_CONFIG_PATH),
+        help="Path to host system config used for runtime conflict detection",
+    )
     parser.add_argument("--port", help="Serial port, e.g. /dev/sensor-system-rs485")
     parser.add_argument("--baud", type=int, help="Serial baud rate")
     parser.add_argument("--node", type=int, help="Destination node id")
@@ -624,6 +733,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--verify-app-retry-delay",
         type=float,
         help="Delay between post-update application ping attempts, in seconds",
+    )
+    parser.add_argument(
+        "--force-busy",
+        action="store_true",
+        help="Allow bootloader action even if host runtime reports the port/channel as active",
     )
     return parser
 
@@ -1043,6 +1157,20 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.action in {"probe", "hello", "abort", "upload"} and not args.force_busy:
+        system_config_path = resolve_system_config_path(args.system_config)
+        try:
+            runtime_conflict = detect_runtime_conflict(config.port, system_config_path)
+        except Exception as exc:  # noqa: BLE001 - fail safe if runtime metadata is unreadable
+            print(
+                f"[ERROR] failed to inspect runtime state via {system_config_path}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if runtime_conflict is not None:
+            print(f"[ERROR] {runtime_conflict}", file=sys.stderr)
+            return 2
 
     identity = serial_identity_for_port(config.port)
 

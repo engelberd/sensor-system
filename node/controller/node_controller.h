@@ -348,6 +348,10 @@ private:
             ? rs485_port_->rx_overflow_count()
             : 0u;
         context.packet_overwrite_count = dp.packet_overwrite_count;
+        context.debug_gpio_int1_edges = stats.gpio_int1_edges;
+        context.debug_gpio_drdy_edges = stats.gpio_drdy_edges;
+        context.debug_config_snapshot = stats.debug_config_snapshot;
+        context.debug_irq_snapshot = stats.debug_irq_snapshot;
         context.arg0 = arg0;
         context.arg1 = arg1;
         return context;
@@ -1064,6 +1068,15 @@ private:
         resp.soft_recover_count = stats.soft_recover_count;
         resp.no_data_with_irq = stats.no_data_with_irq;
         resp.no_data_without_irq = stats.no_data_without_irq;
+        resp.irq_int1_events = stats.fifo_int1_events;
+        resp.irq_drdy_events = stats.fifo_drdy_events;
+        resp.gpio_int1_edges = stats.gpio_int1_edges;
+        resp.gpio_drdy_edges = stats.gpio_drdy_edges;
+        resp.debug_config_snapshot = stats.debug_config_snapshot;
+        resp.irq_status_not_full = stats.irq_status_not_full;
+        resp.irq_fifo_entries_lt_3 = stats.irq_fifo_entries_lt_3;
+        resp.irq_fifo_entries_lt_watermark = stats.irq_fifo_entries_lt_watermark;
+        resp.debug_irq_snapshot = stats.debug_irq_snapshot;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -1111,6 +1124,8 @@ private:
         resp.fifo_irq_events = st.fifo_irq_events;
         resp.fifo_batches = st.fifo_batches;
         resp.fifo_samples_read = st.fifo_samples_read;
+        resp.fifo_int1_events = st.fifo_int1_events;
+        resp.fifo_drdy_events = st.fifo_drdy_events;
         resp.rx_overflow_count = (rs485_port_ != nullptr)
             ? rs485_port_->rx_overflow_count()
             : 0;
@@ -1125,6 +1140,13 @@ private:
         resp.soft_recover_count = st.soft_recover_count;
         resp.last_irq_event_ms = st.last_irq_event_ms;
         resp.last_soft_recover_ms = st.last_soft_recover_ms;
+        resp.gpio_int1_edges = st.gpio_int1_edges;
+        resp.gpio_drdy_edges = st.gpio_drdy_edges;
+        resp.debug_config_snapshot = st.debug_config_snapshot;
+        resp.irq_status_not_full = st.irq_status_not_full;
+        resp.irq_fifo_entries_lt_3 = st.irq_fifo_entries_lt_3;
+        resp.irq_fifo_entries_lt_watermark = st.irq_fifo_entries_lt_watermark;
+        resp.debug_irq_snapshot = st.debug_irq_snapshot;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -1223,6 +1245,10 @@ private:
         resp.dropped_samples = snapshot.dropped_samples;
         resp.rx_overflow_count = snapshot.rx_overflow_count;
         resp.packet_overwrite_count = snapshot.packet_overwrite_count;
+        resp.debug_gpio_int1_edges = snapshot.debug_gpio_int1_edges;
+        resp.debug_gpio_drdy_edges = snapshot.debug_gpio_drdy_edges;
+        resp.debug_config_snapshot = snapshot.debug_config_snapshot;
+        resp.debug_irq_snapshot = snapshot.debug_irq_snapshot;
         resp.arg0 = snapshot.arg0;
         resp.arg1 = snapshot.arg1;
 
@@ -1344,6 +1370,10 @@ private:
         resp.dropped_samples = record.dropped_samples;
         resp.rx_overflow_count = record.rx_overflow_count;
         resp.packet_overwrite_count = record.packet_overwrite_count;
+        resp.debug_gpio_int1_edges = record.debug_gpio_int1_edges;
+        resp.debug_gpio_drdy_edges = record.debug_gpio_drdy_edges;
+        resp.debug_config_snapshot = record.debug_config_snapshot;
+        resp.debug_irq_snapshot = record.debug_irq_snapshot;
         resp.arg0 = record.arg0;
         resp.arg1 = record.arg1;
 

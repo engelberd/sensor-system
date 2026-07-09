@@ -10,8 +10,13 @@ from host.host_configurator import (
     CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD,
     CMD_READ_DIAGNOSTIC_EVENTS,
     GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT,
+    GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2,
+    GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3,
     GET_STATUS_FORMAT_V2,
     GET_STATUS_FORMAT_V3,
+    GET_STATUS_FORMAT_V4,
+    GET_STATUS_FORMAT_V5,
+    GET_STATUS_FORMAT_V6,
     READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT,
     READ_DIAGNOSTIC_EVENT_FORMAT,
     ConfigView,
@@ -100,7 +105,7 @@ class HostConfiguratorSyncTests(unittest.TestCase):
 
     def test_parse_extended_status_view(self) -> None:
         payload = struct.pack(
-            GET_STATUS_FORMAT_V3,
+            GET_STATUS_FORMAT_V5,
             0x40,
             0,
             7,
@@ -120,6 +125,11 @@ class HostConfiguratorSyncTests(unittest.TestCase):
             2,
             5,
             9,
+            101,
+            202,
+            303,
+            404,
+            0x01021E01,
         )
         status = parse_status_view(payload)
         self.assertEqual(status.node_id, 7)
@@ -133,6 +143,49 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(status.soft_recover_count, 2)
         self.assertEqual(status.no_data_with_irq, 5)
         self.assertEqual(status.no_data_without_irq, 9)
+        self.assertEqual(status.irq_int1_events, 101)
+        self.assertEqual(status.irq_drdy_events, 202)
+        self.assertEqual(status.gpio_int1_edges, 303)
+        self.assertEqual(status.gpio_drdy_edges, 404)
+        self.assertEqual(status.debug_config_snapshot, 0x01021E01)
+
+    def test_parse_v6_status_view_includes_irq_debug_fields(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V6,
+            0x40,
+            0,
+            7,
+            2,
+            125,
+            4,
+            2,
+            0x00010203,
+            9,
+            12345,
+            67890,
+            321,
+            36,
+            3,
+            0x3F,
+            12,
+            2,
+            5,
+            9,
+            101,
+            202,
+            303,
+            404,
+            0x01021E01,
+            33,
+            44,
+            55,
+            0x08071E02,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.irq_status_not_full, 33)
+        self.assertEqual(status.irq_fifo_entries_lt_3, 44)
+        self.assertEqual(status.irq_fifo_entries_lt_watermark, 55)
+        self.assertEqual(status.debug_irq_snapshot, 0x08071E02)
 
     def test_parse_v2_status_view_keeps_new_fields_defaulted(self) -> None:
         payload = struct.pack(
@@ -156,6 +209,63 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         status = parse_status_view(payload)
         self.assertEqual(status.fifo_poll_fallback_reads, 0)
         self.assertEqual(status.soft_recover_count, 0)
+
+    def test_parse_v3_status_view_keeps_irq_source_counts_defaulted(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V3,
+            0x40,
+            0,
+            7,
+            2,
+            125,
+            4,
+            2,
+            0x00010203,
+            9,
+            12345,
+            67890,
+            321,
+            36,
+            3,
+            0x3F,
+            12,
+            2,
+            5,
+            9,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.irq_int1_events, 0)
+        self.assertEqual(status.irq_drdy_events, 0)
+
+    def test_parse_v4_status_view_keeps_gpio_debug_fields_defaulted(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V4,
+            0x40,
+            0,
+            7,
+            2,
+            125,
+            4,
+            2,
+            0x00010203,
+            9,
+            12345,
+            67890,
+            321,
+            36,
+            3,
+            0x3F,
+            12,
+            2,
+            5,
+            9,
+            101,
+            202,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.gpio_int1_edges, 0)
+        self.assertEqual(status.gpio_drdy_edges, 0)
+        self.assertEqual(status.debug_config_snapshot, 0)
 
     def test_parse_diagnostic_events(self) -> None:
         payload = struct.pack(
@@ -239,6 +349,126 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(stats.last_irq_event_ms, 1600)
         self.assertEqual(stats.last_soft_recover_ms, 1700)
 
+    def test_parse_stats_v4(self) -> None:
+        payload = struct.pack(
+            "<BBQ" + ("I" * 14) + "Q" + ("I" * 9),
+            0x43,
+            0,
+            1001,
+            1000,
+            3,
+            4,
+            5000,
+            100,
+            7,
+            8,
+            90,
+            91,
+            92,
+            55,
+            66,
+            10,
+            11,
+            999,
+            1234,
+            2,
+            1,
+            12,
+            13,
+            14,
+            15,
+            1600,
+            1700,
+        )
+        stats = parse_stats(payload)
+        self.assertEqual(stats.fifo_int1_events, 55)
+        self.assertEqual(stats.fifo_drdy_events, 66)
+        self.assertEqual(stats.rx_overflow_count, 10)
+        self.assertEqual(stats.packet_overwrite_count, 11)
+
+    def test_parse_stats_v5(self) -> None:
+        payload = struct.pack(
+            "<BBQ" + ("I" * 17) + "Q" + ("I" * 9),
+            0x43,
+            0,
+            1001,
+            1000,
+            3,
+            4,
+            5000,
+            100,
+            7,
+            8,
+            90,
+            91,
+            92,
+            55,
+            66,
+            10,
+            11,
+            999,
+            1234,
+            2,
+            1,
+            12,
+            13,
+            14,
+            15,
+            1600,
+            1700,
+            303,
+            404,
+            0x01021E01,
+        )
+        stats = parse_stats(payload)
+        self.assertEqual(stats.gpio_int1_edges, 303)
+        self.assertEqual(stats.gpio_drdy_edges, 404)
+        self.assertEqual(stats.debug_config_snapshot, 0x01021E01)
+
+    def test_parse_stats_v6(self) -> None:
+        payload = struct.pack(
+            "<BBQ" + ("I" * 17) + "Q" + ("I" * 13),
+            0x43,
+            0,
+            1001,
+            1000,
+            3,
+            4,
+            5000,
+            100,
+            7,
+            8,
+            90,
+            91,
+            92,
+            55,
+            66,
+            10,
+            11,
+            999,
+            1234,
+            2,
+            1,
+            12,
+            13,
+            14,
+            15,
+            1600,
+            1700,
+            303,
+            404,
+            0x01021E01,
+            33,
+            44,
+            55,
+            0x08071E02,
+        )
+        stats = parse_stats(payload)
+        self.assertEqual(stats.irq_status_not_full, 33)
+        self.assertEqual(stats.irq_fifo_entries_lt_3, 44)
+        self.assertEqual(stats.irq_fifo_entries_lt_watermark, 55)
+        self.assertEqual(stats.debug_irq_snapshot, 0x08071E02)
+
     def test_dump_diagnostics_parser_accepts_limit(self) -> None:
         args = build_parser().parse_args(["dump-diagnostics", "--start-event-id", "7", "--limit", "12"])
         self.assertEqual(args.command, "dump-diagnostics")
@@ -247,7 +477,7 @@ class HostConfiguratorSyncTests(unittest.TestCase):
 
     def test_parse_persistent_diagnostic_record(self) -> None:
         payload = struct.pack(
-            GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT,
+            GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3,
             CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD,
             0,
             3,
@@ -270,6 +500,10 @@ class HostConfiguratorSyncTests(unittest.TestCase):
             15,
             16,
             17,
+            303,
+            404,
+            0x01021E01,
+            0x08071E02,
         )
         record = parse_persistent_diagnostic_record_view(payload)
         self.assertEqual(record.generation, 3)
@@ -280,6 +514,10 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(record.reset_cause, 3)
         self.assertEqual(record.sample_seq, 123456)
         self.assertEqual(record.arg1, 17)
+        self.assertEqual(record.debug_gpio_int1_edges, 303)
+        self.assertEqual(record.debug_gpio_drdy_edges, 404)
+        self.assertEqual(record.debug_config_snapshot, 0x01021E01)
+        self.assertEqual(record.debug_irq_snapshot, 0x08071E02)
 
     def test_format_diagnostic_detail_decodes_fifo_no_data_snapshot(self) -> None:
         packed_snapshot = (
