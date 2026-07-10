@@ -12,6 +12,7 @@ from typing import Any
 class RuntimeStatusNode:
     node_id: int
     name: str | None
+    firmware_version: str | None
     online: bool
     sensor_odr_hz: int
     output_odr_hz: float

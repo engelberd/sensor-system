@@ -162,6 +162,10 @@ struct GetStatusResponsePayload {
     uint32_t irq_fifo_entries_lt_3;
     uint32_t irq_fifo_entries_lt_watermark;
     uint32_t debug_irq_snapshot;
+    uint32_t spurious_int1_events;
+    uint32_t fifo_overrun_events;
+    uint32_t fifo_discarded_samples;
+    uint32_t fifo_uncertain_loss_events;
 };
 
 struct GetTemperatureResponsePayload {
@@ -222,6 +226,10 @@ struct GetStatsResponsePayload {
     uint32_t irq_fifo_entries_lt_3;
     uint32_t irq_fifo_entries_lt_watermark;
     uint32_t debug_irq_snapshot;
+    uint32_t spurious_int1_events;
+    uint32_t fifo_overrun_events;
+    uint32_t fifo_discarded_samples;
+    uint32_t fifo_uncertain_loss_events;
 };
 
 struct GetDiagnosticInfoResponsePayload {

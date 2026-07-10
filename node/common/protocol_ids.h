@@ -9,4 +9,4 @@ static constexpr uint8_t BROADCAST_NODE_ID = 0xFF;
 
 static constexpr uint8_t FW_VERSION_MAJOR = 0;
 static constexpr uint8_t FW_VERSION_MINOR = 3;
-static constexpr uint8_t FW_VERSION_PATCH = 7;
+static constexpr uint8_t FW_VERSION_PATCH = 8;

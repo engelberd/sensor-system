@@ -164,6 +164,7 @@ class DashboardRepositoryTests(unittest.TestCase):
                                     {
                                         "node_id": 1,
                                         "name": "Czujnik 1",
+                                        "firmware_version": "v1.2.3",
                                         "online": True,
                                         "sensor_odr_hz": 125,
                                         "output_odr_hz": 62.5,
@@ -220,6 +221,7 @@ class DashboardRepositoryTests(unittest.TestCase):
             self.assertEqual(payload["channels"][0]["instant_samples_per_second_5s"], 61.8)
             self.assertEqual(payload["channels"][0]["rate_stability_percent_5s"], 97.4)
             self.assertEqual(payload["channels"][0]["nodes"][0]["name"], "Czujnik 1")
+            self.assertEqual(payload["channels"][0]["nodes"][0]["firmware_version"], "v1.2.3")
             self.assertEqual(payload["channels"][0]["nodes"][0]["last_temperature_c"], 24.5)
             self.assertEqual(payload["channels"][0]["nodes"][0]["instant_samples_per_second_5s"], 61.8)
             self.assertEqual(payload["channels"][0]["nodes"][0]["alerts"], [])

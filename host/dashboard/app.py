@@ -1176,7 +1176,6 @@ INDEX_HTML = """<!doctype html>
                   <th>Próbki</th>
                   <th>Gaps / Overflow / No data</th>
                   <th>Temperatura</th>
-                  <th>Podgląd</th>
                 </tr>
               </thead>
               <tbody>
@@ -1229,13 +1228,14 @@ INDEX_HTML = """<!doctype html>
         const alerts = Array.isArray(node.alerts) && node.alerts.length
           ? node.alerts.join(", ")
           : "brak";
-        const previewAvailable = channel.running && node.has_runtime;
-        const previewHref = `/live?channel=${encodeURIComponent(channel.name)}&node=${encodeURIComponent(node.node_id)}`;
+        const firmwareMeta = node.firmware_version
+          ? `fw ${node.firmware_version}`
+          : "fw -";
         return `
           <tr>
             <td data-label="Węzeł">
               <div class="node-name">${escapeHtml(nodeTitle)}</div>
-              <div class="node-meta mono">id=${escapeHtml(node.node_id)} · oczekiwany ODR ${escapeHtml(node.expected_odr_hz ?? "-")} Hz</div>
+              <div class="node-meta mono">id=${escapeHtml(node.node_id)} · ${escapeHtml(firmwareMeta)} · oczekiwany ODR ${escapeHtml(node.expected_odr_hz ?? "-")} Hz</div>
             </td>
             <td data-label="Stan">
               ${statusDot(onlineKind)}
@@ -1265,11 +1265,6 @@ INDEX_HTML = """<!doctype html>
             <td data-label="Temperatura">
               <span class="mono">${escapeHtml(node.last_temperature_c == null ? "-" : `${formatFloat(node.last_temperature_c, 2)} C`)}</span>
               <div class="node-meta">${escapeHtml(formatUnixNs(node.last_temperature_unix_ns))}</div>
-            </td>
-            <td data-label="Podgląd">
-              ${previewAvailable
-                ? `<div class="node-actions"><a class="btn secondary small" href="${previewHref}">Podgląd</a></div>`
-                : `<div class="node-meta">dostępny tylko dla aktywnego runtime</div>`}
             </td>
           </tr>
         `;
@@ -4274,6 +4269,7 @@ class DashboardRepository:
             "configured": True,
             "enabled": bool(config_node.enabled),
             "expected_odr_hz": config_node.expected_odr_hz,
+            "firmware_version": str(runtime_node.get("firmware_version")) if runtime_node and runtime_node.get("firmware_version") else None,
             "has_runtime": runtime_node is not None,
             "online": online,
             "sensor_odr_hz": sensor_odr_hz,
@@ -4310,6 +4306,7 @@ class DashboardRepository:
             "configured": False,
             "enabled": bool(runtime_node.get("enabled", True)),
             "expected_odr_hz": None,
+            "firmware_version": str(runtime_node.get("firmware_version")) if runtime_node.get("firmware_version") else None,
             "has_runtime": True,
             "online": bool(runtime_node.get("online", False)),
             "sensor_odr_hz": int(runtime_node.get("sensor_odr_hz", 0)),

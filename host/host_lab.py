@@ -54,6 +54,7 @@ STATS_FORMAT_V3 = "<BBQ" + ("I" * 12) + "Q" + ("I" * 9)
 STATS_FORMAT_V4 = "<BBQ" + ("I" * 14) + "Q" + ("I" * 9)
 STATS_FORMAT_V5 = STATS_FORMAT_V4 + ("I" * 3)
 STATS_FORMAT_V6 = STATS_FORMAT_V5 + ("I" * 4)
+STATS_FORMAT_V7 = STATS_FORMAT_V6 + ("I" * 4)
 GRANT_BURST_RESPONSE_FORMAT = "<BBQH"
 COMMIT_READ_RESPONSE_FORMAT = "<BBQ"
 BURST_HEADER_FORMAT = "<BBIQHB"
@@ -185,6 +186,10 @@ class NodeStats:
     irq_fifo_entries_lt_3: int = 0
     irq_fifo_entries_lt_watermark: int = 0
     debug_irq_snapshot: int = 0
+    spurious_int1_events: int = 0
+    fifo_overrun_events: int = 0
+    fifo_discarded_samples: int = 0
+    fifo_uncertain_loss_events: int = 0
 
 
 @dataclass
@@ -530,6 +535,10 @@ def parse_buffer_state(payload: bytes) -> BufferState:
 
 
 def parse_stats(payload: bytes) -> NodeStats:
+    if len(payload) >= struct.calcsize(STATS_FORMAT_V7):
+        values = struct.unpack(STATS_FORMAT_V7, payload[: struct.calcsize(STATS_FORMAT_V7)])
+        return NodeStats(*values)
+
     if len(payload) >= struct.calcsize(STATS_FORMAT_V6):
         values = struct.unpack(STATS_FORMAT_V6, payload[: struct.calcsize(STATS_FORMAT_V6)])
         return NodeStats(*values)

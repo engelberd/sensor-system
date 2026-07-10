@@ -24,4 +24,6 @@ compile_and_run() {
 compile_and_run tests/decimating_filter_test.cpp
 compile_and_run tests/packet_queue_test.cpp
 compile_and_run tests/data_plane_test.cpp
+compile_and_run tests/fifo_service_policy_test.cpp
+compile_and_run tests/acquisition_engine_test.cpp
 compile_and_run tests/boot_update_protocol_test.cpp boot/boot_update_protocol.cpp

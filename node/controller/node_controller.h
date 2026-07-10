@@ -252,6 +252,8 @@ private:
     static constexpr uint8_t kDiagnosticFlagSampleStall = 0x08u;
     static constexpr uint8_t kDiagnosticFlagDegradedAcquisition = 0x10u;
     static constexpr uint8_t kDiagnosticFlagIrqFallbackActive = 0x20u;
+    static constexpr uint8_t kDiagnosticFlagConfirmedDataLoss = 0x40u;
+    static constexpr uint8_t kDiagnosticFlagUncertainDataLoss = 0x80u;
 
 private:
     static StatusCode map_sensor_status(SensorStatus status) {
@@ -1064,6 +1066,12 @@ private:
             (uptime_ms - stats.last_irq_event_ms) >= kDiagnosticStallThresholdMs) {
             resp.diagnostic_flags |= kDiagnosticFlagIrqFallbackActive;
         }
+        if (stats.fifo_overrun_events > 0 || stats.fifo_discarded_samples > 0) {
+            resp.diagnostic_flags |= kDiagnosticFlagConfirmedDataLoss;
+        }
+        if (stats.fifo_uncertain_loss_events > 0) {
+            resp.diagnostic_flags |= kDiagnosticFlagUncertainDataLoss;
+        }
         resp.fifo_poll_fallback_reads = stats.fifo_poll_fallback_reads;
         resp.soft_recover_count = stats.soft_recover_count;
         resp.no_data_with_irq = stats.no_data_with_irq;
@@ -1077,6 +1085,10 @@ private:
         resp.irq_fifo_entries_lt_3 = stats.irq_fifo_entries_lt_3;
         resp.irq_fifo_entries_lt_watermark = stats.irq_fifo_entries_lt_watermark;
         resp.debug_irq_snapshot = stats.debug_irq_snapshot;
+        resp.spurious_int1_events = stats.spurious_int1_events;
+        resp.fifo_overrun_events = stats.fifo_overrun_events;
+        resp.fifo_discarded_samples = stats.fifo_discarded_samples;
+        resp.fifo_uncertain_loss_events = stats.fifo_uncertain_loss_events;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -1147,6 +1159,10 @@ private:
         resp.irq_fifo_entries_lt_3 = st.irq_fifo_entries_lt_3;
         resp.irq_fifo_entries_lt_watermark = st.irq_fifo_entries_lt_watermark;
         resp.debug_irq_snapshot = st.debug_irq_snapshot;
+        resp.spurious_int1_events = st.spurious_int1_events;
+        resp.fifo_overrun_events = st.fifo_overrun_events;
+        resp.fifo_discarded_samples = st.fifo_discarded_samples;
+        resp.fifo_uncertain_loss_events = st.fifo_uncertain_loss_events;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);

@@ -8,6 +8,7 @@
 #include "common/sensor_types.h"
 #include "diagnostics/diagnostic_store.h"
 #include "adxl355/adxl355_registers.h"
+#include "acquisition/fifo_service_policy.h"
 #include "interfaces/i_accelerometer.h"
 #include "interfaces/i_sample_sink.h"
 #include "pico/critical_section.h"
@@ -49,6 +50,10 @@ struct AcquisitionStats {
     uint32_t irq_fifo_entries_lt_3 = 0;
     uint32_t irq_fifo_entries_lt_watermark = 0;
     uint32_t debug_irq_snapshot = 0;
+    uint32_t spurious_int1_events = 0;
+    uint32_t fifo_overrun_events = 0;
+    uint32_t fifo_discarded_samples = 0;
+    uint32_t fifo_uncertain_loss_events = 0;
 };
 
 template <size_t BufferCapacity>
@@ -145,6 +150,10 @@ public:
     SensorStatus reload_runtime_config(const DeviceConfig& config) {
         critical_section_enter_blocking(&cs_);
 
+        if (initialized_ && accelerometer_.supports_fifo()) {
+            update_fifo_watermark_mode_locked(true);
+        }
+
         SensorStatus st = apply_config_locked(config);
         if (st != SensorStatus::Ok) {
             critical_section_exit(&cs_);
@@ -191,19 +200,31 @@ public:
 
         const bool was_paused = paused_;
         paused_ = true;
-        const SensorStatus st = accelerometer_.run_self_test(result);
+        if (accelerometer_.supports_fifo()) {
+            update_fifo_watermark_mode_locked(true);
+        }
+
+        const SensorStatus test_status = accelerometer_.run_self_test(result);
+        SensorStatus restore_status = SensorStatus::Ok;
+        if (has_last_config_) {
+            restore_status = apply_config_locked(last_config_);
+            if (restore_status == SensorStatus::Ok) {
+                restore_status = apply_offsets_locked(last_config_);
+            }
+            last_fifo_service_ms_ = now_ms();
+        }
         paused_ = was_paused;
 
         critical_section_exit(&cs_);
-        return st;
+        return restore_status != SensorStatus::Ok ? restore_status : test_status;
     }
 
     void update() {
         critical_section_enter_blocking(&cs_);
-        ++stats_.update_calls;
+        saturating_increment(stats_.update_calls);
 
         if (!initialized_) {
-            ++stats_.sensor_errors;
+            saturating_increment(stats_.sensor_errors);
             critical_section_exit(&cs_);
             return;
         }
@@ -214,7 +235,7 @@ public:
         }
 
         if (accelerometer_.supports_fifo()) {
-            update_fifo_watermark_mode_locked();
+            update_fifo_watermark_mode_locked(false);
             critical_section_exit(&cs_);
             return;
         }
@@ -257,6 +278,20 @@ private:
         return static_cast<uint32_t>(now - since) >= interval_ms;
     }
 
+    static void saturating_increment(uint32_t& value) {
+        if (value != UINT32_MAX) {
+            ++value;
+        }
+    }
+
+    static void saturating_add(uint32_t& value, uint32_t increment) {
+        if (increment > UINT32_MAX - value) {
+            value = UINT32_MAX;
+        } else {
+            value += increment;
+        }
+    }
+
     static uint32_t pack_debug_config_snapshot(const SensorDiagnosticSnapshot& snapshot) {
         return
             static_cast<uint32_t>(snapshot.last_int_map) |
@@ -294,12 +329,7 @@ private:
             watermark = 3u;
         }
 
-        const uint32_t fill_time_ms = (watermark * 1000u + odr_hz - 1u) / odr_hz;
-        uint32_t interval_ms = fill_time_ms + (fill_time_ms / 4u) + kIrqFallbackGuardMs;
-        if (interval_ms < kMinIrqFallbackProbeIntervalMs) {
-            interval_ms = kMinIrqFallbackProbeIntervalMs;
-        }
-        return interval_ms;
+        return FifoServicePolicy::fallback_interval_ms(odr_hz, watermark);
     }
 
     void sync_diagnostic_stats_locked(const SensorDiagnosticSnapshot& snapshot) {
@@ -438,8 +468,8 @@ private:
         last_soft_recover_ms_ = now_ms_value;
         const SensorStatus st = apply_fifo_config_locked(last_config_);
         if (st != SensorStatus::Ok) {
-            ++stats_.sensor_errors;
-            ++stats_.consecutive_sensor_errors;
+            saturating_increment(stats_.sensor_errors);
+            saturating_increment(stats_.consecutive_sensor_errors);
             record_fault_locked(
                 DiagnosticSeverity::Warn,
                 DiagnosticEventCode::SensorConfigFailed,
@@ -450,7 +480,7 @@ private:
         }
 
         stats_.consecutive_no_data_reads = 0;
-        ++stats_.soft_recover_count;
+        saturating_increment(stats_.soft_recover_count);
         stats_.last_soft_recover_ms = now_ms_value;
         last_fifo_service_ms_ = now_ms_value;
         if (diagnostics_ != nullptr) {
@@ -465,10 +495,10 @@ private:
         return true;
     }
 
-    void update_fifo_watermark_mode_locked() {
+    void update_fifo_watermark_mode_locked(bool force_service) {
         const uint32_t now_ms_value = now_ms();
         SensorDiagnosticSnapshot sensor_diag{};
-        bool irq_seen = false;
+        bool raw_irq_seen = false;
         uint8_t irq_sources = 0;
         bool should_service_fifo = true;
         if (accelerometer_.supports_data_ready_interrupt()) {
@@ -478,21 +508,20 @@ private:
 
             const bool int1_event = (irq_sources & SENSOR_DIAG_FLAG_INT1_EVENT) != 0;
             const bool drdy_event = (irq_sources & SENSOR_DIAG_FLAG_DRDY_EVENT) != 0;
-            const bool watermark_irq_configured = sensor_diag.last_int_map != 0;
+            const bool watermark_irq_configured =
+                FifoServicePolicy::watermark_irq_configured(sensor_diag.last_int_map);
 
             if (int1_event) {
-                ++stats_.fifo_int1_events;
+                saturating_increment(stats_.fifo_int1_events);
             }
             if (drdy_event) {
-                ++stats_.fifo_drdy_events;
+                saturating_increment(stats_.fifo_drdy_events);
             }
 
-            irq_seen = watermark_irq_configured ? int1_event : (int1_event || drdy_event);
-            if (irq_seen) {
-                ++stats_.fifo_irq_events;
-                stats_.last_irq_event_ms = now_ms_value;
-                last_fifo_service_ms_ = now_ms_value;
-            } else if (!interval_elapsed(
+            raw_irq_seen = watermark_irq_configured ? int1_event : (int1_event || drdy_event);
+            if (raw_irq_seen) {
+                saturating_increment(stats_.fifo_irq_events);
+            } else if (!force_service && !interval_elapsed(
                            now_ms_value,
                            last_fifo_service_ms_,
                            watermark_irq_configured
@@ -500,8 +529,8 @@ private:
                                : kLegacyPollingIntervalMs
                        )) {
                 should_service_fifo = false;
-            } else {
-                ++stats_.fifo_poll_fallback_reads;
+            } else if (!force_service) {
+                saturating_increment(stats_.fifo_poll_fallback_reads);
             }
         } else {
             sensor_diag = accelerometer_.diagnostic_snapshot();
@@ -513,20 +542,21 @@ private:
 
         AccelSample samples[32]{};
         size_t total_samples_read = 0;
+        bool first_read = true;
 
         while (true) {
             uint8_t status = 0;
             SensorStatus status_read = accelerometer_.read_status(status);
             if (status_read != SensorStatus::Ok) {
-                ++stats_.sensor_errors;
-                ++stats_.consecutive_sensor_errors;
+                saturating_increment(stats_.sensor_errors);
+                saturating_increment(stats_.consecutive_sensor_errors);
                 if (diagnostics_ != nullptr &&
                     should_log_streak(stats_.consecutive_sensor_errors, 1u)) {
                     diagnostics_->record_fault(
                         DiagnosticSeverity::Error,
                         DiagnosticEventCode::FifoStatusReadError,
                         build_fault_context_locked(
-                            pack_sensor_snapshot_locked(irq_seen),
+                            pack_sensor_snapshot_locked(raw_irq_seen),
                             pack_sensor_status_streak(
                                 status_read,
                                 stats_.consecutive_sensor_errors
@@ -537,50 +567,88 @@ private:
                 break;
             }
 
-            if ((status & ADXL355::STATUS_FIFO_OVR_MASK) != 0) {
-                ++stats_.dropped_samples;
+            uint8_t fifo_entries_before_read = 0;
+            const SensorStatus entries_status =
+                accelerometer_.read_fifo_entries(fifo_entries_before_read);
+            if (entries_status != SensorStatus::Ok) {
+                saturating_increment(stats_.sensor_errors);
+                saturating_increment(stats_.consecutive_sensor_errors);
                 if (diagnostics_ != nullptr &&
-                    should_log_streak(stats_.dropped_samples, 1u)) {
+                    should_log_streak(stats_.consecutive_sensor_errors, 1u)) {
+                    diagnostics_->record_fault(
+                        DiagnosticSeverity::Error,
+                        DiagnosticEventCode::FifoStatusReadError,
+                        build_fault_context_locked(
+                            pack_sensor_snapshot_locked(raw_irq_seen),
+                            pack_sensor_status_streak(
+                                entries_status,
+                                stats_.consecutive_sensor_errors
+                            )
+                        )
+                    );
+                }
+                break;
+            }
+
+            const uint8_t configured_watermark =
+                (sensor_diag.last_fifo_samples != 0)
+                    ? sensor_diag.last_fifo_samples
+                    : static_cast<uint8_t>(last_config_.fifo_watermark);
+
+            if (raw_irq_seen && first_read) {
+                uint8_t irq_flags = 0;
+                if ((status & ADXL355::STATUS_FIFO_FULL_MASK) != 0) {
+                    irq_flags |= 0x01u;
+                } else {
+                    saturating_increment(stats_.irq_status_not_full);
+                }
+                if ((status & ADXL355::STATUS_FIFO_OVR_MASK) != 0) {
+                    irq_flags |= 0x02u;
+                }
+                if (fifo_entries_before_read < 3u) {
+                    irq_flags |= 0x04u;
+                    saturating_increment(stats_.irq_fifo_entries_lt_3);
+                }
+                if (fifo_entries_before_read < configured_watermark) {
+                    irq_flags |= 0x08u;
+                    saturating_increment(stats_.irq_fifo_entries_lt_watermark);
+                }
+                stats_.debug_irq_snapshot = pack_irq_debug_snapshot(
+                    status,
+                    fifo_entries_before_read,
+                    configured_watermark,
+                    irq_flags
+                );
+
+                if (!FifoServicePolicy::fifo_ready(
+                        status,
+                        fifo_entries_before_read,
+                        configured_watermark)) {
+                    saturating_increment(stats_.spurious_int1_events);
+                    return;
+                }
+
+                // Only a sensor-confirmed IRQ is allowed to reset IRQ health timing.
+                stats_.last_irq_event_ms = now_ms_value;
+            }
+
+            if (force_service && !raw_irq_seen && fifo_entries_before_read < 3u) {
+                return;
+            }
+
+            if ((status & ADXL355::STATUS_FIFO_OVR_MASK) != 0) {
+                saturating_increment(stats_.fifo_overrun_events);
+                // ADXL355 exposes only a sticky overrun bit, so one sample is a lower bound.
+                saturating_increment(stats_.dropped_samples);
+                if (diagnostics_ != nullptr &&
+                    should_log_streak(stats_.fifo_overrun_events, 1u)) {
                     diagnostics_->record_fault(
                         DiagnosticSeverity::Warn,
                         DiagnosticEventCode::FifoOverrun,
                         build_fault_context_locked(
-                            pack_sensor_snapshot_locked(irq_seen),
-                            static_cast<int32_t>(stats_.dropped_samples)
+                            pack_sensor_snapshot_locked(raw_irq_seen),
+                            static_cast<int32_t>(stats_.fifo_overrun_events)
                         )
-                    );
-                }
-            }
-
-            if (irq_seen && total_samples_read == 0) {
-                uint8_t fifo_entries_before_read = 0;
-                if (accelerometer_.read_fifo_entries(fifo_entries_before_read) == SensorStatus::Ok) {
-                    const uint8_t configured_watermark =
-                        (sensor_diag.last_fifo_samples != 0)
-                            ? sensor_diag.last_fifo_samples
-                            : static_cast<uint8_t>(last_config_.fifo_watermark);
-                    uint8_t irq_flags = 0;
-                    if ((status & ADXL355::STATUS_FIFO_FULL_MASK) != 0) {
-                        irq_flags |= 0x01u;
-                    } else {
-                        ++stats_.irq_status_not_full;
-                    }
-                    if ((status & ADXL355::STATUS_FIFO_OVR_MASK) != 0) {
-                        irq_flags |= 0x02u;
-                    }
-                    if (fifo_entries_before_read < 3u) {
-                        irq_flags |= 0x04u;
-                        ++stats_.irq_fifo_entries_lt_3;
-                    }
-                    if (fifo_entries_before_read < configured_watermark) {
-                        irq_flags |= 0x08u;
-                        ++stats_.irq_fifo_entries_lt_watermark;
-                    }
-                    stats_.debug_irq_snapshot = pack_irq_debug_snapshot(
-                        status,
-                        fifo_entries_before_read,
-                        configured_watermark,
-                        irq_flags
                     );
                 }
             }
@@ -588,15 +656,64 @@ private:
             size_t samples_read = 0;
             const SensorStatus st =
                 accelerometer_.read_fifo_samples(samples, 32, samples_read);
+            const SensorDiagnosticSnapshot read_diag = accelerometer_.diagnostic_snapshot();
+            const uint32_t discarded_samples = read_diag.last_fifo_discarded_samples;
+
+            if (discarded_samples > 0u) {
+                saturating_add(stats_.fifo_discarded_samples, discarded_samples);
+                saturating_add(stats_.dropped_samples, discarded_samples);
+            }
+            if ((read_diag.flags & SENSOR_DIAG_FLAG_FIFO_LOSS_UNCERTAIN) != 0u) {
+                saturating_increment(stats_.fifo_uncertain_loss_events);
+            }
+
+            if (samples_read > 0) {
+                saturating_increment(stats_.fifo_reads);
+                saturating_increment(stats_.fifo_batches);
+                saturating_add(stats_.fifo_samples_read, static_cast<uint32_t>(samples_read));
+                total_samples_read += samples_read;
+
+                StoredSample stored_batch[32]{};
+                size_t stored_count = 0;
+
+                for (size_t i = 0; i < samples_read; ++i) {
+                    StoredSample stored{};
+                    if (process_and_store_sample_locked(samples[i], stored)) {
+                        stored_batch[stored_count++] = stored;
+                    }
+                }
+
+                const uint32_t previous_no_data = stats_.consecutive_no_data_reads;
+                const uint32_t previous_sensor_errors = stats_.consecutive_sensor_errors;
+                stats_.consecutive_no_data_reads = 0;
+                if (st == SensorStatus::Ok) {
+                    stats_.consecutive_sensor_errors = 0;
+                }
+                last_fifo_service_ms_ = now_ms();
+                record_recovery_locked(previous_no_data, previous_sensor_errors);
+
+                if (sample_sink_ != nullptr && stored_count > 0) {
+                    sample_sink_->on_samples(stored_batch, stored_count);
+                }
+            }
 
             if (st == SensorStatus::NoData) {
-                if (total_samples_read == 0) {
-                    ++stats_.fifo_no_data;
-                    ++stats_.consecutive_no_data_reads;
-                    if (irq_seen) {
-                        ++stats_.no_data_with_irq;
+                if (discarded_samples > 0u) {
+                    saturating_increment(stats_.sensor_errors);
+                    saturating_increment(stats_.consecutive_sensor_errors);
+                    record_fault_locked(
+                        DiagnosticSeverity::Error,
+                        DiagnosticEventCode::InvalidSample,
+                        st,
+                        static_cast<int32_t>(discarded_samples)
+                    );
+                } else if (total_samples_read == 0) {
+                    saturating_increment(stats_.fifo_no_data);
+                    saturating_increment(stats_.consecutive_no_data_reads);
+                    if (raw_irq_seen) {
+                        saturating_increment(stats_.no_data_with_irq);
                     } else {
-                        ++stats_.no_data_without_irq;
+                        saturating_increment(stats_.no_data_without_irq);
                     }
                     if (should_log_streak(stats_.consecutive_no_data_reads, 8u)) {
                         if (diagnostics_ != nullptr) {
@@ -604,7 +721,7 @@ private:
                                 DiagnosticSeverity::Warn,
                                 DiagnosticEventCode::FifoRepeatedNoData,
                                 build_fault_context_locked(
-                                    pack_sensor_snapshot_locked(irq_seen),
+                                    pack_sensor_snapshot_locked(raw_irq_seen),
                                     static_cast<int32_t>(stats_.consecutive_no_data_reads)
                                 )
                             );
@@ -616,8 +733,8 @@ private:
             }
 
             if (st != SensorStatus::Ok) {
-                ++stats_.sensor_errors;
-                ++stats_.consecutive_sensor_errors;
+                saturating_increment(stats_.sensor_errors);
+                saturating_increment(stats_.consecutive_sensor_errors);
                 if (diagnostics_ != nullptr &&
                     should_log_streak(stats_.consecutive_sensor_errors, 1u)) {
                     diagnostics_->record_fault(
@@ -628,7 +745,7 @@ private:
                             ? DiagnosticEventCode::InvalidSample
                             : DiagnosticEventCode::SensorReadError,
                         build_fault_context_locked(
-                            pack_sensor_snapshot_locked(irq_seen),
+                            pack_sensor_snapshot_locked(raw_irq_seen),
                             pack_sensor_status_streak(
                                 st,
                                 stats_.consecutive_sensor_errors
@@ -639,37 +756,23 @@ private:
                 break;
             }
 
-            ++stats_.fifo_reads;
-            ++stats_.fifo_batches;
-            stats_.fifo_samples_read += static_cast<uint32_t>(samples_read);
-            total_samples_read += samples_read;
-
-            StoredSample stored_batch[32]{};
-            size_t stored_count = 0;
-
-            for (size_t i = 0; i < samples_read; ++i) {
-                StoredSample stored{};
-                if (process_and_store_sample_locked(samples[i], stored)) {
-                    stored_batch[stored_count++] = stored;
-                }
-            }
-
-            if (stored_count > 0) {
-                const uint32_t previous_no_data = stats_.consecutive_no_data_reads;
-                const uint32_t previous_sensor_errors = stats_.consecutive_sensor_errors;
-                stats_.consecutive_no_data_reads = 0;
-                stats_.consecutive_sensor_errors = 0;
-                last_fifo_service_ms_ = now_ms();
-                record_recovery_locked(previous_no_data, previous_sensor_errors);
-            }
-
-            if (sample_sink_ != nullptr && stored_count > 0) {
-                sample_sink_->on_samples(stored_batch, stored_count);
+            if (samples_read == 0) {
+                saturating_increment(stats_.sensor_errors);
+                saturating_increment(stats_.consecutive_sensor_errors);
+                record_fault_locked(
+                    DiagnosticSeverity::Error,
+                    DiagnosticEventCode::SensorReadError,
+                    SensorStatus::InternalError,
+                    0
+                );
+                break;
             }
 
             if (samples_read < 32) {
                 break;
             }
+            first_read = false;
+            raw_irq_seen = false;
         }
     }
 
@@ -678,13 +781,13 @@ private:
         const SensorStatus st = accelerometer_.read_sample(sample);
 
         if (st == SensorStatus::NoData) {
-            ++stats_.consecutive_no_data_reads;
+            saturating_increment(stats_.consecutive_no_data_reads);
             return;
         }
 
         if (st != SensorStatus::Ok) {
-            ++stats_.sensor_errors;
-            ++stats_.consecutive_sensor_errors;
+            saturating_increment(stats_.sensor_errors);
+            saturating_increment(stats_.consecutive_sensor_errors);
             return;
         }
 
@@ -720,9 +823,9 @@ private:
         stored.z = output.z;
 
         if (buffer_.push_sample(stored)) {
-            ++stats_.sample_buffer_overwrite_count;
+            saturating_increment(stats_.sample_buffer_overwrite_count);
         }
-        ++stats_.pushed_samples;
+        saturating_increment(stats_.pushed_samples);
         return true;
     }
 
@@ -730,8 +833,6 @@ private:
     static constexpr DecimationFilterProfile kDefaultFilterProfile =
         DecimationFilterProfile::Balanced;
     static constexpr uint32_t kLegacyPollingIntervalMs = 8;
-    static constexpr uint32_t kMinIrqFallbackProbeIntervalMs = 25;
-    static constexpr uint32_t kIrqFallbackGuardMs = 10;
     static constexpr uint32_t kSoftRecoverNoDataThreshold = 32;
     static constexpr uint32_t kSoftRecoverCooldownMs = 1000;
 

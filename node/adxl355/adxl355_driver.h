@@ -59,8 +59,12 @@ private:
 
     static Adxl355Driver* active_instance_;
     volatile uint8_t data_ready_sources_ = 0;
+    bool int1_irq_enabled_ = false;
 
     static void gpio_irq_handler(uint gpio, uint32_t events);
+    void disable_int1_irq();
+    void enable_int1_irq();
+    void clear_pending_irq_sources();
 
     
 

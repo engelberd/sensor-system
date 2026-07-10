@@ -72,6 +72,7 @@ GET_STATUS_FORMAT_V3 = "<BBBBHBIIIIQIHBBIIII"
 GET_STATUS_FORMAT_V4 = "<BBBBHBIIIIQIHBBIIIIII"
 GET_STATUS_FORMAT_V5 = GET_STATUS_FORMAT_V4 + "III"
 GET_STATUS_FORMAT_V6 = GET_STATUS_FORMAT_V5 + "IIII"
+GET_STATUS_FORMAT_V7 = GET_STATUS_FORMAT_V6 + "IIII"
 GET_DIAGNOSTIC_INFO_FORMAT = "<BBIBBHHIIIIH"
 GET_FAULT_SNAPSHOT_FORMAT = "<BBIIHBBQIIIIIIii"
 GET_FAULT_SNAPSHOT_FORMAT_V2 = GET_FAULT_SNAPSHOT_FORMAT + "III"
@@ -240,6 +241,10 @@ class StatusView:
     irq_fifo_entries_lt_3: int = 0
     irq_fifo_entries_lt_watermark: int = 0
     debug_irq_snapshot: int = 0
+    spurious_int1_events: int = 0
+    fifo_overrun_events: int = 0
+    fifo_discarded_samples: int = 0
+    fifo_uncertain_loss_events: int = 0
 
 
 @dataclass
@@ -570,6 +575,41 @@ def parse_config_view(payload: bytes) -> ConfigView:
 
 
 def parse_status_view(payload: bytes) -> StatusView:
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V7):
+        values = struct.unpack(GET_STATUS_FORMAT_V7, payload[: struct.calcsize(GET_STATUS_FORMAT_V7)])
+        return StatusView(
+            node_id=values[2],
+            node_state=values[3],
+            odr_hz=values[4],
+            range_g=values[5],
+            protocol_version=values[6],
+            firmware_version=values[7],
+            dropped_samples=values[8],
+            uptime_ms=values[9],
+            last_sample_seq=values[10],
+            last_progress_ms_ago=values[11],
+            last_error_code=values[12],
+            reset_cause=values[13],
+            diagnostic_flags=values[14],
+            fifo_poll_fallback_reads=values[15],
+            soft_recover_count=values[16],
+            no_data_with_irq=values[17],
+            no_data_without_irq=values[18],
+            irq_int1_events=values[19],
+            irq_drdy_events=values[20],
+            gpio_int1_edges=values[21],
+            gpio_drdy_edges=values[22],
+            debug_config_snapshot=values[23],
+            irq_status_not_full=values[24],
+            irq_fifo_entries_lt_3=values[25],
+            irq_fifo_entries_lt_watermark=values[26],
+            debug_irq_snapshot=values[27],
+            spurious_int1_events=values[28],
+            fifo_overrun_events=values[29],
+            fifo_discarded_samples=values[30],
+            fifo_uncertain_loss_events=values[31],
+        )
+
     if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V6):
         values = struct.unpack(GET_STATUS_FORMAT_V6, payload[: struct.calcsize(GET_STATUS_FORMAT_V6)])
         return StatusView(
@@ -1111,7 +1151,7 @@ def print_config(config: ConfigView) -> None:
     print(f"  offset_x       : {config.offset_x}")
     print(f"  offset_y       : {config.offset_y}")
     print(f"  offset_z       : {config.offset_z}")
-    print(f"  fifo_watermark : {config.fifo_watermark}")
+    print(f"  fifo_watermark : {config.fifo_watermark} entries ({config.fifo_watermark // 3} XYZ samples)")
     print(f"  act_threshold  : {config.act_threshold}")
     print(f"  act_count      : {config.act_count}")
 
@@ -1151,6 +1191,10 @@ def print_status(status: StatusView) -> None:
     print(f"  irq_status_nf    : {status.irq_status_not_full}")
     print(f"  irq_entries_lt3  : {status.irq_fifo_entries_lt_3}")
     print(f"  irq_entries_ltwm : {status.irq_fifo_entries_lt_watermark}")
+    print(f"  spurious_int1    : {status.spurious_int1_events}")
+    print(f"  fifo_overruns    : {status.fifo_overrun_events}")
+    print(f"  fifo_discarded   : {status.fifo_discarded_samples}")
+    print(f"  fifo_loss_unknown: {status.fifo_uncertain_loss_events}")
     print(f"  irq_last_status  : 0x{irq_debug['status_reg']:02X}")
     print(f"  irq_last_entries : {irq_debug['fifo_entries']}")
     print(f"  irq_last_wm      : {irq_debug['watermark']}")
@@ -1180,6 +1224,10 @@ def format_diagnostic_flags(flags: int) -> str:
         names.append("degraded_acquisition")
     if flags & 0x20:
         names.append("irq_fallback_active")
+    if flags & 0x40:
+        names.append("confirmed_data_loss")
+    if flags & 0x80:
+        names.append("uncertain_data_loss")
     return ",".join(names) if names else "none"
 
 

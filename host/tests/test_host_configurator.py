@@ -17,6 +17,7 @@ from host.host_configurator import (
     GET_STATUS_FORMAT_V4,
     GET_STATUS_FORMAT_V5,
     GET_STATUS_FORMAT_V6,
+    GET_STATUS_FORMAT_V7,
     READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT,
     READ_DIAGNOSTIC_EVENT_FORMAT,
     ConfigView,
@@ -27,7 +28,7 @@ from host.host_configurator import (
     parse_status_view,
     sync_system_config_from_device_config,
 )
-from host.host_lab import parse_stats
+from host.host_lab import STATS_FORMAT_V7, parse_stats
 
 
 class HostConfiguratorSyncTests(unittest.TestCase):
@@ -186,6 +187,21 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(status.irq_fifo_entries_lt_3, 44)
         self.assertEqual(status.irq_fifo_entries_lt_watermark, 55)
         self.assertEqual(status.debug_irq_snapshot, 0x08071E02)
+
+    def test_parse_v7_status_view_includes_loss_accounting(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V7,
+            0x40, 0, 7, 2, 250, 2, 2, 0x00030700, 9,
+            12345, 67890, 3, 0, 1, 0,
+            12, 2, 5, 9, 101, 0, 303, 0, 0x00001E06,
+            33, 44, 55, 0x0C1E0000,
+            77, 2, 4, 1,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.spurious_int1_events, 77)
+        self.assertEqual(status.fifo_overrun_events, 2)
+        self.assertEqual(status.fifo_discarded_samples, 4)
+        self.assertEqual(status.fifo_uncertain_loss_events, 1)
 
     def test_parse_v2_status_view_keeps_new_fields_defaulted(self) -> None:
         payload = struct.pack(
@@ -468,6 +484,22 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(stats.irq_fifo_entries_lt_3, 44)
         self.assertEqual(stats.irq_fifo_entries_lt_watermark, 55)
         self.assertEqual(stats.debug_irq_snapshot, 0x08071E02)
+
+    def test_parse_stats_v7_includes_loss_accounting(self) -> None:
+        payload = struct.pack(
+            STATS_FORMAT_V7,
+            0x43, 0, 1001,
+            1000, 3, 4, 5000, 100, 7, 8, 90, 91, 92, 55, 66, 10, 11,
+            999,
+            1234, 2, 1, 12, 13, 14, 15, 1600, 1700, 303, 404,
+            0x01021E01, 33, 44, 55, 0x08071E02,
+            77, 2, 4, 1,
+        )
+        stats = parse_stats(payload)
+        self.assertEqual(stats.spurious_int1_events, 77)
+        self.assertEqual(stats.fifo_overrun_events, 2)
+        self.assertEqual(stats.fifo_discarded_samples, 4)
+        self.assertEqual(stats.fifo_uncertain_loss_events, 1)
 
     def test_dump_diagnostics_parser_accepts_limit(self) -> None:
         args = build_parser().parse_args(["dump-diagnostics", "--start-event-id", "7", "--limit", "12"])

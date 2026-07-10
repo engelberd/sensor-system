@@ -1,14 +1,13 @@
 # TODO
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 ## Priority Now
 
 - Investigate `INT1` behavior on `line-e`.
 - Confirm whether `INT1` carries valid FIFO watermark interrupts or false edges.
-- Decide whether production mode should use:
-  - FIFO watermark IRQ on `INT1`
-  - controlled FIFO polling
+- Validate firmware `0.3.8` rejection of false `INT1` edges on line E.
+- Confirm that fallback counters increase without FIFO overrun when INT1 is disconnected.
 
 ## Sensor / Firmware
 
@@ -18,12 +17,13 @@ Last updated: 2026-07-09
   - `FIFO_ENTRIES=0`
 - Compare `line-e` against a known-good line on the same firmware version.
 - Re-check `INT_MAP`, `FIFO_SAMPLES`, `STATUS`, and `FIFO_ENTRIES` behavior after longer runtime.
-- Decide whether `INT1` should remain production-critical or debug-only.
+- Decide whether `INT1` should remain production-critical after the protected fallback test.
 - Review long-term counter design for 24/7 operation:
   - `uptime_ms` wraps after about 49.7 days
   - several diagnostic counters are still `uint32_t`
 - Identify which counters should be upgraded to `uint64_t`.
 - Consider adding explicit wrap-safe reporting for long-lived systems.
+- Add a hardware-in-the-loop test for partial SPI transfer and FIFO axis mismatch.
 
 ## Hardware / Electrical
 
@@ -31,6 +31,7 @@ Last updated: 2026-07-09
   - `INT1 -> GP10`
   - `DRDY -> GP11`
 - Check if `INT1` line has ringing, floating behavior, or injected noise.
+- Check whether the extra edge appears immediately after FIFO service and INT1 deassertion.
 - Confirm resistor / pull configuration on the PCB and sensor side.
 - Compare behavior on alternate lines/boards with the same firmware.
 - If possible, inspect `INT1` waveform with external measurement equipment.
@@ -38,6 +39,7 @@ Last updated: 2026-07-09
 ## Host / Diagnostics
 
 - Keep `dump-diagnostics` and recorder logs aligned with newest firmware payloads.
+- Surface `spurious_int1`, `fifo_overruns`, `fifo_discarded`, and `fifo_loss_unknown` in the dashboard.
 - Continue validating persistent diagnostic record parsing after format extensions.
 - Decide whether some debug fields should be shown in dashboard / operator panel.
 - Add a compact diagnostic summary command for quick field debugging.

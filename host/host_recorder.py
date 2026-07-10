@@ -85,6 +85,8 @@ RECORDER_SCHEMA_VERSION = 4
 RECORDER_VERSION = "0.3.0"
 DEFAULT_WINDOW_SECONDS = 600
 STANDARD_GRAVITY_M_S2 = 9.80665
+GET_VERSION_FORMAT = "<BBBBBB"
+CMD_GET_VERSION = 0x04
 
 
 @dataclass
@@ -109,6 +111,7 @@ class TemperatureRecord:
 class RecorderNode:
     node_id: int
     config: ConfigView
+    firmware_version: str | None = None
     committed_sample_seq: int = 0
     expected_sample_seq: int = 0
     last_written_seq: int = 0
@@ -649,6 +652,25 @@ def send_and_parse_config(client: ProtocolClient, node_id: int, timeout_s: float
     return parse_config_view(response.payload)
 
 
+def send_and_parse_version(client: ProtocolClient, node_id: int, timeout_s: float) -> str:
+    sequence = client.send_command(node_id, bytes([CMD_GET_VERSION]))
+    response = client.wait_for_response(node_id, sequence, timeout_s)
+    if response is None:
+        raise RuntimeError(f"node {node_id}: no GetVersion response")
+    try:
+        command, status, fw_major, fw_minor, fw_patch, _protocol_version = struct.unpack(
+            GET_VERSION_FORMAT,
+            response.payload,
+        )
+    except struct.error as exc:
+        raise RuntimeError(f"node {node_id}: malformed GetVersion response") from exc
+    if command != CMD_GET_VERSION:
+        raise RuntimeError(f"node {node_id}: unexpected GetVersion command echo={command}")
+    if status != STATUS_OK:
+        raise RuntimeError(f"node {node_id}: GetVersion failed with status={status}")
+    return f"v{fw_major}.{fw_minor}.{fw_patch}"
+
+
 def send_and_parse_buffer_state(client: ProtocolClient, node_id: int, timeout_s: float):
     sequence = client.send_command(node_id, build_buffer_state_payload())
     response = client.wait_for_response(node_id, sequence, timeout_s)
@@ -685,7 +707,8 @@ def initialize_node(
 ) -> RecorderNode:
     config = send_and_parse_config(client, node_id, timeout_s)
     state = send_and_parse_buffer_state(client, node_id, timeout_s)
-    node = RecorderNode(node_id=node_id, config=config)
+    firmware_version = send_and_parse_version(client, node_id, timeout_s)
+    node = RecorderNode(node_id=node_id, config=config, firmware_version=firmware_version)
 
     if start_from == "newest":
         newest = state.newest_packet_last_seq or state.newest_seq
@@ -896,6 +919,7 @@ def write_runtime_status(
             RuntimeStatusNode(
                 node_id=node.node_id,
                 name=None,
+                firmware_version=node.firmware_version,
                 online=node.online,
                 sensor_odr_hz=node.config.odr_hz,
                 output_odr_hz=effective_output_odr_hz(node.config.odr_hz),
@@ -1140,6 +1164,10 @@ def print_status(nodes: Iterable[RecorderNode], started_at: float) -> None:
                 f" irq_lt3={node.last_stats.irq_fifo_entries_lt_3}"
                 f" irq_ltwm={node.last_stats.irq_fifo_entries_lt_watermark}"
                 f" irqdbg=0x{node.last_stats.debug_irq_snapshot:08X}"
+                f" spurious_i1={node.last_stats.spurious_int1_events}"
+                f" fifo_ovr={node.last_stats.fifo_overrun_events}"
+                f" fifo_discard={node.last_stats.fifo_discarded_samples}"
+                f" fifo_loss_unknown={node.last_stats.fifo_uncertain_loss_events}"
                 f" totals=({node_total_sensor_loss(node)}/{node_total_rx_overflow(node)}/{node_total_packet_overwrite(node)})"
             )
         print(

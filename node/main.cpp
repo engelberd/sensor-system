@@ -194,7 +194,7 @@ int main() {
         DecimatingFilterX2::kDecimationFactor;
 
     printf(
-        "CONFIG: node_id=%u baud=%lu sensor_odr=%u output_odr=%lu.%03lu range=%u high_pass_corner=%u offsets=(%ld,%ld,%ld) fifo_watermark=%u\n",
+        "CONFIG: node_id=%u baud=%lu sensor_odr=%u output_odr=%lu.%03lu range=%u high_pass_corner=%u offsets=(%ld,%ld,%ld) fifo_watermark_entries=%u fifo_watermark_xyz=%u\n",
         static_cast<unsigned>(cfg.node_id),
         static_cast<unsigned long>(cfg.baudrate),
         static_cast<unsigned>(cfg.odr_hz),
@@ -205,7 +205,8 @@ int main() {
         static_cast<long>(cfg.offset_x),
         static_cast<long>(cfg.offset_y),
         static_cast<long>(cfg.offset_z),
-        static_cast<unsigned>(cfg.fifo_watermark)
+        static_cast<unsigned>(cfg.fifo_watermark),
+        static_cast<unsigned>(cfg.fifo_watermark / 3u)
     );
 
     static RuntimeT runtime{};

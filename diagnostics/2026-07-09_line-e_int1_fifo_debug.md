@@ -10,8 +10,9 @@ Port during tests: `/dev/ttyCH9344USB4`
 - Recent runs show about `125 samples/s`, `gaps=0`, `sensor_loss=0`.
 - `sample_seq` handling is healthy and not the current issue.
 - `DRDY` was disabled as an active acquisition source.
-- Fallback polling was reduced so it no longer drains FIFO prematurely.
-- FIFO reads now allow partial success instead of discarding a whole batch.
+- Firmware `0.3.8` validates INT1 against `STATUS` and `FIFO_ENTRIES` before touching FIFO.
+- Firmware `0.3.8` rejects false INT1 edges without delaying fallback.
+- Partial FIFO reads preserve valid prefix samples and explicitly count discarded data.
 - `INT1` is active and generates many edges/events.
 - A large fraction of `INT1`-triggered service attempts still return `NoData`.
 
@@ -50,6 +51,8 @@ Port during tests: `/dev/ttyCH9344USB4`
   - `DATA_RDY`
   - `ACTIVITY`
 - Therefore repeated `INT1` events with `STATUS=0x00` and `FIFO_ENTRIES=0` do not match expected FIFO watermark behavior.
+- `FIFO_SAMPLES=30` means 30 axis entries, equivalent to 10 complete XYZ samples.
+- At 250 Hz the expected watermark time is 40 ms and the full 96-entry FIFO time is 128 ms.
 
 ## Changes Already Made
 
@@ -62,6 +65,13 @@ Port during tests: `/dev/ttyCH9344USB4`
   - allowed partial FIFO read success
   - changed fallback timing to depend on watermark/ODR
   - added IRQ-specific debug counters and snapshots
+- `0.3.8`
+  - corrected fallback timing to use three FIFO entries per XYZ sample
+  - bounded fallback before the FIFO capacity deadline at every supported ODR
+  - rejected INT1 when status and entry count do not confirm FIFO data
+  - delayed IRQ arming until sensor configuration is complete
+  - preserved valid prefix samples while reporting discarded or uncertain data loss
+  - added saturating diagnostic counters and explicit loss telemetry
 
 ## Things To Check Next
 
