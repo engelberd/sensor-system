@@ -74,12 +74,14 @@ GET_STATUS_FORMAT_V5 = GET_STATUS_FORMAT_V4 + "III"
 GET_STATUS_FORMAT_V6 = GET_STATUS_FORMAT_V5 + "IIII"
 GET_STATUS_FORMAT_V7 = GET_STATUS_FORMAT_V6 + "IIII"
 GET_DIAGNOSTIC_INFO_FORMAT = "<BBIBBHHIIIIH"
+# Current firmware places debug fields before arg0/arg1. Keep the legacy
+# layouts below so dumps from older nodes remain readable.
 GET_FAULT_SNAPSHOT_FORMAT = "<BBIIHBBQIIIIIIii"
-GET_FAULT_SNAPSHOT_FORMAT_V2 = GET_FAULT_SNAPSHOT_FORMAT + "III"
-GET_FAULT_SNAPSHOT_FORMAT_V3 = GET_FAULT_SNAPSHOT_FORMAT_V2 + "I"
+GET_FAULT_SNAPSHOT_FORMAT_V2 = "<BBIIHBBQIIIIIIIIIii"
+GET_FAULT_SNAPSHOT_FORMAT_V3 = "<BBIIHBBQIIIIIIIIIIii"
 GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT = "<BBIIIIIHBBBBHQIIIIIIii"
-GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2 = GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT + "III"
-GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3 = GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2 + "I"
+GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2 = "<BBIIIIIHBBBBHQIIIIIIIIIii"
+GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3 = "<BBIIIIIHBBBBHQIIIIIIIIIIii"
 READ_DIAGNOSTIC_EVENTS_REQUEST_FORMAT = "<BIB"
 READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT = "<BBBBII"
 READ_DIAGNOSTIC_EVENT_FORMAT = "<IIHBBQii"
@@ -782,12 +784,12 @@ def parse_fault_snapshot_view(payload: bytes) -> FaultSnapshotView:
             dropped_samples=values[11],
             rx_overflow_count=values[12],
             packet_overwrite_count=values[13],
-            arg0=values[14],
-            arg1=values[15],
-            debug_gpio_int1_edges=values[16],
-            debug_gpio_drdy_edges=values[17],
-            debug_config_snapshot=values[18],
-            debug_irq_snapshot=values[19],
+            debug_gpio_int1_edges=values[14],
+            debug_gpio_drdy_edges=values[15],
+            debug_config_snapshot=values[16],
+            debug_irq_snapshot=values[17],
+            arg0=values[18],
+            arg1=values[19],
         )
 
     if len(payload) >= struct.calcsize(GET_FAULT_SNAPSHOT_FORMAT_V2):
@@ -808,11 +810,11 @@ def parse_fault_snapshot_view(payload: bytes) -> FaultSnapshotView:
             dropped_samples=values[11],
             rx_overflow_count=values[12],
             packet_overwrite_count=values[13],
-            arg0=values[14],
-            arg1=values[15],
-            debug_gpio_int1_edges=values[16],
-            debug_gpio_drdy_edges=values[17],
-            debug_config_snapshot=values[18],
+            debug_gpio_int1_edges=values[14],
+            debug_gpio_drdy_edges=values[15],
+            debug_config_snapshot=values[16],
+            arg0=values[17],
+            arg1=values[18],
         )
 
     values = struct.unpack(
@@ -860,12 +862,12 @@ def parse_persistent_diagnostic_record_view(payload: bytes) -> PersistentDiagnos
             dropped_samples=values[17],
             rx_overflow_count=values[18],
             packet_overwrite_count=values[19],
-            arg0=values[20],
-            arg1=values[21],
-            debug_gpio_int1_edges=values[22],
-            debug_gpio_drdy_edges=values[23],
-            debug_config_snapshot=values[24],
-            debug_irq_snapshot=values[25],
+            debug_gpio_int1_edges=values[20],
+            debug_gpio_drdy_edges=values[21],
+            debug_config_snapshot=values[22],
+            debug_irq_snapshot=values[23],
+            arg0=values[24],
+            arg1=values[25],
         )
 
     if len(payload) >= struct.calcsize(GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2):
@@ -890,11 +892,11 @@ def parse_persistent_diagnostic_record_view(payload: bytes) -> PersistentDiagnos
             dropped_samples=values[17],
             rx_overflow_count=values[18],
             packet_overwrite_count=values[19],
-            arg0=values[20],
-            arg1=values[21],
-            debug_gpio_int1_edges=values[22],
-            debug_gpio_drdy_edges=values[23],
-            debug_config_snapshot=values[24],
+            debug_gpio_int1_edges=values[20],
+            debug_gpio_drdy_edges=values[21],
+            debug_config_snapshot=values[22],
+            arg0=values[23],
+            arg1=values[24],
         )
 
     values = struct.unpack(

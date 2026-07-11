@@ -77,12 +77,23 @@ from host.common.runtime_status import (
     RuntimeStatusNode,
     RuntimeStatusSnapshot,
 )
+from host.host_configurator import (
+    CMD_GET_DIAGNOSTIC_INFO,
+    CMD_CLEAR_DIAGNOSTIC_EVENTS,
+    CMD_READ_DIAGNOSTIC_EVENTS,
+    READ_DIAGNOSTIC_EVENTS_REQUEST_FORMAT,
+    format_diagnostic_detail,
+    format_diagnostic_event_code,
+    format_diagnostic_severity,
+    parse_diagnostic_events,
+    parse_diagnostic_info_view,
+)
 from host.live_web import LiveBuffer, LiveGap, LiveSample, LiveServer
 
 
 SAMPLE_PAYLOAD_OFFSET = struct.calcsize(BURST_HEADER_FORMAT)
 RECORDER_SCHEMA_VERSION = 4
-RECORDER_VERSION = "0.3.0"
+RECORDER_VERSION = "0.3.1"
 DEFAULT_WINDOW_SECONDS = 600
 STANDARD_GRAVITY_M_S2 = 9.80665
 GET_VERSION_FORMAT = "<BBBBBB"
@@ -134,6 +145,9 @@ class RecorderNode:
     instant_samples_per_second_5s: Optional[float] = None
     rate_stability_percent_5s: Optional[float] = None
     rate_history: deque[tuple[float, int]] | None = None
+    next_diagnostic_event_id: int = 1
+    diagnostic_dropped_events: int = 0
+    diagnostic_clock_offset_ms: int | None = None
 
 
 class StopFlag:
@@ -750,11 +764,185 @@ def make_writer(args: argparse.Namespace, metadata: dict[str, object], nodes: li
     return make_single_writer(args, metadata, Path(args.output))
 
 
-def refresh_stats(client: ProtocolClient, node: RecorderNode, timeout_s: float) -> None:
+def refresh_stats(client: ProtocolClient, node: RecorderNode, timeout_s: float) -> NodeStats | None:
+    previous = node.last_stats
     sequence = client.send_command(node.node_id, build_stats_payload())
     response = client.wait_for_response(node.node_id, sequence, timeout_s)
     if response is not None:
         node.last_stats = parse_stats(response.payload)
+    return previous
+
+
+def _diagnostic_severity_name(value: int) -> str:
+    return {0: "debug", 1: "info", 2: "warning", 3: "error", 4: "critical"}.get(value, "warning")
+
+
+def _send_diagnostic_command(
+    client: ProtocolClient,
+    node_id: int,
+    payload: bytes,
+    timeout_s: float,
+) -> bytes:
+    sequence = client.send_command(node_id, payload)
+    response = client.wait_for_response(node_id, sequence, timeout_s)
+    if response is None or len(response.payload) < 2:
+        raise RuntimeError("diagnostic command returned no valid response")
+    if response.payload[1] != STATUS_OK:
+        raise RuntimeError(f"diagnostic command failed with status={response.payload[1]}")
+    return response.payload
+
+
+def _diagnostic_message(event_code: int, repeat_count: int) -> str:
+    name = format_diagnostic_event_code(event_code)
+    messages = {
+        32: "Przepełnienie FIFO: próbki mogły zostać utracone.",
+        33: "Nie udało się odczytać stanu FIFO.",
+        34: "Czujnik wielokrotnie nie zwrócił danych.",
+        35: "Błąd odczytu danych z czujnika.",
+        36: "Odrzucono nieprawidłową próbkę czujnika.",
+        37: "Akwizycja wróciła do prawidłowej pracy.",
+        48: "Nie udało się odczytać temperatury czujnika.",
+    }
+    message = messages.get(event_code, f"Zdarzenie diagnostyczne czujnika: {name}.")
+    if repeat_count:
+        message += f" Powtórzenia: {repeat_count}."
+    return message
+
+
+def archive_node_diagnostics(
+    client: ProtocolClient,
+    node: RecorderNode,
+    timeout_s: float,
+    event_writer: JsonlEventWriter,
+    archive_writer: JsonlEventWriter,
+) -> None:
+    info_payload = _send_diagnostic_command(
+        client, node.node_id, bytes([CMD_GET_DIAGNOSTIC_INFO]), timeout_s
+    )
+    info = parse_diagnostic_info_view(info_payload)
+    host_now_ms = time.time_ns() // 1_000_000
+    node.diagnostic_clock_offset_ms = host_now_ms - info.uptime_ms
+
+    if info.dropped_event_count < node.diagnostic_dropped_events:
+        node.diagnostic_dropped_events = 0
+    if info.dropped_event_count > node.diagnostic_dropped_events:
+        delta = info.dropped_event_count - node.diagnostic_dropped_events
+        fields = {
+            "message": f"Historia czujnika utraciła {delta} zdarzeń przed archiwizacją.",
+            "lost_event_count": delta,
+            "dropped_event_count": info.dropped_event_count,
+            "first_available_event_id": info.first_event_id,
+        }
+        event_writer.emit("diagnostic_history_gap", severity="critical", node_id=node.node_id, fields=fields)
+        archive_writer.emit("diagnostic_history_gap", severity="critical", node_id=node.node_id, fields=fields)
+    node.diagnostic_dropped_events = info.dropped_event_count
+
+    if node.next_diagnostic_event_id < info.first_event_id:
+        delta = info.first_event_id - node.next_diagnostic_event_id
+        # Event ids also cover intentionally filtered debug/info events and
+        # survive an acknowledged RAM-buffer clear. Only the node's explicit
+        # dropped counter proves that diagnostic history was actually lost.
+        if info.dropped_event_count > 0:
+            fields = {
+                "message": f"Brakuje {delta} starszych zdarzeń w historii czujnika.",
+                "lost_event_count": delta,
+                "requested_event_id": node.next_diagnostic_event_id,
+                "first_available_event_id": info.first_event_id,
+            }
+            event_writer.emit("diagnostic_history_gap", severity="critical", node_id=node.node_id, fields=fields)
+            archive_writer.emit("diagnostic_history_gap", severity="critical", node_id=node.node_id, fields=fields)
+        node.next_diagnostic_event_id = info.first_event_id
+
+    while node.next_diagnostic_event_id < info.next_event_id:
+        request = struct.pack(
+            READ_DIAGNOSTIC_EVENTS_REQUEST_FORMAT,
+            CMD_READ_DIAGNOSTIC_EVENTS,
+            node.next_diagnostic_event_id,
+            16,
+        )
+        payload = _send_diagnostic_command(client, node.node_id, request, timeout_s)
+        first_id, next_id, events = parse_diagnostic_events(payload)
+        if not events:
+            node.next_diagnostic_event_id = info.next_event_id
+            break
+        for item in events:
+            event_utc = datetime.fromtimestamp(
+                (node.diagnostic_clock_offset_ms + item.time_ms) / 1000.0,
+                tz=timezone.utc,
+            ).isoformat()
+            fields: dict[str, object] = {
+                "message": _diagnostic_message(item.event_code, item.repeat_count),
+                "node_event_utc": event_utc,
+                "node_event_id": item.event_id,
+                "node_uptime_ms": item.time_ms,
+                "node_event_code": item.event_code,
+                "node_event_name": format_diagnostic_event_code(item.event_code),
+                "node_severity": format_diagnostic_severity(item.severity),
+                "repeat_count": item.repeat_count,
+                "sample_seq": item.sample_seq,
+                "arg0": item.arg0,
+                "arg1": item.arg1,
+            }
+            detail = format_diagnostic_detail(item.event_code, item.arg0, item.arg1)
+            if detail is not None:
+                fields["technical_detail"] = detail
+            severity = _diagnostic_severity_name(item.severity)
+            event_writer.emit("node_diagnostic_event", severity=severity, node_id=node.node_id, fields=fields)
+            archive_writer.emit("node_diagnostic_event", severity=severity, node_id=node.node_id, fields=fields)
+            node.next_diagnostic_event_id = item.event_id + 1
+        if node.next_diagnostic_event_id >= next_id or next_id <= first_id:
+            break
+
+    if (
+        info.stored_event_count >= max(1, (info.event_capacity * 3) // 4)
+        and node.next_diagnostic_event_id >= info.next_event_id
+    ):
+        _send_diagnostic_command(
+            client, node.node_id, bytes([CMD_CLEAR_DIAGNOSTIC_EVENTS]), timeout_s
+        )
+        archive_writer.emit(
+            "diagnostic_history_acknowledged",
+            node_id=node.node_id,
+            fields={
+                "message": "Historia czujnika została bezpiecznie zarchiwizowana i zwolniono bufor węzła.",
+                "archived_through_event_id": info.next_event_id - 1,
+                "stored_event_count": info.stored_event_count,
+            },
+        )
+
+
+def emit_stats_changes(
+    node: RecorderNode,
+    previous: NodeStats | None,
+    event_writer: JsonlEventWriter,
+    archive_writer: JsonlEventWriter,
+) -> None:
+    current = node.last_stats
+    if previous is None or current is None:
+        return
+    counters = (
+        ("dropped_samples", "sample_loss", "critical", "Utracono próbki pomiarowe."),
+        ("fifo_overrun_events", "fifo_overrun", "critical", "Wykryto przepełnienie FIFO."),
+        ("fifo_discarded_samples", "fifo_samples_discarded", "error", "Odrzucono niepełne próbki FIFO."),
+        ("fifo_uncertain_loss_events", "uncertain_sample_loss", "critical", "Wykryto możliwą stratę o nieznanym rozmiarze."),
+        ("sensor_errors", "sensor_read_error", "error", "Wystąpił błąd odczytu czujnika."),
+        ("soft_recover_count", "acquisition_recovery", "warning", "Firmware wznowił akwizycję."),
+    )
+    for field, event, severity, message in counters:
+        before = int(getattr(previous, field))
+        after = int(getattr(current, field))
+        if after <= before:
+            continue
+        fields = {
+            "message": message,
+            "counter": field,
+            "previous": before,
+            "current": after,
+            "delta": after - before,
+            "sample_seq": current.last_sample_seq,
+        }
+        event_writer.emit(event, severity=severity, node_id=node.node_id, fields=fields)
+        archive_writer.emit(event, severity=severity, node_id=node.node_id, fields=fields)
 
 
 def node_total_sensor_loss(node: RecorderNode) -> int:
@@ -1249,6 +1437,10 @@ def main() -> int:
     stop_flag = StopFlag()
     status_writer = JsonStatusWriter(args.status_file)
     event_writer = JsonlEventWriter(args.event_log)
+    diagnostic_root = Path(args.output_dir) if args.output_dir else Path(args.output).parent
+    diagnostic_archive = JsonlEventWriter(
+        diagnostic_root / "diagnostics" / f"{args.channel_name}.events.jsonl"
+    )
     signal.signal(signal.SIGINT, stop_flag.request_stop)
     signal.signal(signal.SIGTERM, stop_flag.request_stop)
 
@@ -1347,6 +1539,24 @@ def main() -> int:
                         f"fifo_watermark={node.config.fifo_watermark} "
                         f"start_seq={node.expected_sample_seq}"
                     )
+                    try:
+                        archive_node_diagnostics(
+                            client,
+                            node,
+                            args.timeout,
+                            event_writer,
+                            diagnostic_archive,
+                        )
+                    except RuntimeError as exc:
+                        event_writer.emit(
+                            "diagnostic_poll_failed",
+                            severity="warning",
+                            node_id=node.node_id,
+                            fields={
+                                "message": "Nie udało się pobrać historii diagnostycznej czujnika.",
+                                "error": str(exc),
+                            },
+                        )
 
                 next_status_at = started_at
                 next_flush_at = started_at + args.flush_interval
@@ -1400,7 +1610,31 @@ def main() -> int:
                                 node.next_temperature_at = now + args.temperature_interval
                     if now >= next_stats_at:
                         for node in nodes:
-                            refresh_stats(client, node, args.timeout)
+                            previous_stats = refresh_stats(client, node, args.timeout)
+                            emit_stats_changes(
+                                node,
+                                previous_stats,
+                                event_writer,
+                                diagnostic_archive,
+                            )
+                            try:
+                                archive_node_diagnostics(
+                                    client,
+                                    node,
+                                    args.timeout,
+                                    event_writer,
+                                    diagnostic_archive,
+                                )
+                            except RuntimeError as exc:
+                                event_writer.emit(
+                                    "diagnostic_poll_failed",
+                                    severity="warning",
+                                    node_id=node.node_id,
+                                    fields={
+                                        "message": "Nie udało się pobrać nowych zdarzeń diagnostycznych.",
+                                        "error": str(exc),
+                                    },
+                                )
                         next_stats_at = now + args.stats_interval
 
                     if now >= next_flush_at:

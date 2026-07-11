@@ -351,14 +351,14 @@ void DiagnosticStore::record_internal(DiagnosticSeverity severity,
         if (can_coalesce) {
             ++events_[last_index].repeat_count;
             event = events_[last_index];
+        } else if (count_ >= kEventCapacity) {
+            // Unread history is never overwritten. The host acknowledges and
+            // clears archived batches; saturation remains explicitly visible.
+            ++dropped_event_count_;
         } else {
             events_[head_] = event;
             head_ = (head_ + 1) % kEventCapacity;
-            if (count_ < kEventCapacity) {
-                ++count_;
-            } else {
-                ++dropped_event_count_;
-            }
+            ++count_;
         }
     }
 

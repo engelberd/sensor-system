@@ -8,10 +8,12 @@ from pathlib import Path
 
 from host.host_configurator import (
     CMD_GET_PERSISTENT_DIAGNOSTIC_RECORD,
+    CMD_GET_FAULT_SNAPSHOT,
     CMD_READ_DIAGNOSTIC_EVENTS,
     GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT,
     GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V2,
     GET_PERSISTENT_DIAGNOSTIC_RECORD_FORMAT_V3,
+    GET_FAULT_SNAPSHOT_FORMAT_V3,
     GET_STATUS_FORMAT_V2,
     GET_STATUS_FORMAT_V3,
     GET_STATUS_FORMAT_V4,
@@ -25,6 +27,7 @@ from host.host_configurator import (
     format_diagnostic_detail,
     parse_diagnostic_events,
     parse_persistent_diagnostic_record_view,
+    parse_fault_snapshot_view,
     parse_status_view,
     sync_system_config_from_device_config,
 )
@@ -530,12 +533,12 @@ class HostConfiguratorSyncTests(unittest.TestCase):
             13,
             14,
             15,
-            16,
-            17,
             303,
             404,
             0x01021E01,
             0x08071E02,
+            16,
+            17,
         )
         record = parse_persistent_diagnostic_record_view(payload)
         self.assertEqual(record.generation, 3)
@@ -550,6 +553,22 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(record.debug_gpio_drdy_edges, 404)
         self.assertEqual(record.debug_config_snapshot, 0x01021E01)
         self.assertEqual(record.debug_irq_snapshot, 0x08071E02)
+
+    def test_parse_fault_snapshot_matches_current_firmware_field_order(self) -> None:
+        payload = struct.pack(
+            GET_FAULT_SNAPSHOT_FORMAT_V3,
+            CMD_GET_FAULT_SNAPSHOT, 0, 41, 2222, 36, 3, 2, 123456,
+            50, 11, 12, 13, 14, 15,
+            303, 404, 0x01021E01, 0x08071E02,
+            16, 17,
+        )
+        snapshot = parse_fault_snapshot_view(payload)
+        self.assertEqual(snapshot.arg0, 16)
+        self.assertEqual(snapshot.arg1, 17)
+        self.assertEqual(snapshot.debug_gpio_int1_edges, 303)
+        self.assertEqual(snapshot.debug_gpio_drdy_edges, 404)
+        self.assertEqual(snapshot.debug_config_snapshot, 0x01021E01)
+        self.assertEqual(snapshot.debug_irq_snapshot, 0x08071E02)
 
     def test_format_diagnostic_detail_decodes_fifo_no_data_snapshot(self) -> None:
         packed_snapshot = (

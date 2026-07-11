@@ -1,9 +1,13 @@
 # TODO
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 ## Priority Now
 
+- Investigate the electrical/SPI cause of the 21 confirmed lost samples on `line-g`.
+- Add a multi-record flash diagnostic journal that survives power loss, has wear limits,
+  and can be acknowledged record-by-record only after durable host archival.
+- Surface durable diagnostic events and plain-language loss alarms in the dashboard.
 - Investigate `INT1` behavior on `line-e`.
 - Confirm whether `INT1` carries valid FIFO watermark interrupts or false edges.
 - Validate firmware `0.3.8` rejection of false `INT1` edges on line E.
@@ -39,6 +43,8 @@ Last updated: 2026-07-10
 ## Host / Diagnostics
 
 - Keep `dump-diagnostics` and recorder logs aligned with newest firmware payloads.
+- Preserve the recorder's durable `diagnostics/<channel>.events.jsonl` files during data retention and export.
+- Add `boot_id` to diagnostic event identity so host restarts can deduplicate archived node events safely.
 - Surface `spurious_int1`, `fifo_overruns`, `fifo_discarded`, and `fifo_loss_unknown` in the dashboard.
 - Continue validating persistent diagnostic record parsing after format extensions.
 - Decide whether some debug fields should be shown in dashboard / operator panel.

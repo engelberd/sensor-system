@@ -10,7 +10,7 @@ class PersistentDiagnosticStore;
 
 class DiagnosticStore {
 public:
-    static constexpr size_t kEventCapacity = 128;
+    static constexpr size_t kEventCapacity = 512;
 
     DiagnosticStore();
 

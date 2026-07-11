@@ -11,6 +11,7 @@ from host.common.system_config import HostSystemConfig
 from host.host_recorder import (
     RecorderNode,
     WindowedWriter,
+    emit_stats_changes,
     raw_lsb_to_m_s2,
     maybe_refresh_window_start_temperature,
     resolve_window_timezone,
@@ -191,6 +192,46 @@ class RecorderRateMetricTests(unittest.TestCase):
 
         self.assertAlmostEqual(node.instant_samples_per_second_5s or 0.0, 75.0, places=3)
         self.assertLess(node.rate_stability_percent_5s or 100.0, 60.0)
+
+
+class RecorderDiagnosticTests(unittest.TestCase):
+    def test_stats_counter_increase_emits_user_visible_and_archived_alarm(self) -> None:
+        node = RecorderNode(node_id=1, config=SimpleNamespace(odr_hz=250, range_g=2))
+        previous = SimpleNamespace(
+            dropped_samples=0,
+            fifo_overrun_events=0,
+            fifo_discarded_samples=0,
+            fifo_uncertain_loss_events=0,
+            sensor_errors=0,
+            soft_recover_count=0,
+        )
+        node.last_stats = SimpleNamespace(
+            dropped_samples=21,
+            fifo_overrun_events=19,
+            fifo_discarded_samples=2,
+            fifo_uncertain_loss_events=0,
+            sensor_errors=1,
+            soft_recover_count=0,
+            last_sample_seq=10260458,
+        )
+        visible: list[tuple[str, dict[str, object]]] = []
+        archived: list[tuple[str, dict[str, object]]] = []
+
+        class Writer:
+            def __init__(self, target: list[tuple[str, dict[str, object]]]) -> None:
+                self.target = target
+
+            def emit(self, event: str, **kwargs: object) -> None:
+                self.target.append((event, dict(kwargs)))
+
+        emit_stats_changes(node, previous, Writer(visible), Writer(archived))
+
+        self.assertEqual([event for event, _ in visible], [
+            "sample_loss", "fifo_overrun", "fifo_samples_discarded", "sensor_read_error"
+        ])
+        self.assertEqual(visible, archived)
+        self.assertEqual(visible[0][1]["severity"], "critical")
+        self.assertEqual(visible[0][1]["fields"]["delta"], 21)
 
 
 if __name__ == "__main__":
