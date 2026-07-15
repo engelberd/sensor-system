@@ -6,6 +6,19 @@ This repository contains the full Sensor System project:
 - `node/` for the Pico firmware and bootloader artifacts
 - `host/` for recorder, configurator, supervisor, dashboards, and deployment files
 
+Current product version: **0.3.10**.
+
+For day-to-day use, see the Polish
+[operator guide](docs/INSTRUKCJA-OPERATORA.md). For a new host computer, run:
+
+```bash
+./host/tools/setup_host.sh
+```
+
+Then adapt the generated `host/system_config.json`. Release validation and
+publication are described in [RELEASING.md](RELEASING.md), and notable changes
+are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## Repository Notes
 
 In this Codex workspace the top-level `.git/` path is reserved by the

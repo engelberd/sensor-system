@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import secrets
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict
@@ -15,10 +17,12 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from host.common.data_browser import DataRepository, FileDownload
+from host.common.runtime_status import JsonlEventWriter
 from host.common.system_config import HostSystemConfig
+from host.common.version import PROJECT_VERSION
 
 
-DASHBOARD_VERSION = "0.1.0"
+DASHBOARD_VERSION = PROJECT_VERSION
 MAX_EVENT_LIMIT = 500
 DEFAULT_LIVE_PREVIEW_LIMIT = 512
 MAX_LIVE_PREVIEW_LIMIT = 2048
@@ -33,6 +37,7 @@ ALERT_EVENT_NAMES = {
     "runtime_warning",
     "serial_error",
     "temperature_read_failed",
+    "node_firmware_restarted",
 }
 HIDDEN_DASHBOARD_EVENT_NAMES = {
     "temperature_sampled",
@@ -187,6 +192,10 @@ INDEX_HTML = """<!doctype html>
       .btn.small {
         padding: 8px 12px;
         font-size: 12px;
+      }
+
+      .node-firmware-restart-btn {
+        margin-top: 8px;
       }
 
       .hero-meta {
@@ -1072,6 +1081,9 @@ INDEX_HTML = """<!doctype html>
         heroCopy.push(
           `Węzły online: ${formatNumber(overview.nodes_online || 0)} z ${formatNumber(overview.nodes_total || 0)}.`
         );
+        if ((overview.nodes_without_samples || 0) > 0) {
+          heroCopy.push(`Uwaga: ${formatNumber(overview.nodes_without_samples)} online bez próbek.`);
+        }
         if (supervisor.has_status) {
           heroCopy.push("Supervisor publikuje status runtime i zdarzenia.");
         } else {
@@ -1223,7 +1235,8 @@ INDEX_HTML = """<!doctype html>
       }
 
       function renderNodeRow(channel, node) {
-        const onlineKind = node.online ? "good" : (node.has_runtime ? "bad" : "muted");
+        const hasAlerts = Array.isArray(node.alerts) && node.alerts.length > 0;
+        const onlineKind = node.online ? (hasAlerts ? "bad" : "good") : (node.has_runtime ? "bad" : "muted");
         const nodeTitle = node.name ? `${node.name}` : `Node ${node.node_id}`;
         const alerts = Array.isArray(node.alerts) && node.alerts.length
           ? node.alerts.join(", ")
@@ -1239,8 +1252,15 @@ INDEX_HTML = """<!doctype html>
             </td>
             <td data-label="Stan">
               ${statusDot(onlineKind)}
-              ${escapeHtml(node.online ? "ONLINE" : (node.has_runtime ? "OFFLINE" : "NO-RUNTIME"))}
+              ${escapeHtml(node.online ? (node.sample_flow_state === "stalled" ? "ONLINE / BRAK PRÓBEK" : "ONLINE") : (node.has_runtime ? "OFFLINE" : "NO-RUNTIME"))}
               <div class="node-meta">${escapeHtml(alerts)}</div>
+              <button
+                class="btn secondary small node-firmware-restart-btn"
+                data-channel-name="${escapeHtml(channel.name)}"
+                data-node-id="${escapeHtml(node.node_id)}"
+                type="button"
+                ${channel.enabled && node.enabled ? "" : "disabled"}
+              >Restart firmware</button>
             </td>
             <td data-label="ODR">
               <span class="mono">${escapeHtml(formatNumber(node.sensor_odr_hz || 0))} / ${escapeHtml(formatFloat(node.output_odr_hz || 0, 1))}</span>
@@ -1623,6 +1643,29 @@ INDEX_HTML = """<!doctype html>
         }, 900);
       }
 
+      async function restartNodeFirmware(channelName, nodeId, button) {
+        const confirmed = window.confirm(
+          `Zrestartować firmware node ${nodeId} na ${channelName}? Recorder tej linii zostanie na chwilę zatrzymany i uruchomiony ponownie.`
+        );
+        if (!confirmed) {
+          return;
+        }
+        const previousLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "Restartowanie...";
+        try {
+          await fetchJson(
+            `/api/channels/${encodeURIComponent(channelName)}/nodes/${encodeURIComponent(nodeId)}/restart-firmware`,
+            { method: "POST" }
+          );
+          $("overview-note").textContent = `Zrestartowano firmware node ${nodeId} na ${channelName}`;
+          window.setTimeout(() => loadDashboard(), 900);
+        } finally {
+          button.disabled = false;
+          button.textContent = previousLabel;
+        }
+      }
+
       async function performSupervisorAction(action) {
         if (action === "restart_all") {
           const confirmed = window.confirm("Zrestartować wszystkie kanały i zacząć pomiar od nowa?");
@@ -1738,6 +1781,15 @@ INDEX_HTML = """<!doctype html>
 
       $("channels-grid").addEventListener("click", (event) => {
         const target = event.target;
+        if (target.classList.contains("node-firmware-restart-btn")) {
+          const channelName = target.dataset.channelName || "";
+          const nodeId = target.dataset.nodeId || "";
+          if (!channelName || !nodeId) {
+            return;
+          }
+          restartNodeFirmware(channelName, nodeId, target).catch((error) => alert(error.message));
+          return;
+        }
         if (!target.classList.contains("channel-action-btn")) {
           return;
         }
@@ -3337,6 +3389,7 @@ def parse_process_log_alert(line: str, *, channel_name: str) -> dict[str, Any] |
 class ChannelControlRepository:
     def __init__(self, config_path: str | Path) -> None:
         self.config_path = Path(config_path)
+        self._remote_restart_lock = threading.Lock()
 
     def perform(self, channel_name: str, action: str) -> dict[str, Any]:
         normalized_action = action.strip().lower()
@@ -3389,6 +3442,86 @@ class ChannelControlRepository:
             "command_file": str(command_file),
             "requested_utc": payload["requested_utc"],
         }
+
+    def restart_remote_node(self, channel_name: str, node_id: int) -> dict[str, Any]:
+        config = HostSystemConfig.load(self.config_path)
+        channel = next((item for item in config.channels if item.name == channel_name), None)
+        if channel is None:
+            raise FileNotFoundError(f"unknown channel '{channel_name}'")
+        if not channel.enabled:
+            raise ValueError(f"channel '{channel_name}' is disabled in config")
+        node = next((item for item in channel.nodes if item.node_id == node_id), None)
+        if node is None:
+            raise FileNotFoundError(f"unknown node '{node_id}' in channel '{channel_name}'")
+        if not node.enabled:
+            raise ValueError(f"node '{node_id}' in channel '{channel_name}' is disabled in config")
+        if not self._remote_restart_lock.acquire(blocking=False):
+            raise ChannelControlConflictError("another firmware restart is already in progress")
+
+        control_script = Path(__file__).resolve().parents[1] / "host_channel_control.py"
+        command = [
+            sys.executable,
+            str(control_script),
+            "--system-config",
+            str(self.config_path.resolve()),
+            "restart-remote",
+            "--channel",
+            channel_name,
+            "--node",
+            str(node_id),
+        ]
+        started_at = time.monotonic()
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=60.0,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ChannelControlConflictError(
+                f"firmware restart timed out for {channel_name}/node-{node_id}"
+            ) from exc
+        except OSError as exc:
+            raise ChannelControlConflictError(
+                f"could not start firmware restart helper: {exc}"
+            ) from exc
+        finally:
+            self._remote_restart_lock.release()
+
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        duration_s = max(0.0, time.monotonic() - started_at)
+        if result.returncode != 0:
+            raise ChannelControlConflictError(
+                output or f"firmware restart failed with exit code {result.returncode}"
+            )
+
+        requested_utc = utc_now_iso()
+        JsonlEventWriter(config.supervisor.event_log).emit(
+            "node_firmware_restarted",
+            severity="warning",
+            node_id=node_id,
+            fields={
+                "channel_name": channel_name,
+                "message": "Zrestartowano firmware czujnika i ponownie uruchomiono recorder kanału.",
+                "duration_s": duration_s,
+                "detail": output,
+            },
+        )
+        return {
+            "ok": True,
+            "channel_name": channel_name,
+            "node_id": node_id,
+            "action": "restart_firmware",
+            "requested_utc": requested_utc,
+            "duration_s": duration_s,
+            "output": output,
+        }
+
+
+class ChannelControlConflictError(RuntimeError):
+    pass
 
 
 class LivePreviewConflictError(RuntimeError):
@@ -3516,11 +3649,14 @@ class DashboardRepository:
         supervisor = dashboard["supervisor"]
         return {
             "ok": True,
+            "system_healthy": bool(supervisor["has_status"] and overview["attention_count"] == 0),
             "dashboard_version": DASHBOARD_VERSION,
             "generated_utc": dashboard["generated_utc"],
             "has_status": supervisor["has_status"],
             "channels_running": overview["channels_running"],
             "nodes_online": overview["nodes_online"],
+            "nodes_receiving_samples": overview["nodes_receiving_samples"],
+            "nodes_without_samples": overview["nodes_without_samples"],
             "attention_count": overview["attention_count"],
         }
 
@@ -3610,6 +3746,9 @@ class DashboardRepository:
 
     def channel_action(self, channel_name: str, action: str) -> dict[str, Any]:
         return self.channel_controls.perform(channel_name, action)
+
+    def restart_node_firmware(self, channel_name: str, node_id: int) -> dict[str, Any]:
+        return self.channel_controls.restart_remote_node(channel_name, node_id)
 
     def supervisor_action(self, action: str) -> dict[str, Any]:
         return self.channel_controls.perform_supervisor(action)
@@ -4139,12 +4278,32 @@ class DashboardRepository:
 
         return channels
 
+    def _load_channel_status_nodes(self, status_file: str | None) -> dict[int, dict[str, Any]]:
+        if not status_file:
+            return {}
+        payload = load_json(Path(status_file))
+        if payload is None:
+            return {}
+        nodes: dict[int, dict[str, Any]] = {}
+        for raw_node in payload.get("nodes", []):
+            try:
+                node_id = int(raw_node.get("node_id", 0))
+            except (TypeError, ValueError):
+                continue
+            if node_id <= 0:
+                continue
+            nodes[node_id] = raw_node
+        return nodes
+
     def _merge_channel(
         self,
         config_channel: Any,
         runtime_channel: dict[str, Any] | None,
         config: HostSystemConfig,
     ) -> dict[str, Any]:
+        status_file = runtime_channel.get("status_file") if runtime_channel else str(
+            Path(config.supervisor.channel_runtime_dir) / f"{config_channel.name}.status.json"
+        )
         process_log = runtime_channel.get("process_log") if runtime_channel else str(
             Path(config.supervisor.channel_runtime_dir) / f"{config_channel.name}.process.log"
         )
@@ -4153,6 +4312,16 @@ class DashboardRepository:
             int(node.get("node_id", 0)): node
             for node in runtime_channel.get("nodes", [])
         } if runtime_channel else {}
+        channel_status_nodes = self._load_channel_status_nodes(status_file)
+        for node_id, channel_status_node in channel_status_nodes.items():
+            runtime_node = runtime_nodes.get(node_id)
+            if runtime_node is None:
+                runtime_nodes[node_id] = channel_status_node
+                continue
+            if runtime_node.get("firmware_version") in (None, "") and channel_status_node.get("firmware_version"):
+                runtime_node = dict(runtime_node)
+                runtime_node["firmware_version"] = channel_status_node.get("firmware_version")
+                runtime_nodes[node_id] = runtime_node
 
         nodes = [
             self._merge_node(config_node, runtime_nodes.pop(config_node.node_id, None))
@@ -4203,9 +4372,7 @@ class DashboardRepository:
             "last_samples_rate_line": last_rate.get("line") if last_rate else None,
             "instant_samples_per_second_5s": runtime_rate["instant_samples_per_second_5s"],
             "rate_stability_percent_5s": runtime_rate["rate_stability_percent_5s"],
-            "status_file": runtime_channel.get("status_file") if runtime_channel else str(
-                Path(config.supervisor.channel_runtime_dir) / f"{config_channel.name}.status.json"
-            ),
+            "status_file": status_file,
             "event_log": runtime_channel.get("event_log") if runtime_channel else str(
                 Path(config.supervisor.channel_runtime_dir) / f"{config_channel.name}.events.jsonl"
             ),
@@ -4215,7 +4382,22 @@ class DashboardRepository:
     def _runtime_only_channel(self, runtime_channel: dict[str, Any]) -> dict[str, Any]:
         process_log = runtime_channel.get("process_log")
         last_rate = load_last_samples_rate(Path(process_log)) if process_log else None
-        nodes = [self._runtime_only_node(raw_node) for raw_node in runtime_channel.get("nodes", [])]
+        status_file = runtime_channel.get("status_file")
+        runtime_nodes = {
+            int(node.get("node_id", 0)): node
+            for node in runtime_channel.get("nodes", [])
+        }
+        channel_status_nodes = self._load_channel_status_nodes(status_file)
+        for node_id, channel_status_node in channel_status_nodes.items():
+            runtime_node = runtime_nodes.get(node_id)
+            if runtime_node is None:
+                runtime_nodes[node_id] = channel_status_node
+                continue
+            if runtime_node.get("firmware_version") in (None, "") and channel_status_node.get("firmware_version"):
+                runtime_node = dict(runtime_node)
+                runtime_node["firmware_version"] = channel_status_node.get("firmware_version")
+                runtime_nodes[node_id] = runtime_node
+        nodes = [self._runtime_only_node(raw_node) for raw_node in runtime_nodes.values()]
         runtime_rate = aggregate_runtime_rate(nodes)
         attention_count = sum(1 for node in nodes if node["alerts"])
         return {
@@ -4241,7 +4423,7 @@ class DashboardRepository:
             "last_samples_rate_line": last_rate.get("line") if last_rate else None,
             "instant_samples_per_second_5s": runtime_rate["instant_samples_per_second_5s"],
             "rate_stability_percent_5s": runtime_rate["rate_stability_percent_5s"],
-            "status_file": runtime_channel.get("status_file"),
+            "status_file": status_file,
             "event_log": runtime_channel.get("event_log"),
             "nodes": nodes,
         }
@@ -4251,11 +4433,24 @@ class DashboardRepository:
         online = bool(runtime_node.get("online", False)) if runtime_node else False
         sensor_odr_hz = int(runtime_node.get("sensor_odr_hz", 0)) if runtime_node else 0
         output_odr_hz = float(runtime_node.get("output_odr_hz", 0.0)) if runtime_node else 0.0
+        instant_rate = (
+            float(runtime_node.get("instant_samples_per_second_5s"))
+            if runtime_node and runtime_node.get("instant_samples_per_second_5s") is not None
+            else None
+        )
+        receiving_samples = None if instant_rate is None else instant_rate > 0.0
+        sample_flow_state = str(runtime_node.get("sample_flow_state", "unknown")) if runtime_node else "unknown"
+        if online and receiving_samples is False:
+            sample_flow_state = "stalled"
+        elif online and receiving_samples is True:
+            sample_flow_state = "flowing"
         alerts: list[str] = []
         if config_node.enabled and runtime_node is None:
             alerts.append("brak runtime")
         elif config_node.enabled and not online:
             alerts.append("offline")
+        if config_node.enabled and online and sample_flow_state == "stalled":
+            alerts.append("brak próbek")
         if (
             config_node.expected_odr_hz is not None
             and output_odr_hz > 0
@@ -4275,8 +4470,10 @@ class DashboardRepository:
             "sensor_odr_hz": sensor_odr_hz,
             "output_odr_hz": output_odr_hz,
             "samples_written": int(runtime_node.get("samples_written", 0)) if runtime_node else 0,
-            "instant_samples_per_second_5s": float(runtime_node.get("instant_samples_per_second_5s")) if runtime_node and runtime_node.get("instant_samples_per_second_5s") is not None else None,
+            "instant_samples_per_second_5s": instant_rate,
             "rate_stability_percent_5s": float(runtime_node.get("rate_stability_percent_5s")) if runtime_node and runtime_node.get("rate_stability_percent_5s") is not None else None,
+            "receiving_samples": receiving_samples,
+            "sample_flow_state": sample_flow_state,
             "expected_sample_seq": int(runtime_node.get("expected_sample_seq", 0)) if runtime_node else 0,
             "last_written_seq": int(runtime_node.get("last_written_seq", 0)) if runtime_node else 0,
             "bursts_ok": int(runtime_node.get("bursts_ok", 0)) if runtime_node else 0,
@@ -4297,9 +4494,22 @@ class DashboardRepository:
         }
 
     def _runtime_only_node(self, runtime_node: dict[str, Any]) -> dict[str, Any]:
+        instant_rate = (
+            float(runtime_node.get("instant_samples_per_second_5s"))
+            if runtime_node.get("instant_samples_per_second_5s") is not None
+            else None
+        )
+        receiving_samples = None if instant_rate is None else instant_rate > 0.0
+        sample_flow_state = str(runtime_node.get("sample_flow_state", "unknown"))
+        if runtime_node.get("online", False) and receiving_samples is False:
+            sample_flow_state = "stalled"
+        elif runtime_node.get("online", False) and receiving_samples is True:
+            sample_flow_state = "flowing"
         alerts: list[str] = []
         if not runtime_node.get("online", False):
             alerts.append("offline")
+        if runtime_node.get("online", False) and sample_flow_state == "stalled":
+            alerts.append("brak próbek")
         return {
             "node_id": int(runtime_node.get("node_id", 0)),
             "name": runtime_node.get("name"),
@@ -4312,8 +4522,10 @@ class DashboardRepository:
             "sensor_odr_hz": int(runtime_node.get("sensor_odr_hz", 0)),
             "output_odr_hz": float(runtime_node.get("output_odr_hz", 0.0)),
             "samples_written": int(runtime_node.get("samples_written", 0)),
-            "instant_samples_per_second_5s": float(runtime_node.get("instant_samples_per_second_5s")) if runtime_node.get("instant_samples_per_second_5s") is not None else None,
+            "instant_samples_per_second_5s": instant_rate,
             "rate_stability_percent_5s": float(runtime_node.get("rate_stability_percent_5s")) if runtime_node.get("rate_stability_percent_5s") is not None else None,
+            "receiving_samples": receiving_samples,
+            "sample_flow_state": sample_flow_state,
             "expected_sample_seq": int(runtime_node.get("expected_sample_seq", 0)),
             "last_written_seq": int(runtime_node.get("last_written_seq", 0)),
             "bursts_ok": int(runtime_node.get("bursts_ok", 0)),
@@ -4346,6 +4558,11 @@ class DashboardRepository:
         nodes_total = len(nodes)
         nodes_enabled = sum(1 for node in nodes if node["enabled"])
         nodes_online = sum(1 for node in nodes if node["online"])
+        nodes_receiving_samples = sum(1 for node in nodes if node["receiving_samples"] is True)
+        nodes_without_samples = sum(
+            1 for node in nodes
+            if node["online"] and node["receiving_samples"] is False
+        )
         samples_written_total = sum(node["samples_written"] for node in nodes)
         gaps_detected_total = sum(node["gaps_detected"] for node in nodes)
         restart_count_total = sum(channel["restart_count"] for channel in channels)
@@ -4358,6 +4575,8 @@ class DashboardRepository:
 
         if raw_status is None:
             summary = "Konfiguracja dostępna, oczekiwanie na runtime z supervisora"
+        elif nodes_without_samples > 0:
+            summary = f"{nodes_without_samples} węzeł/węzły są online, ale nie dostarczają próbek"
         elif channels_running == channels_enabled and nodes_online == nodes_enabled:
             summary = "Wszystkie aktywne kanały i węzły są online"
         elif channels_running == 0:
@@ -4372,6 +4591,8 @@ class DashboardRepository:
             "nodes_total": nodes_total,
             "nodes_enabled": nodes_enabled,
             "nodes_online": nodes_online,
+            "nodes_receiving_samples": nodes_receiving_samples,
+            "nodes_without_samples": nodes_without_samples,
             "samples_written_total": samples_written_total,
             "gaps_detected_total": gaps_detected_total,
             "restart_count_total": restart_count_total,
@@ -4540,6 +4761,20 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
             if route.startswith("/api/channels/"):
                 parts = [part for part in route.split("/") if part]
+                if (
+                    len(parts) == 6
+                    and parts[0] == "api"
+                    and parts[1] == "channels"
+                    and parts[3] == "nodes"
+                    and parts[5] == "restart-firmware"
+                ):
+                    channel_name = unquote(parts[2])
+                    try:
+                        node_id = int(unquote(parts[4]))
+                    except ValueError:
+                        raise ValueError("node id must be an integer")
+                    self._write_json(self.repository.restart_node_firmware(channel_name, node_id))
+                    return
                 if len(parts) == 4 and parts[0] == "api" and parts[1] == "channels":
                     channel_name = unquote(parts[2])
                     action = unquote(parts[3])
@@ -4572,6 +4807,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except LivePreviewConflictError as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+        except ChannelControlConflictError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
         except FileNotFoundError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)

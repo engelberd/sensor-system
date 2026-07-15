@@ -27,9 +27,10 @@ from host.common.runtime_status import (  # noqa: E402
     SupervisorStatusSnapshot,
 )
 from host.common.system_config import ChannelConfig, HostSystemConfig  # noqa: E402
+from host.common.version import PROJECT_VERSION  # noqa: E402
 
 
-SUPERVISOR_VERSION = "0.3.0"
+SUPERVISOR_VERSION = PROJECT_VERSION
 
 
 class StopFlag:
@@ -405,6 +406,7 @@ def to_runtime_nodes(raw_nodes: list[dict[str, Any]], channel: ChannelConfig) ->
                 samples_written=int(raw.get("samples_written", 0)),
                 instant_samples_per_second_5s=float(raw.get("instant_samples_per_second_5s")) if raw.get("instant_samples_per_second_5s") is not None else None,
                 rate_stability_percent_5s=float(raw.get("rate_stability_percent_5s")) if raw.get("rate_stability_percent_5s") is not None else None,
+                sample_flow_state=str(raw.get("sample_flow_state", "unknown")),
                 expected_sample_seq=int(raw.get("expected_sample_seq", 0)),
                 last_written_seq=int(raw.get("last_written_seq", 0)),
                 bursts_ok=int(raw.get("bursts_ok", 0)),

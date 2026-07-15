@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from host.host_configurator import (
+    CMD_GET_CONFIG,
     CMD_RESTART,
     HostConfig,
     ProtocolClient,
@@ -139,6 +140,40 @@ def _restart_node(port: str, baud: int, node_id: int, timeout: float) -> None:
         ser.close()
 
 
+def _wait_for_node_ready(port: str,
+                         baud: int,
+                         node_id: int,
+                         request_timeout_s: float,
+                         ready_timeout_s: float,
+                         poll_interval_s: float) -> float:
+    started_at = time.monotonic()
+    deadline = started_at + max(ready_timeout_s, request_timeout_s)
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        ser = None
+        try:
+            ser = serial.Serial(
+                port=port,
+                baudrate=baud,
+                timeout=0.05,
+                write_timeout=0.5,
+            )
+            client = ProtocolClient(ser)
+            send_and_wait(client, node_id, bytes([CMD_GET_CONFIG]), request_timeout_s)
+            return time.monotonic() - started_at
+        except (RuntimeError, serial.SerialException) as exc:
+            last_error = exc
+        finally:
+            if ser is not None:
+                ser.close()
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(max(poll_interval_s, 0.05), remaining))
+    raise RuntimeError(
+        f"node={node_id} did not become ready within {ready_timeout_s:.1f}s: {last_error}"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Channel-level control for sensor-system host runtime")
     parser.add_argument("--system-config", default=DEFAULT_SYSTEM_CONFIG_PATH)
@@ -151,7 +186,14 @@ def build_parser() -> argparse.ArgumentParser:
     restart_remote.add_argument("--channel", required=True)
     restart_remote.add_argument("--node", type=int, default=1)
     restart_remote.add_argument("--timeout", type=float, default=2.0)
-    restart_remote.add_argument("--settle-ms", type=int, default=3000)
+    restart_remote.add_argument(
+        "--settle-ms",
+        type=int,
+        default=6000,
+        help="Minimum quiet time before readiness probes; covers the bootloader maintenance window",
+    )
+    restart_remote.add_argument("--ready-timeout", type=float, default=20.0)
+    restart_remote.add_argument("--ready-poll-ms", type=int, default=250)
     restart_remote.add_argument("--worker-timeout", type=float, default=10.0)
     restart_remote.add_argument("--skip-node", action="store_true")
     restart_remote.add_argument("--skip-recorder", action="store_true")
@@ -174,31 +216,64 @@ def main() -> int:
         status_path = _supervisor_status_path(data, system_config_path)
         runtime_dir = _runtime_dir(data, system_config_path)
 
-        if not args.skip_recorder:
-            stop_command = _write_channel_command(runtime_dir, args.channel, "stop")
-            print(f"[OK] recorder stop requested for channel={args.channel} via {stop_command}")
-            if not _wait_for_channel_running(status_path, args.channel, False, args.worker_timeout):
-                raise RuntimeError(
-                    f"channel '{args.channel}' did not stop within {args.worker_timeout:.1f}s"
-                )
-            print(f"[OK] recorder worker for channel={args.channel} is stopped")
+        operation_error: Exception | None = None
+        recorder_restore_required = False
+        try:
+            if not args.skip_recorder:
+                recorder_restore_required = True
+                stop_command = _write_channel_command(runtime_dir, args.channel, "stop")
+                print(f"[OK] recorder stop requested for channel={args.channel} via {stop_command}")
+                if not _wait_for_channel_running(status_path, args.channel, False, args.worker_timeout):
+                    raise RuntimeError(
+                        f"channel '{args.channel}' did not stop within {args.worker_timeout:.1f}s"
+                    )
+                print(f"[OK] recorder worker for channel={args.channel} is stopped")
 
-        if not args.skip_node:
-            _restart_node(port, baud, args.node, args.timeout)
-            print(
-                f"[OK] restart command sent to node={args.node} on channel={args.channel} "
-                f"port={port} baud={baud}"
-            )
-            time.sleep(max(args.settle_ms, 0) / 1000.0)
-
-        if not args.skip_recorder:
-            command_file = _write_channel_command(runtime_dir, args.channel, "start")
-            print(f"[OK] recorder restart requested for channel={args.channel} via {command_file}")
-            if not _wait_for_channel_running(status_path, args.channel, True, args.worker_timeout):
-                raise RuntimeError(
-                    f"channel '{args.channel}' did not start within {args.worker_timeout:.1f}s"
+            if not args.skip_node:
+                try:
+                    _restart_node(port, baud, args.node, args.timeout)
+                except serial.SerialException as exc:
+                    raise RuntimeError(f"could not restart node={args.node}: {exc}") from exc
+                print(
+                    f"[OK] restart command sent to node={args.node} on channel={args.channel} "
+                    f"port={port} baud={baud}"
                 )
-            print(f"[OK] recorder worker for channel={args.channel} is running again")
+                time.sleep(max(args.settle_ms, 0) / 1000.0)
+                ready_after_s = _wait_for_node_ready(
+                    port,
+                    baud,
+                    args.node,
+                    min(args.timeout, 1.0),
+                    args.ready_timeout,
+                    max(args.ready_poll_ms, 50) / 1000.0,
+                )
+                print(
+                    f"[OK] node={args.node} application protocol ready "
+                    f"after probe_wait={ready_after_s:.2f}s "
+                    f"total_boot_wait={max(args.settle_ms, 0) / 1000.0 + ready_after_s:.2f}s"
+                )
+        except (RuntimeError, OSError) as exc:
+            operation_error = exc
+        finally:
+            if recorder_restore_required:
+                try:
+                    command_file = _write_channel_command(runtime_dir, args.channel, "start")
+                    print(f"[OK] recorder restart requested for channel={args.channel} via {command_file}")
+                    if not _wait_for_channel_running(status_path, args.channel, True, args.worker_timeout):
+                        raise RuntimeError(
+                            f"channel '{args.channel}' did not start within {args.worker_timeout:.1f}s"
+                        )
+                    print(f"[OK] recorder worker for channel={args.channel} is running again")
+                except (RuntimeError, OSError) as exc:
+                    if operation_error is None:
+                        operation_error = exc
+                    else:
+                        operation_error = RuntimeError(
+                            f"{operation_error}; additionally recorder recovery failed: {exc}"
+                        )
+
+        if operation_error is not None:
+            raise RuntimeError(str(operation_error)) from operation_error
 
         return 0
 

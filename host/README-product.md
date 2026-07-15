@@ -135,11 +135,15 @@ Dashboard:
 host/.venv/bin/python host/host_dashboard.py --config host/system_config.json --port 8080
 ```
 
-Then open `http://<host-ip>:8080/` on the local network. The first dashboard version
-is intentionally read-only and focuses on the operator overview: channels, nodes,
-runtime files, and recent events. It also exposes JSON endpoints for later control
-flows under `/api/dashboard`, `/api/channels`, `/api/events`, `/api/config`, and
-`/api/health`.
+Then open `http://<host-ip>:8080/` on the local network. The dashboard shows the
+operator overview, channels, nodes, runtime files, recent events, data preview,
+and guarded control actions. It exposes JSON endpoints under `/api/dashboard`,
+`/api/channels`, `/api/events`, `/api/config`, and `/api/health`.
+
+The dashboard and operator panel do not currently provide user authentication.
+Bind them to `127.0.0.1` unless remote access is required, and expose them only
+on a trusted, firewalled production network or through a protected VPN/reverse
+proxy. Do not publish their ports directly to the Internet.
 
 Operator panel:
 
@@ -253,4 +257,5 @@ For quick live viewing on a local network, run the recorder with `--live`:
 Then open `http://<host-ip>:8000/` from another machine on the same network.
 The page shows a time-domain plot and a live PSD (FFT) view.
 
-There is a dedicated firmware-side note in [README-bootloader.md](/home/anone/pico-projects/node/README-bootloader.md:1).
+There is a dedicated firmware-side note in
+[README-bootloader.md](../node/README-bootloader.md).

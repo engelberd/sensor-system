@@ -3,6 +3,9 @@ set -euo pipefail
 
 CXX="${CXX:-g++}"
 BUILD_DIR="${TMPDIR:-/tmp}/sensor_system_host_tests"
+NODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "${NODE_DIR}"
 
 mkdir -p "${BUILD_DIR}"
 

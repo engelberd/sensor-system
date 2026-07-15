@@ -15,15 +15,19 @@ WorkingDirectory=/opt/sensor-system
 #   SENSOR_SYSTEM_DATA_HOST=0.0.0.0
 #   SENSOR_SYSTEM_DATA_PORT=8091
 #   SENSOR_SYSTEM_DATA_ROOT=/data/sensor-system
+Environment=SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
+Environment=SENSOR_SYSTEM_DATA_HOST=127.0.0.1
+Environment=SENSOR_SYSTEM_DATA_PORT=8091
+Environment=SENSOR_SYSTEM_DATA_ROOT=/data/sensor-system
 EnvironmentFile=-/etc/sensor-system-data-download.env
 
 Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_data_download.py \
-  --config ${SENSOR_SYSTEM_CONFIG:-/opt/sensor-system/host/system_config.json} \
-  --host ${SENSOR_SYSTEM_DATA_HOST:-0.0.0.0} \
-  --port ${SENSOR_SYSTEM_DATA_PORT:-8091} \
-  --root-dir ${SENSOR_SYSTEM_DATA_ROOT:-}
+  --config ${SENSOR_SYSTEM_CONFIG} \
+  --host ${SENSOR_SYSTEM_DATA_HOST} \
+  --port ${SENSOR_SYSTEM_DATA_PORT} \
+  --root-dir ${SENSOR_SYSTEM_DATA_ROOT}
 
 Restart=always
 RestartSec=5

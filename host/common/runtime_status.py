@@ -37,6 +37,7 @@ class RuntimeStatusNode:
     last_temperature_unix_ns: int | None
     instant_samples_per_second_5s: float | None = None
     rate_stability_percent_5s: float | None = None
+    sample_flow_state: str = "unknown"
 
 
 @dataclass

@@ -11,6 +11,7 @@ from host.common.system_config import HostSystemConfig
 from host.host_recorder import (
     RecorderNode,
     WindowedWriter,
+    emit_sample_flow_changes,
     emit_stats_changes,
     raw_lsb_to_m_s2,
     maybe_refresh_window_start_temperature,
@@ -192,6 +193,39 @@ class RecorderRateMetricTests(unittest.TestCase):
 
         self.assertAlmostEqual(node.instant_samples_per_second_5s or 0.0, 75.0, places=3)
         self.assertLess(node.rate_stability_percent_5s or 100.0, 60.0)
+
+    def test_sample_flow_emits_one_stall_and_one_recovery_event(self) -> None:
+        node = RecorderNode(
+            node_id=1,
+            config=SimpleNamespace(odr_hz=250, range_g=2),
+            online=True,
+            instant_samples_per_second_5s=0.0,
+            samples_written=1234,
+            expected_sample_seq=1235,
+        )
+        captured: list[tuple[str, dict[str, object]]] = []
+
+        class Writer:
+            def emit(self, event: str, **kwargs: object) -> None:
+                captured.append((event, dict(kwargs)))
+
+        writer = Writer()
+        emit_sample_flow_changes([node], 10.0, writer)
+        emit_sample_flow_changes([node], 12.1, writer)
+        emit_sample_flow_changes([node], 20.0, writer)
+
+        self.assertEqual(node.sample_flow_state, "stalled")
+        self.assertEqual([event for event, _ in captured], ["sample_flow_stalled"])
+        self.assertEqual(captured[0][1]["severity"], "error")
+
+        node.instant_samples_per_second_5s = 125.0
+        emit_sample_flow_changes([node], 21.0, writer)
+
+        self.assertEqual(node.sample_flow_state, "flowing")
+        self.assertEqual(
+            [event for event, _ in captured],
+            ["sample_flow_stalled", "sample_flow_recovered"],
+        )
 
 
 class RecorderDiagnosticTests(unittest.TestCase):

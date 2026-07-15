@@ -89,11 +89,13 @@ from host.host_configurator import (
     parse_diagnostic_info_view,
 )
 from host.live_web import LiveBuffer, LiveGap, LiveSample, LiveServer
+from host.common.version import PROJECT_VERSION
 
 
 SAMPLE_PAYLOAD_OFFSET = struct.calcsize(BURST_HEADER_FORMAT)
 RECORDER_SCHEMA_VERSION = 4
-RECORDER_VERSION = "0.3.1"
+RECORDER_VERSION = PROJECT_VERSION
+SAMPLE_FLOW_STALL_CONFIRM_S = 2.0
 DEFAULT_WINDOW_SECONDS = 600
 STANDARD_GRAVITY_M_S2 = 9.80665
 GET_VERSION_FORMAT = "<BBBBBB"
@@ -145,6 +147,8 @@ class RecorderNode:
     instant_samples_per_second_5s: Optional[float] = None
     rate_stability_percent_5s: Optional[float] = None
     rate_history: deque[tuple[float, int]] | None = None
+    sample_flow_state: str = "unknown"
+    sample_flow_zero_since: Optional[float] = None
     next_diagnostic_event_id: int = 1
     diagnostic_dropped_events: int = 0
     diagnostic_clock_offset_ms: int | None = None
@@ -1114,6 +1118,7 @@ def write_runtime_status(
                 samples_written=node.samples_written,
                 instant_samples_per_second_5s=node.instant_samples_per_second_5s,
                 rate_stability_percent_5s=node.rate_stability_percent_5s,
+                sample_flow_state=node.sample_flow_state,
                 expected_sample_seq=node.expected_sample_seq,
                 last_written_seq=node.last_written_seq,
                 bursts_ok=node.bursts_ok,
@@ -1185,6 +1190,61 @@ def update_rate_metrics(nodes: Iterable[RecorderNode], now_monotonic: float) -> 
         node.rate_stability_percent_5s = max(
             0.0,
             min(100.0, 100.0 * (1.0 - (stddev / max(mean_rate, 1e-9)))))
+
+
+def emit_sample_flow_changes(
+    nodes: Iterable[RecorderNode],
+    now_monotonic: float,
+    event_writer: JsonlEventWriter,
+) -> None:
+    for node in nodes:
+        rate = node.instant_samples_per_second_5s
+        if not node.online:
+            node.sample_flow_state = "offline"
+            node.sample_flow_zero_since = None
+            continue
+        if rate is None:
+            node.sample_flow_state = "starting"
+            continue
+        if rate > 0.0:
+            was_stalled = node.sample_flow_state == "stalled"
+            stalled_for_s = (
+                max(0.0, now_monotonic - node.sample_flow_zero_since)
+                if node.sample_flow_zero_since is not None
+                else None
+            )
+            node.sample_flow_state = "flowing"
+            node.sample_flow_zero_since = None
+            if was_stalled:
+                event_writer.emit(
+                    "sample_flow_recovered",
+                    node_id=node.node_id,
+                    fields={
+                        "message": "Recorder ponownie otrzymuje próbki z czujnika.",
+                        "samples_per_second_5s": rate,
+                        "stalled_for_s": stalled_for_s,
+                    },
+                )
+            continue
+
+        if node.sample_flow_zero_since is None:
+            node.sample_flow_zero_since = now_monotonic
+        if (now_monotonic - node.sample_flow_zero_since) < SAMPLE_FLOW_STALL_CONFIRM_S:
+            node.sample_flow_state = "stopping"
+            continue
+        if node.sample_flow_state != "stalled":
+            event_writer.emit(
+                "sample_flow_stalled",
+                severity="error",
+                node_id=node.node_id,
+                fields={
+                    "message": "Czujnik jest online, ale recorder nie otrzymuje żadnych próbek.",
+                    "samples_per_second_5s": rate,
+                    "samples_written": node.samples_written,
+                    "expected_sample_seq": node.expected_sample_seq,
+                },
+            )
+        node.sample_flow_state = "stalled"
 
 
 def record_one_burst(
@@ -1643,6 +1703,7 @@ def main() -> int:
 
                     if now >= next_status_at:
                         update_rate_metrics(nodes, now)
+                        emit_sample_flow_changes(nodes, now, event_writer)
                         print_status(nodes, started_at)
                         write_runtime_status(writer, args, nodes, created_utc, status_writer)
                         next_status_at = now + args.status_interval

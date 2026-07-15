@@ -8,11 +8,35 @@ import unittest
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from host.dashboard.app import DashboardRepository, DashboardServer
 
 
 class DashboardRepositoryTests(unittest.TestCase):
+    def test_online_node_without_samples_is_an_alert(self) -> None:
+        repository = DashboardRepository(Path("/tmp/not-used-system-config.json"))
+        config_node = SimpleNamespace(
+            node_id=1,
+            name="Czujnik B",
+            enabled=True,
+            expected_odr_hz=125.0,
+        )
+        runtime_node = {
+            "node_id": 1,
+            "online": True,
+            "sensor_odr_hz": 250,
+            "output_odr_hz": 125.0,
+            "instant_samples_per_second_5s": 0.0,
+        }
+
+        node = repository._merge_node(config_node, runtime_node)
+
+        self.assertEqual(node["sample_flow_state"], "stalled")
+        self.assertFalse(node["receiving_samples"])
+        self.assertIn("brak próbek", node["alerts"])
+
     def create_live_hdf5(self, path: Path) -> None:
         try:
             import h5py  # type: ignore
@@ -230,6 +254,117 @@ class DashboardRepositoryTests(unittest.TestCase):
             self.assertTrue(data_payload["exists"])
             self.assertEqual(data_payload["relative_path"], ".")
 
+    def test_dashboard_falls_back_to_channel_status_firmware_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            status_path = temp_dir / "supervisor.status.json"
+            event_path = temp_dir / "supervisor.events.jsonl"
+            channel_runtime_dir = temp_dir / "channels"
+            channel_runtime_dir.mkdir(parents=True)
+            channel_status_path = channel_runtime_dir / "line-c.status.json"
+            config_path = temp_dir / "system_config.json"
+
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "system": {"name": "sensor-system-prod"},
+                        "storage": {"root_dir": str(temp_dir / "runs")},
+                        "supervisor": {
+                            "status_file": str(status_path),
+                            "event_log": str(event_path),
+                            "channel_runtime_dir": str(channel_runtime_dir),
+                        },
+                        "channels": [
+                            {
+                                "name": "line-c",
+                                "label": "Linia C",
+                                "port": "/dev/ttyUSB2",
+                                "baud": 115200,
+                                "nodes": [{"id": 1, "name": "Czujnik C", "expected_odr_hz": 125.0}],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "updated_utc": "2026-07-12T15:05:00+00:00",
+                        "started_utc": "2026-07-12T15:00:00+00:00",
+                        "supervisor_version": "0.3.0",
+                        "storage_root": str(temp_dir / "runs"),
+                        "channels": [
+                            {
+                                "name": "line-c",
+                                "label": "Linia C",
+                                "enabled": True,
+                                "port": "/dev/ttyUSB2",
+                                "baud": 115200,
+                                "process_id": 1234,
+                                "running": True,
+                                "restart_count": 0,
+                                "last_exit_code": None,
+                                "updated_utc": "2026-07-12T15:05:00+00:00",
+                                "destination": str(temp_dir / "runs" / "line-c"),
+                                "active_file": str(temp_dir / "runs" / "line-c.h5"),
+                                "status_file": str(channel_status_path),
+                                "event_log": str(channel_runtime_dir / "line-c.events.jsonl"),
+                                "process_log": str(channel_runtime_dir / "line-c.process.log"),
+                                "nodes": [
+                                    {
+                                        "node_id": 1,
+                                        "name": "Czujnik C",
+                                        "online": True,
+                                        "sensor_odr_hz": 250,
+                                        "output_odr_hz": 125.0,
+                                        "samples_written": 3776,
+                                        "instant_samples_per_second_5s": 124.6,
+                                        "rate_stability_percent_5s": 98.0,
+                                        "expected_sample_seq": 3777,
+                                        "last_written_seq": 3776,
+                                        "bursts_ok": 245,
+                                        "bursts_no_data": 19,
+                                        "bursts_failed": 0,
+                                        "gaps_detected": 0,
+                                        "empty_polls": 19,
+                                        "sensor_loss_total": 0,
+                                        "sensor_loss_session": 0,
+                                        "rx_overflow_total": 0,
+                                        "rx_overflow_session": 0,
+                                        "packet_overwrite_total": 0,
+                                        "packet_overwrite_session": 0,
+                                        "last_temperature_c": 27.21,
+                                        "last_temperature_unix_ns": 1_783_868_680_000_000_000,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            channel_status_path.write_text(
+                json.dumps(
+                    {
+                        "nodes": [
+                            {
+                                "node_id": 1,
+                                "firmware_version": "v0.3.9",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            repository = DashboardRepository(config_path)
+            payload = repository.dashboard_payload(limit=10)
+
+            self.assertEqual(payload["channels"][0]["nodes"][0]["firmware_version"], "v0.3.9")
+
     def test_supervisor_action_writes_global_command_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = Path(tmp)
@@ -372,6 +507,47 @@ class DashboardRepositoryTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertTrue(command_file.exists())
             self.assertEqual(json.loads(command_file.read_text(encoding="utf-8"))["action"], "restart")
+
+    def test_restart_node_firmware_runs_coordinated_channel_control(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            event_path = temp_dir / "supervisor.events.jsonl"
+            config_path = temp_dir / "system_config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "system": {"name": "sensor-system-prod"},
+                        "supervisor": {
+                            "status_file": str(temp_dir / "supervisor.status.json"),
+                            "event_log": str(event_path),
+                            "channel_runtime_dir": str(temp_dir / "channels"),
+                        },
+                        "channels": [
+                            {
+                                "name": "line-b",
+                                "label": "Linia B",
+                                "port": "/dev/ttyUSB1",
+                                "nodes": [{"id": 7, "name": "Czujnik B"}],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            repository = DashboardRepository(config_path)
+
+            with patch("host.dashboard.app.subprocess.run") as run:
+                run.return_value = SimpleNamespace(returncode=0, stdout="[OK] restarted\n", stderr="")
+                payload = repository.restart_node_firmware("line-b", 7)
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["action"], "restart_firmware")
+            command = run.call_args.args[0]
+            self.assertIn("restart-remote", command)
+            self.assertEqual(command[-4:], ["--channel", "line-b", "--node", "7"])
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            self.assertEqual(event["event"], "node_firmware_restarted")
+            self.assertEqual(event["node_id"], 7)
 
     def test_purge_action_writes_command_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -812,6 +988,13 @@ class DashboardServerRoutesTests(unittest.TestCase):
         self.assertIn("Sekcja data", body.decode("utf-8"))
         self.assertIn("Logi kanałów", body.decode("utf-8"))
 
+        status, body, _headers = self.request("GET", "/api/health")
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertIn("system_healthy", health)
+        self.assertIn("nodes_receiving_samples", health)
+        self.assertIn("nodes_without_samples", health)
+
         status, body, headers = self.request("GET", "/api/data")
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
@@ -910,6 +1093,20 @@ class DashboardServerRoutesTests(unittest.TestCase):
         self.assertEqual(payload["action"], "restart")
         command_file = self.config_path.parent / "channels" / "line-a.command.json"
         self.assertTrue(command_file.exists())
+
+        with patch.object(
+            self.server.repository,
+            "restart_node_firmware",
+            return_value={"ok": True, "channel_name": "line-a", "node_id": 1, "action": "restart_firmware"},
+        ) as restart_firmware:
+            status, body, headers = self.request(
+                "POST", "/api/channels/line-a/nodes/1/restart-firmware"
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+        payload = json.loads(body)
+        self.assertEqual(payload["action"], "restart_firmware")
+        restart_firmware.assert_called_once_with("line-a", 1)
 
         status, body, headers = self.request("POST", "/api/channels/line-a/purge")
         self.assertEqual(status, 200)

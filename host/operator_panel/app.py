@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from host.common.data_browser import DataRepository, FileDownload
 from host.common.system_config import HostSystemConfig
+from host.common.version import PROJECT_VERSION
 from host.dashboard.app import DashboardRepository, clamp_limit, load_json, load_tail_jsonl
 from host.host_configurator import (
     CMD_GET_CONFIG,
@@ -43,7 +44,7 @@ from host.host_configurator import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PANEL_VERSION = "0.1.0"
+PANEL_VERSION = PROJECT_VERSION
 MAX_PREVIEW_LIMIT = 4_096
 
 

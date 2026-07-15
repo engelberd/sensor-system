@@ -1,5 +1,9 @@
 node/build/
 host/.venv/
+host/host_config.json
+host/system_config.json
+host/systemd/*.service
+!host/systemd/*.service.example
 __pycache__/
 *.pyc
 runs/
@@ -11,6 +15,8 @@ data/
 .codex/
 .vscode/
 .codex
+node/build.*/
+node/eval-adxl354-355- board.pdf
 
 # KiCad local/generated files. Keep source project files tracked:
 # *.kicad_pro, *.kicad_sch, *.kicad_pcb, project libraries, and chosen 3D models.

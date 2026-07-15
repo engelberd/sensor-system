@@ -16,29 +16,47 @@ WorkingDirectory=/opt/sensor-system
 #   SENSOR_SYSTEM_OUTPUT_DIR=/data/sensor-system
 #   SENSOR_SYSTEM_WINDOW_SECONDS=600
 #   SENSOR_SYSTEM_WINDOW_TIMEZONE=Europe/Warsaw
+Environment=SENSOR_SYSTEM_PORT=/dev/sensor-system-rs485
+Environment=SENSOR_SYSTEM_BAUD=115200
+Environment=SENSOR_SYSTEM_NODES=1
+Environment=SENSOR_SYSTEM_OUTPUT_DIR=/data/sensor-system
+Environment=SENSOR_SYSTEM_FORMAT=hdf5
+Environment=SENSOR_SYSTEM_COMPRESSION=gzip
+Environment=SENSOR_SYSTEM_WINDOW_SECONDS=600
+Environment=SENSOR_SYSTEM_WINDOW_TIMEZONE=local
+Environment=SENSOR_SYSTEM_START_FROM=newest
+Environment=SENSOR_SYSTEM_GRANT_PACKETS=4
+Environment=SENSOR_SYSTEM_CMD_TIMEOUT_S=0.5
+Environment=SENSOR_SYSTEM_BURST_IDLE_TIMEOUT_S=0.15
+Environment=SENSOR_SYSTEM_BURST_SESSION_TIMEOUT_S=0.75
+Environment=SENSOR_SYSTEM_FLUSH_INTERVAL_S=2.0
+Environment=SENSOR_SYSTEM_STATS_INTERVAL_S=5.0
+Environment=SENSOR_SYSTEM_TEMPERATURE_INTERVAL_S=3600.0
+Environment=SENSOR_SYSTEM_STATUS_FILE=/tmp/sensor-system_recorder_status.json
+Environment=SENSOR_SYSTEM_EVENT_LOG=/tmp/sensor-system_recorder_events.jsonl
 EnvironmentFile=-/etc/sensor-system-recorder.env
 
 Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_recorder.py \
-  --port ${SENSOR_SYSTEM_PORT:-/dev/sensor-system-rs485} \
-  --baud ${SENSOR_SYSTEM_BAUD:-115200} \
-  --nodes ${SENSOR_SYSTEM_NODES:-1} \
-  --output-dir ${SENSOR_SYSTEM_OUTPUT_DIR:-/data/sensor-system} \
-  --format ${SENSOR_SYSTEM_FORMAT:-hdf5} \
-  --compression ${SENSOR_SYSTEM_COMPRESSION:-gzip} \
-  --window-seconds ${SENSOR_SYSTEM_WINDOW_SECONDS:-600} \
-  --window-timezone ${SENSOR_SYSTEM_WINDOW_TIMEZONE:-local} \
-  --start-from ${SENSOR_SYSTEM_START_FROM:-newest} \
-  --grant-packets ${SENSOR_SYSTEM_GRANT_PACKETS:-4} \
-  --timeout ${SENSOR_SYSTEM_CMD_TIMEOUT_S:-0.5} \
-  --burst-idle-timeout ${SENSOR_SYSTEM_BURST_IDLE_TIMEOUT_S:-0.15} \
-  --burst-session-timeout ${SENSOR_SYSTEM_BURST_SESSION_TIMEOUT_S:-0.75} \
-  --flush-interval ${SENSOR_SYSTEM_FLUSH_INTERVAL_S:-2.0} \
-  --stats-interval ${SENSOR_SYSTEM_STATS_INTERVAL_S:-5.0} \
-  --temperature-interval ${SENSOR_SYSTEM_TEMPERATURE_INTERVAL_S:-3600.0} \
-  --status-file ${SENSOR_SYSTEM_STATUS_FILE:-/tmp/sensor-system_recorder_status.json} \
-  --event-log ${SENSOR_SYSTEM_EVENT_LOG:-/tmp/sensor-system_recorder_events.jsonl}
+  --port ${SENSOR_SYSTEM_PORT} \
+  --baud ${SENSOR_SYSTEM_BAUD} \
+  --nodes ${SENSOR_SYSTEM_NODES} \
+  --output-dir ${SENSOR_SYSTEM_OUTPUT_DIR} \
+  --format ${SENSOR_SYSTEM_FORMAT} \
+  --compression ${SENSOR_SYSTEM_COMPRESSION} \
+  --window-seconds ${SENSOR_SYSTEM_WINDOW_SECONDS} \
+  --window-timezone ${SENSOR_SYSTEM_WINDOW_TIMEZONE} \
+  --start-from ${SENSOR_SYSTEM_START_FROM} \
+  --grant-packets ${SENSOR_SYSTEM_GRANT_PACKETS} \
+  --timeout ${SENSOR_SYSTEM_CMD_TIMEOUT_S} \
+  --burst-idle-timeout ${SENSOR_SYSTEM_BURST_IDLE_TIMEOUT_S} \
+  --burst-session-timeout ${SENSOR_SYSTEM_BURST_SESSION_TIMEOUT_S} \
+  --flush-interval ${SENSOR_SYSTEM_FLUSH_INTERVAL_S} \
+  --stats-interval ${SENSOR_SYSTEM_STATS_INTERVAL_S} \
+  --temperature-interval ${SENSOR_SYSTEM_TEMPERATURE_INTERVAL_S} \
+  --status-file ${SENSOR_SYSTEM_STATUS_FILE} \
+  --event-log ${SENSOR_SYSTEM_EVENT_LOG}
 
 Restart=always
 RestartSec=5

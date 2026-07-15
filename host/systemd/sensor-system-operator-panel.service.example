@@ -1,6 +1,6 @@
 [Unit]
 Description=Sensor System operator panel
-After=network-online.target
+After=network-online.target sensor-system-supervisor.service
 Wants=network-online.target
 
 [Service]
@@ -15,15 +15,19 @@ WorkingDirectory=/opt/sensor-system
 #   SENSOR_SYSTEM_OPERATOR_HOST=0.0.0.0
 #   SENSOR_SYSTEM_OPERATOR_PORT=8090
 #   SENSOR_SYSTEM_SUPERVISOR_SERVICE=sensor-system-supervisor.service
+Environment=SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
+Environment=SENSOR_SYSTEM_OPERATOR_HOST=127.0.0.1
+Environment=SENSOR_SYSTEM_OPERATOR_PORT=8090
+Environment=SENSOR_SYSTEM_SUPERVISOR_SERVICE=sensor-system-supervisor.service
 EnvironmentFile=-/etc/sensor-system-operator-panel.env
 
 Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_operator_panel.py \
-  --config ${SENSOR_SYSTEM_CONFIG:-/opt/sensor-system/host/system_config.json} \
-  --host ${SENSOR_SYSTEM_OPERATOR_HOST:-0.0.0.0} \
-  --port ${SENSOR_SYSTEM_OPERATOR_PORT:-8090} \
-  --supervisor-service ${SENSOR_SYSTEM_SUPERVISOR_SERVICE:-sensor-system-supervisor.service}
+  --config ${SENSOR_SYSTEM_CONFIG} \
+  --host ${SENSOR_SYSTEM_OPERATOR_HOST} \
+  --port ${SENSOR_SYSTEM_OPERATOR_PORT} \
+  --supervisor-service ${SENSOR_SYSTEM_SUPERVISOR_SERVICE}
 
 Restart=always
 RestartSec=5
