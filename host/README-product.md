@@ -33,13 +33,19 @@ Default runtime side-files written by the recorder:
 
 Default runtime side-files written by the supervisor:
 
-- Status snapshot: `/tmp/sensor-system_supervisor_status.json`
-- Event log: `/tmp/sensor-system_supervisor_events.jsonl`
+- Status and command files: `/run/sensor-system/`
+- Supervisor event log: `logs/sensor-system/supervisor.events.jsonl`
+- Per-channel event and process logs: `logs/sensor-system/<channel>.*.log`
 
 Recorder output files are created per channel under `/data/sensor-system/<line>/<YYYY-MM-DD>/`
 and use the exact recorder start timestamp in the filename, for example
 `line-a_2026-06-15_16-33-48.h5`.
-- Per-channel recorder stdout/stderr log: `/tmp/sensor-system_channels/<channel>.process.log`
+
+Production logs are bounded: JSONL logs rotate at 5 MiB with three backups, and
+recorder process logs rotate at 10 MiB with three backups. Runtime status and
+event-log failures are non-fatal to measurement recording. The supervisor also
+uses capped exponential restart backoff for repeatedly failing channels and
+publishes storage capacity so the dashboard can warn below 15% free space.
 
 The console reads those files by default.
 The dashboard reads the supervisor status/event files configured in `host/system_config.json`.

@@ -9,10 +9,10 @@ DASHBOARD_CMD="$HOST_PYTHON host/host_dashboard.py --config host/system_config.j
 SUPERVISOR_SESSION="sensor-supervisor"
 WATCH_SESSION="sensor-watch"
 DASHBOARD_SESSION="sensor-dashboard"
-STATUS_FILE="/tmp/sensor-system_supervisor_status.json"
-EVENT_LOG="/tmp/sensor-system_supervisor_events.jsonl"
-WATCH_LOG="/tmp/sensor-system_channels/soak_watch.log"
-ALERT_LOG="/tmp/sensor-system_channels/soak_alerts.log"
+STATUS_FILE="/run/sensor-system/supervisor.status.json"
+EVENT_LOG="logs/sensor-system/supervisor.events.jsonl"
+WATCH_LOG="logs/sensor-system/soak_watch.log"
+ALERT_LOG="logs/sensor-system/soak_alerts.log"
 DASHBOARD_URL="http://127.0.0.1:8090/"
 STREAM_SESSION_PREFIX="sensor-stream-"
 STREAM_DEFAULT_PORT=8000
@@ -65,12 +65,12 @@ read_config_value() {
 }
 
 refresh_runtime_paths() {
-  local runtime_dir
+  local log_dir
   STATUS_FILE="$(read_config_value "cfg['supervisor']['status_file']")"
   EVENT_LOG="$(read_config_value "cfg['supervisor']['event_log']")"
-  runtime_dir="$(read_config_value "cfg['supervisor']['channel_runtime_dir']")"
-  WATCH_LOG="${runtime_dir%/}/soak_watch.log"
-  ALERT_LOG="${runtime_dir%/}/soak_alerts.log"
+  log_dir="$(read_config_value "cfg['supervisor'].get('log_dir', 'logs/sensor-system')")"
+  WATCH_LOG="${log_dir%/}/soak_watch.log"
+  ALERT_LOG="${log_dir%/}/soak_alerts.log"
   WATCH_CMD="$HOST_PYTHON host/tools/soak_watch.py --status-file '$STATUS_FILE' --log-file '$WATCH_LOG' --alert-file '$ALERT_LOG'"
 }
 

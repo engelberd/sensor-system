@@ -17,6 +17,8 @@ from host.host_supervisor import (
     channel_output_dir,
     load_channel_command,
     supervisor_command_path,
+    rotate_process_log,
+    restart_delay_for,
 )
 from host.common.runtime_status import JsonlEventWriter
 
@@ -62,6 +64,26 @@ class SupervisorWorkerCommandTests(unittest.TestCase):
 
         output_dir_index = command.index("--output-dir") + 1
         self.assertEqual(command[output_dir_index], "/data/sensor-system/line-a")
+        console_interval_index = command.index("--console-status-interval") + 1
+        self.assertEqual(command[console_interval_index], "30.0")
+
+    def test_process_log_rotation_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "line-a.process.log"
+            path.write_text("x" * 200, encoding="utf-8")
+
+            self.assertTrue(rotate_process_log(path, max_bytes=100, backup_count=2))
+            self.assertEqual(path.read_text(encoding="utf-8"), "")
+            self.assertEqual(
+                path.with_name("line-a.process.log.1").read_text(encoding="utf-8"),
+                "x" * 200,
+            )
+
+    def test_restart_delay_uses_capped_exponential_backoff(self) -> None:
+        self.assertEqual(restart_delay_for(1, 2.0, 60.0), 2.0)
+        self.assertEqual(restart_delay_for(2, 2.0, 60.0), 4.0)
+        self.assertEqual(restart_delay_for(6, 2.0, 60.0), 60.0)
+        self.assertEqual(restart_delay_for(20, 2.0, 60.0), 60.0)
 
     def test_channel_output_dir_can_override_namespaced_default(self) -> None:
         config = HostSystemConfig.from_dict(
@@ -105,6 +127,7 @@ class SupervisorWorkerCommandTests(unittest.TestCase):
         self.assertEqual(snapshot.channels[0].destination, "/data/sensor-system/line-a")
         self.assertTrue(snapshot.channels[0].desired_running)
         self.assertEqual(snapshot.channels[0].control_state, "waiting")
+        self.assertEqual(snapshot.storage_total_bytes, 0)
 
     def test_supervisor_snapshot_tolerates_older_runtime_status_without_rate_metrics(self) -> None:
         config = self.make_config()

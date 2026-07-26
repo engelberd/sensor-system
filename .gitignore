@@ -8,6 +8,8 @@ __pycache__/
 *.pyc
 runs/
 data/
+logs/
+diagnostics/2026-07-24_tmp-full-recovery/
 .DS_Store
 .git-main/
 .git-node-history/

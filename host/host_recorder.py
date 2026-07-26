@@ -1459,6 +1459,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--burst-idle-timeout", type=float, default=0.15)
     parser.add_argument("--burst-session-timeout", type=float, default=0.75)
     parser.add_argument("--status-interval", type=float, default=1.0)
+    parser.add_argument(
+        "--console-status-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between human-readable progress lines; runtime JSON is updated independently",
+    )
     parser.add_argument("--flush-interval", type=float, default=2.0)
     parser.add_argument("--stats-interval", type=float, default=5.0)
     parser.add_argument(
@@ -1619,6 +1625,7 @@ def main() -> int:
                         )
 
                 next_status_at = started_at
+                next_console_status_at = started_at
                 next_flush_at = started_at + args.flush_interval
                 next_stats_at = started_at + args.stats_interval
 
@@ -1704,9 +1711,11 @@ def main() -> int:
                     if now >= next_status_at:
                         update_rate_metrics(nodes, now)
                         emit_sample_flow_changes(nodes, now, event_writer)
-                        print_status(nodes, started_at)
                         write_runtime_status(writer, args, nodes, created_utc, status_writer)
                         next_status_at = now + args.status_interval
+                    if now >= next_console_status_at:
+                        print_status(nodes, started_at)
+                        next_console_status_at = now + max(1.0, args.console_status_interval)
             finally:
                 if stop_flag.stop_requested:
                     stop_reason = f"signal:{stop_flag.signal_name or stop_flag.signal_number}"

@@ -1093,6 +1093,15 @@ INDEX_HTML = """<!doctype html>
 
         const chips = [];
         chips.push(chip(supervisor.has_status ? "status runtime obecny" : "brak statusu runtime", supervisor.has_status ? "good" : "warn"));
+        if (supervisor.status_stale) {
+          chips.push(chip(`dane nieaktualne (${formatNumber(supervisor.status_age_s || 0, 0)} s)`, "bad"));
+        }
+        if (supervisor.storage_free_bytes != null) {
+          chips.push(chip(
+            `wolne miejsce: ${formatNumber(supervisor.storage_free_bytes / 1073741824, 1)} GB`,
+            supervisor.storage_low ? "warn" : "good"
+          ));
+        }
         chips.push(chip(`alerty: ${formatNumber(overview.attention_count || 0)}`, (overview.attention_count || 0) > 0 ? "warn" : "good"));
         chips.push(chip(`błędy: ${formatNumber((overview.events_by_severity || {}).error || 0)}`, ((overview.events_by_severity || {}).error || 0) > 0 ? "bad" : "muted"));
         chips.push(chip(`warn: ${formatNumber((overview.events_by_severity || {}).warning || 0)}`, ((overview.events_by_severity || {}).warning || 0) > 0 ? "warn" : "muted"));
@@ -3632,6 +3641,12 @@ class DashboardRepository:
             "started_utc": raw_status.get("started_utc") if raw_status else None,
             "supervisor_version": raw_status.get("supervisor_version") if raw_status else None,
             "storage_root": raw_status.get("storage_root", config.storage.root_dir) if raw_status else config.storage.root_dir,
+            "status_age_s": overview["status_age_s"],
+            "status_stale": overview["status_stale"],
+            "storage_total_bytes": raw_status.get("storage_total_bytes") if raw_status else None,
+            "storage_free_bytes": raw_status.get("storage_free_bytes") if raw_status else None,
+            "storage_used_percent": raw_status.get("storage_used_percent") if raw_status else None,
+            "storage_low": overview["storage_low"],
         }
         return {
             "dashboard_version": DASHBOARD_VERSION,
@@ -4572,9 +4587,26 @@ class DashboardRepository:
         age_seconds = None
         if updated is not None:
             age_seconds = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds())
+        status_stale = raw_status is not None and (age_seconds is None or age_seconds > 5.0)
+        storage_total_bytes = int(raw_status.get("storage_total_bytes", 0)) if raw_status else 0
+        storage_free_bytes = int(raw_status.get("storage_free_bytes", 0)) if raw_status else 0
+        storage_free_percent = (
+            100.0 * storage_free_bytes / storage_total_bytes
+            if storage_total_bytes > 0
+            else None
+        )
+        storage_low = storage_free_percent is not None and storage_free_percent < 15.0
+        if status_stale:
+            attention_count += 1
+        if storage_low:
+            attention_count += 1
 
         if raw_status is None:
             summary = "Konfiguracja dostępna, oczekiwanie na runtime z supervisora"
+        elif status_stale:
+            summary = f"Dane runtime są nieaktualne od {int(age_seconds or 0)} s"
+        elif storage_low:
+            summary = f"Mało wolnego miejsca na dane: {storage_free_percent:.1f}%"
         elif nodes_without_samples > 0:
             summary = f"{nodes_without_samples} węzeł/węzły są online, ale nie dostarczają próbek"
         elif channels_running == channels_enabled and nodes_online == nodes_enabled:
@@ -4599,6 +4631,9 @@ class DashboardRepository:
             "attention_count": attention_count,
             "events_by_severity": severity_counts,
             "status_age_s": age_seconds,
+            "status_stale": status_stale,
+            "storage_free_percent": storage_free_percent,
+            "storage_low": storage_low,
             "status_summary": summary,
         }
 

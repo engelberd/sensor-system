@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -58,8 +59,10 @@ class WorkerState:
     process: subprocess.Popen[str] | None = None
     process_log_handle: TextIO | None = None
     restart_count: int = 0
+    consecutive_failures: int = 0
     last_exit_code: int | None = None
     next_start_monotonic: float = 0.0
+    process_started_monotonic: float | None = None
     last_status: dict[str, Any] | None = None
     last_status_updated_utc: str | None = None
     desired_running: bool = True
@@ -97,12 +100,12 @@ def channel_status_path(runtime_dir: Path, channel_name: str) -> Path:
     return runtime_dir / f"{channel_name}.status.json"
 
 
-def channel_event_path(runtime_dir: Path, channel_name: str) -> Path:
-    return runtime_dir / f"{channel_name}.events.jsonl"
+def channel_event_path(log_dir: Path, channel_name: str) -> Path:
+    return log_dir / f"{channel_name}.events.jsonl"
 
 
-def channel_process_log_path(runtime_dir: Path, channel_name: str) -> Path:
-    return runtime_dir / f"{channel_name}.process.log"
+def channel_process_log_path(log_dir: Path, channel_name: str) -> Path:
+    return log_dir / f"{channel_name}.process.log"
 
 
 def channel_command_path(runtime_dir: Path, channel_name: str) -> Path:
@@ -205,6 +208,8 @@ def build_worker_command(
         str(channel.burst_session_timeout),
         "--status-interval",
         str(channel.status_interval_s),
+        "--console-status-interval",
+        str(system_config.supervisor.console_status_interval_s),
         "--flush-interval",
         str(channel.flush_interval_s),
         "--stats-interval",
@@ -220,6 +225,29 @@ def build_worker_command(
         "--event-log",
         str(event_log),
     ]
+
+
+def rotate_process_log(path: Path, max_bytes: int, backup_count: int) -> bool:
+    """Copy-truncate an active subprocess log without invalidating its stdout fd."""
+    if max_bytes <= 0 or backup_count <= 0:
+        return False
+    try:
+        if path.stat().st_size <= max_bytes:
+            return False
+        oldest = path.with_name(f"{path.name}.{backup_count}")
+        oldest.unlink(missing_ok=True)
+        for index in range(backup_count - 1, 0, -1):
+            source = path.with_name(f"{path.name}.{index}")
+            if source.exists():
+                os.replace(source, path.with_name(f"{path.name}.{index + 1}"))
+        temporary = path.with_name(f"{path.name}.1.tmp")
+        shutil.copyfile(path, temporary)
+        os.replace(temporary, path.with_name(f"{path.name}.1"))
+        with path.open("w", encoding="utf-8"):
+            pass
+        return True
+    except (FileNotFoundError, OSError):
+        return False
 
 
 def spawn_worker(
@@ -242,14 +270,30 @@ def spawn_worker(
     env = dict(os.environ)
     env.setdefault("PYTHONUNBUFFERED", "1")
     state.process_log.parent.mkdir(parents=True, exist_ok=True)
-    state.process_log_handle = state.process_log.open("a", encoding="utf-8", buffering=1)
+    try:
+        state.process_log_handle = state.process_log.open("a", encoding="utf-8", buffering=1)
+        process_output: TextIO | int = state.process_log_handle
+    except OSError as exc:
+        state.process_log_handle = None
+        process_output = subprocess.DEVNULL
+        event_writer.emit(
+            "channel_process_log_unavailable",
+            severity="error",
+            fields={
+                "channel_name": state.config.name,
+                "process_log": str(state.process_log),
+                "error": str(exc),
+                "fallback": "devnull",
+            },
+        )
     state.process = subprocess.Popen(
         command,
         env=env,
         text=True,
-        stdout=state.process_log_handle,
+        stdout=process_output,
         stderr=subprocess.STDOUT,
     )
+    state.process_started_monotonic = time.monotonic()
     event_writer.emit(
         "channel_started",
         fields={
@@ -284,6 +328,7 @@ def stop_worker(state: WorkerState, event_writer: JsonlEventWriter) -> None:
     )
     state.last_exit_code = process.returncode
     state.process = None
+    state.process_started_monotonic = None
     state.close_process_log()
 
 
@@ -297,6 +342,7 @@ def purge_worker_runtime(state: WorkerState, event_writer: JsonlEventWriter) -> 
     state.last_status_updated_utc = None
     state.last_exit_code = None
     state.restart_count = 0
+    state.consecutive_failures = 0
 
 
 def control_state_label(state: WorkerState, now_monotonic: float) -> str:
@@ -309,6 +355,13 @@ def control_state_label(state: WorkerState, now_monotonic: float) -> str:
     if state.next_start_monotonic > now_monotonic:
         return "restart-pending"
     return "waiting"
+
+
+def restart_delay_for(failure_count: int, base_delay_s: float, max_delay_s: float) -> float:
+    if failure_count <= 0:
+        return max(0.0, base_delay_s)
+    exponent = min(failure_count - 1, 20)
+    return min(max(0.0, max_delay_s), max(0.0, base_delay_s) * (2 ** exponent))
 
 
 def apply_channel_command(
@@ -488,6 +541,19 @@ def build_supervisor_snapshot(
     states: list[WorkerState],
 ) -> SupervisorStatusSnapshot:
     now_monotonic = time.monotonic()
+    try:
+        storage_usage = shutil.disk_usage(system_config.storage.root_dir)
+        storage_total_bytes = storage_usage.total
+        storage_free_bytes = storage_usage.free
+        storage_used_percent = (
+            100.0 * storage_usage.used / storage_usage.total
+            if storage_usage.total > 0
+            else 0.0
+        )
+    except OSError:
+        storage_total_bytes = 0
+        storage_free_bytes = 0
+        storage_used_percent = 0.0
     channels: list[SupervisorChannelStatus] = []
     for state in states:
         if state.status_file.exists():
@@ -532,6 +598,9 @@ def build_supervisor_snapshot(
         status_file=str(status_writer.path),
         event_log=str(event_log),
         channels=channels,
+        storage_total_bytes=storage_total_bytes,
+        storage_free_bytes=storage_free_bytes,
+        storage_used_percent=storage_used_percent,
     )
 
 
@@ -583,6 +652,8 @@ def main() -> int:
     ensure_storage_root(system_config.storage.root_dir)
     runtime_dir = Path(system_config.supervisor.channel_runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(system_config.supervisor.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
     instance_lock = SupervisorInstanceLock(runtime_dir / "supervisor.lock")
     instance_lock.acquire()
     supervisor_commands = supervisor_command_path(runtime_dir)
@@ -599,8 +670,8 @@ def main() -> int:
         WorkerState(
             config=channel,
             status_file=channel_status_path(runtime_dir, channel.name),
-            event_log=channel_event_path(runtime_dir, channel.name),
-            process_log=channel_process_log_path(runtime_dir, channel.name),
+            event_log=channel_event_path(log_dir, channel.name),
+            process_log=channel_process_log_path(log_dir, channel.name),
             command_file=channel_command_path(runtime_dir, channel.name),
             desired_running=channel.enabled,
         )
@@ -632,6 +703,11 @@ def main() -> int:
                     event_writer=event_writer,
                 )
             for state in states:
+                rotate_process_log(
+                    state.process_log,
+                    system_config.supervisor.process_log_max_bytes,
+                    system_config.supervisor.process_log_backup_count,
+                )
                 command = load_channel_command(state.command_file)
                 if command is not None:
                     action = str(command.get("action", "")).strip().lower()
@@ -658,10 +734,24 @@ def main() -> int:
                 if state.process is not None:
                     exit_code = state.process.poll()
                     if exit_code is not None:
+                        process_runtime_s = (
+                            now - state.process_started_monotonic
+                            if state.process_started_monotonic is not None
+                            else 0.0
+                        )
+                        if process_runtime_s >= 300.0:
+                            state.consecutive_failures = 0
+                        state.consecutive_failures += 1
                         state.last_exit_code = exit_code
                         state.process = None
+                        state.process_started_monotonic = None
                         state.restart_count += 1
-                        state.next_start_monotonic = now + system_config.supervisor.restart_delay_s
+                        restart_delay_s = restart_delay_for(
+                            state.consecutive_failures,
+                            system_config.supervisor.restart_delay_s,
+                            system_config.supervisor.restart_delay_max_s,
+                        )
+                        state.next_start_monotonic = now + restart_delay_s
                         state.close_process_log()
                         event_writer.emit(
                             "channel_exited",
@@ -671,6 +761,9 @@ def main() -> int:
                                 "port": state.config.port,
                                 "exit_code": exit_code,
                                 "restart_count": state.restart_count,
+                                "consecutive_failures": state.consecutive_failures,
+                                "restart_delay_s": restart_delay_s,
+                                "process_runtime_s": process_runtime_s,
                                 "process_log": str(state.process_log),
                             },
                         )

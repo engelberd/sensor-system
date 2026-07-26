@@ -22,11 +22,16 @@ class StorageConfig:
 
 @dataclass(frozen=True)
 class SupervisorConfig:
-    status_file: str = "/tmp/sensor-system_supervisor_status.json"
-    event_log: str = "/tmp/sensor-system_supervisor_events.jsonl"
-    channel_runtime_dir: str = "/tmp/sensor-system_channels"
+    status_file: str = "/run/sensor-system/supervisor.status.json"
+    event_log: str = "logs/sensor-system/supervisor.events.jsonl"
+    channel_runtime_dir: str = "/run/sensor-system"
+    log_dir: str = "logs/sensor-system"
     status_interval_s: float = 1.0
     restart_delay_s: float = 2.0
+    restart_delay_max_s: float = 60.0
+    process_log_max_bytes: int = 10 * 1024 * 1024
+    process_log_backup_count: int = 3
+    console_status_interval_s: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -149,11 +154,36 @@ class HostSystemConfig:
                 channel_runtime_dir=str(
                     supervisor_data.get("channel_runtime_dir", SupervisorConfig.channel_runtime_dir)
                 ),
+                log_dir=str(supervisor_data.get("log_dir", SupervisorConfig.log_dir)),
                 status_interval_s=float(
                     supervisor_data.get("status_interval_s", SupervisorConfig.status_interval_s)
                 ),
                 restart_delay_s=float(
                     supervisor_data.get("restart_delay_s", SupervisorConfig.restart_delay_s)
+                ),
+                restart_delay_max_s=float(
+                    supervisor_data.get(
+                        "restart_delay_max_s",
+                        SupervisorConfig.restart_delay_max_s,
+                    )
+                ),
+                process_log_max_bytes=int(
+                    supervisor_data.get(
+                        "process_log_max_bytes",
+                        SupervisorConfig.process_log_max_bytes,
+                    )
+                ),
+                process_log_backup_count=int(
+                    supervisor_data.get(
+                        "process_log_backup_count",
+                        SupervisorConfig.process_log_backup_count,
+                    )
+                ),
+                console_status_interval_s=float(
+                    supervisor_data.get(
+                        "console_status_interval_s",
+                        SupervisorConfig.console_status_interval_s,
+                    )
                 ),
             ),
             channels=tuple(channels),

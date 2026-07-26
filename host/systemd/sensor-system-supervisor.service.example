@@ -16,6 +16,9 @@ Environment=SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
 EnvironmentFile=-/etc/sensor-system-supervisor.env
 
 Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=sensor-system
+RuntimeDirectoryMode=0755
+UMask=0027
 
 ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_supervisor.py \
   --config ${SENSOR_SYSTEM_CONFIG}
@@ -24,6 +27,7 @@ Restart=always
 RestartSec=5
 
 TimeoutStopSec=20
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target

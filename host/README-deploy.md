@@ -42,6 +42,9 @@ will own RS485 communication plus future remote updates.
 - **Disk/mount ready**:
   - Ensure the target directory exists and is writable (e.g. `/data/sensor-system`).
   - Ensure there is enough free space for continuous capture.
+  - Keep runtime status under `/run/sensor-system` and bounded logs outside tmpfs.
+  - Define a measurement-data retention/archive policy; the host warns below 15%
+    free space but never deletes HDF5 measurements automatically.
 - **Time sync**: enable NTP/chrony/systemd-timesyncd; host timestamps are written
   into the output files.
 

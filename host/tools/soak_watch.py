@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import time
 from pathlib import Path
 
@@ -11,17 +13,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Watch supervisor status and emit soak alerts")
     parser.add_argument(
         "--status-file",
-        default="/tmp/sensor-system_supervisor_status.json",
+        default="/run/sensor-system/supervisor.status.json",
         help="Supervisor JSON status snapshot",
     )
     parser.add_argument(
         "--log-file",
-        default="/tmp/sensor-system_channels/soak_watch.log",
+        default="logs/sensor-system/soak_watch.log",
         help="Continuous soak watch log",
     )
     parser.add_argument(
         "--alert-file",
-        default="/tmp/sensor-system_channels/soak_alerts.log",
+        default="logs/sensor-system/soak_alerts.log",
         help="Alert-only soak log",
     )
     parser.add_argument(
@@ -30,7 +32,26 @@ def parse_args() -> argparse.Namespace:
         default=10.0,
         help="Polling interval in seconds",
     )
+    parser.add_argument("--max-log-bytes", type=int, default=5 * 1024 * 1024)
+    parser.add_argument("--log-backups", type=int, default=3)
     return parser.parse_args()
+
+
+def rotating_logger(name: str, path: Path, max_bytes: int, backups: int) -> logging.Logger:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    handler = RotatingFileHandler(
+        path,
+        maxBytes=max(0, max_bytes),
+        backupCount=max(0, backups),
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    return logger
 
 
 def main() -> int:
@@ -43,18 +64,18 @@ def main() -> int:
     last_running: dict[str, bool] = {}
     last_online: dict[str, bool] = {}
 
-    with log_path.open("a", buffering=1, encoding="utf-8") as log_handle, alert_path.open(
-        "a", buffering=1, encoding="utf-8"
-    ) as alert_handle:
-        log_handle.write(f"=== watch started {time.strftime('%Y-%m-%d %H:%M:%S %z')} ===\n")
+    log = rotating_logger("sensor-system-soak", log_path, args.max_log_bytes, args.log_backups)
+    alerts = rotating_logger("sensor-system-soak-alerts", alert_path, args.max_log_bytes, args.log_backups)
+    log.info("=== watch started %s ===", time.strftime("%Y-%m-%d %H:%M:%S %z"))
+    try:
         while True:
             now = time.strftime("%Y-%m-%d %H:%M:%S %z")
             try:
                 status = json.loads(status_path.read_text(encoding="utf-8"))
             except Exception as exc:
                 message = f"[{now}] ALERT status read failed: {exc}\n"
-                log_handle.write(message)
-                alert_handle.write(message)
+                log.info(message.rstrip())
+                alerts.info(message.rstrip())
                 time.sleep(max(1.0, args.interval / 2.0))
                 continue
 
@@ -76,23 +97,25 @@ def main() -> int:
 
                 if name in last_restart and restart_count > last_restart[name]:
                     message = f"[{now}] ALERT {name} restart_count {last_restart[name]} -> {restart_count}\n"
-                    log_handle.write(message)
-                    alert_handle.write(message)
+                    log.info(message.rstrip())
+                    alerts.info(message.rstrip())
                 if name in last_running and running != last_running[name]:
                     message = f"[{now}] ALERT {name} running {last_running[name]} -> {running}\n"
-                    log_handle.write(message)
-                    alert_handle.write(message)
+                    log.info(message.rstrip())
+                    alerts.info(message.rstrip())
                 if name in last_online and online != last_online[name]:
                     message = f"[{now}] ALERT {name} online {last_online[name]} -> {online}\n"
-                    log_handle.write(message)
-                    alert_handle.write(message)
+                    log.info(message.rstrip())
+                    alerts.info(message.rstrip())
 
                 last_restart[name] = restart_count
                 last_running[name] = running
                 last_online[name] = online
 
-            log_handle.write(f"[{now}] {' | '.join(summaries)}\n")
+            log.info("[%s] %s", now, " | ".join(summaries))
             time.sleep(max(1.0, args.interval))
+    finally:
+        logging.shutdown()
 
 
 if __name__ == "__main__":

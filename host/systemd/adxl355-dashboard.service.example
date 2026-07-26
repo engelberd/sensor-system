@@ -21,6 +21,7 @@ Environment=ADXL355_DASHBOARD_PORT=8090
 EnvironmentFile=-/etc/adxl355-dashboard.env
 
 Environment=PYTHONUNBUFFERED=1
+UMask=0027
 
 ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_dashboard.py \
   --config ${ADXL355_CONFIG} \
@@ -31,6 +32,7 @@ Restart=always
 RestartSec=5
 
 TimeoutStopSec=15
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
