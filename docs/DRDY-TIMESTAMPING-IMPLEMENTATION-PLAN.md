@@ -17,6 +17,9 @@ Ukończone:
 - routing wymagany według UTC akwizycji do półotwartych okien;
 - HDF5 v5 z `.partial`, `complete`, kotwicami per pakiet/segment,
   surowymi obserwacjami synchronizacji, journalem ingest i recovery ogona;
+- trwała kwarantanna HDF5 dla próbek `unsynced`, `ambiguous` i `late`, dzięki
+  której tryb `required` nie przypisuje niepewnych próbek do zwykłego okna i
+  nie blokuje commitów noda;
 - trwały zapis przed `CommitReadUpTo`, deduplikacja retransmisji oraz atomowa
   publikacja pliku;
 - test symulujący 50 ppm dryfu, jitter RTT, retransmisję i zmianę epoki.
