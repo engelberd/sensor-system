@@ -54,6 +54,7 @@ class RuntimeStatusSnapshot:
     baud: int
     channel_name: str | None
     nodes: list[RuntimeStatusNode]
+    timing_mode: str = "legacy"
 
 
 @dataclass
@@ -76,6 +77,7 @@ class SupervisorChannelStatus:
     event_log: str
     process_log: str | None
     nodes: list[RuntimeStatusNode]
+    timing_mode: str = "legacy"
 
 
 @dataclass

@@ -7,6 +7,29 @@ sample ranges, and writes decoded XYZ samples to disk.
 For multi-channel deployments use `host_supervisor.py`, which runs one recorder
 worker per RS485 channel from `host/system_config.json`.
 
+Each channel can select its timestamp routing policy independently:
+
+```json
+{
+  "name": "line-d",
+  "port": "/dev/sensor-system-rs485-d",
+  "timing_mode": "required",
+  "nodes": [{"id": 1}]
+}
+```
+
+Supported values are:
+
+- `legacy`: route samples by host receive time;
+- `observe`: compute acquisition time but retain receive-time routing;
+- `required`: route HDF5 samples by acquisition time and quarantine samples
+  whose time is unsynchronized or overlaps a window boundary.
+
+The supervisor always passes the configured mode explicitly to the recorder.
+The default remains `legacy` for channels that have not completed the
+timestamping rollout. `required` is rejected at configuration load time unless
+the storage format is HDF5.
+
 ## Install HDF5 Dependencies
 
 ```bash

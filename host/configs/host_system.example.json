@@ -29,6 +29,7 @@
       "enabled": true,
       "port": "/dev/sensor-system-rs485-a",
       "baud": 115200,
+      "timing_mode": "legacy",
       "nodes": [
         {
           "id": 1,

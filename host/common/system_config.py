@@ -69,6 +69,7 @@ class ChannelConfig:
     temperature_interval_s: float = 3600.0
     idle_sleep_s: float = 0.01
     error_sleep_s: float = 0.10
+    timing_mode: str = "legacy"
 
     @property
     def node_ids(self) -> tuple[int, ...]:
@@ -113,6 +114,19 @@ class HostSystemConfig:
                 raise ValueError(f"channel at index {index} must define at least one node")
 
             name = str(raw.get("name", f"channel-{index + 1}"))
+            timing_mode = str(raw.get("timing_mode", "legacy"))
+            if timing_mode not in {"legacy", "observe", "required"}:
+                raise ValueError(
+                    f"channel '{name}' has unsupported timing_mode "
+                    f"'{timing_mode}'"
+                )
+            if timing_mode == "required" and str(
+                storage_data.get("format", StorageConfig.format)
+            ) != "hdf5":
+                raise ValueError(
+                    f"channel '{name}' timing_mode 'required' requires "
+                    "HDF5 storage"
+                )
             channels.append(
                 ChannelConfig(
                     name=name,
@@ -133,6 +147,7 @@ class HostSystemConfig:
                     temperature_interval_s=float(raw.get("temperature_interval_s", 3600.0)),
                     idle_sleep_s=float(raw.get("idle_sleep_s", 0.01)),
                     error_sleep_s=float(raw.get("error_sleep_s", 0.10)),
+                    timing_mode=timing_mode,
                 )
             )
 

@@ -196,6 +196,8 @@ def build_worker_command(
         str(system_config.storage.window_seconds),
         "--window-timezone",
         system_config.system.timezone or "local",
+        "--timing-mode",
+        channel.timing_mode,
         "--start-from",
         channel.start_from,
         "--grant-packets",
@@ -586,6 +588,14 @@ def build_supervisor_snapshot(
                 event_log=str(state.event_log),
                 process_log=str(state.process_log),
                 nodes=nodes,
+                timing_mode=(
+                    str(state.last_status.get(
+                        "timing_mode",
+                        state.config.timing_mode,
+                    ))
+                    if state.last_status
+                    else state.config.timing_mode
+                ),
             )
         )
 

@@ -66,6 +66,69 @@ class SupervisorWorkerCommandTests(unittest.TestCase):
         self.assertEqual(command[output_dir_index], "/data/sensor-system/line-a")
         console_interval_index = command.index("--console-status-interval") + 1
         self.assertEqual(command[console_interval_index], "30.0")
+        timing_mode_index = command.index("--timing-mode") + 1
+        self.assertEqual(command[timing_mode_index], "legacy")
+
+    def test_worker_command_passes_required_timing_mode(self) -> None:
+        config = HostSystemConfig.from_dict(
+            {
+                "storage": {
+                    "root_dir": "/data/sensor-system",
+                    "format": "hdf5",
+                },
+                "channels": [
+                    {
+                        "name": "line-d",
+                        "port": "/dev/ttyUSB3",
+                        "timing_mode": "required",
+                        "nodes": [{"id": 1}],
+                    }
+                ],
+            }
+        )
+
+        command = build_worker_command(
+            "python3",
+            Path("host/host_recorder.py"),
+            config.channels[0],
+            config,
+            Path("/tmp/line-d.status.json"),
+            Path("/tmp/line-d.events.jsonl"),
+        )
+
+        timing_mode_index = command.index("--timing-mode") + 1
+        self.assertEqual(command[timing_mode_index], "required")
+
+    def test_invalid_channel_timing_mode_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported timing_mode"):
+            HostSystemConfig.from_dict(
+                {
+                    "channels": [
+                        {
+                            "name": "line-a",
+                            "port": "/dev/ttyUSB0",
+                            "timing_mode": "unsafe",
+                            "nodes": [{"id": 1}],
+                        }
+                    ],
+                }
+            )
+
+    def test_required_timing_mode_rejects_non_hdf5_storage(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires HDF5 storage"):
+            HostSystemConfig.from_dict(
+                {
+                    "storage": {"format": "csv"},
+                    "channels": [
+                        {
+                            "name": "line-d",
+                            "port": "/dev/ttyUSB3",
+                            "timing_mode": "required",
+                            "nodes": [{"id": 1}],
+                        }
+                    ],
+                }
+            )
 
     def test_process_log_rotation_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +188,7 @@ class SupervisorWorkerCommandTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.channels[0].destination, "/data/sensor-system/line-a")
+        self.assertEqual(snapshot.channels[0].timing_mode, "legacy")
         self.assertTrue(snapshot.channels[0].desired_running)
         self.assertEqual(snapshot.channels[0].control_state, "waiting")
         self.assertEqual(snapshot.storage_total_bytes, 0)

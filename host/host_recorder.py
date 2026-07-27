@@ -1924,6 +1924,7 @@ def write_runtime_status(
             )
             for node in nodes
         ],
+        timing_mode=args.timing_mode,
     )
     status_writer.write(snapshot)
 
