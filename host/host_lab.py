@@ -38,6 +38,8 @@ CMD_SET_BAUD_RATE = 0x29
 CMD_GET_TEMPERATURE = 0x41
 CMD_GET_BUFFER_STATE = 0x42
 CMD_GET_STATS = 0x43
+CMD_GET_CAPABILITIES = 0x4A
+CMD_TIME_SYNC = 0x4B
 CMD_GRANT_BURST_READ = 0x52
 CMD_COMMIT_READ_UP_TO = 0x53
 
@@ -45,6 +47,11 @@ STATUS_OK = 0x00
 STATUS_NO_DATA = 0x06
 
 SAMPLE_ENCODING_RAW_XYZ24 = 0x01
+SAMPLE_ENCODING_RAW_XYZ24_TIME_V2 = 0x02
+TIMING_FORMAT_VERSION_V2 = 0x02
+TIMING_QUALITY_INVALID = 1 << 2
+CAPABILITY_BURST_TIME_V2 = 1 << 0
+CAPABILITY_TIME_SYNC_V1 = 1 << 1
 SAMPLES_PER_PACKET = 32
 
 BUFFER_STATE_FORMAT = "<BBQQIIIQQQIII"
@@ -55,9 +62,14 @@ STATS_FORMAT_V4 = "<BBQ" + ("I" * 14) + "Q" + ("I" * 9)
 STATS_FORMAT_V5 = STATS_FORMAT_V4 + ("I" * 3)
 STATS_FORMAT_V6 = STATS_FORMAT_V5 + ("I" * 4)
 STATS_FORMAT_V7 = STATS_FORMAT_V6 + ("I" * 4)
+STATS_FORMAT_V8 = STATS_FORMAT_V7 + ("I" * 4)
 GRANT_BURST_RESPONSE_FORMAT = "<BBQH"
 COMMIT_READ_RESPONSE_FORMAT = "<BBQ"
 BURST_HEADER_FORMAT = "<BBIQHB"
+BURST_TIMING_V2_FORMAT = "<BBHQIQQII"
+GET_CAPABILITIES_FORMAT = "<BBBBIH"
+TIME_SYNC_COMMAND_FORMAT = "<BBIQ"
+TIME_SYNC_RESPONSE_FORMAT = "<BBBIQQQQ"
 PACKET_FRAME_BYTES = FRAME_HEADER_SIZE + struct.calcsize(BURST_HEADER_FORMAT) + (SAMPLES_PER_PACKET * 9) + FRAME_CRC_SIZE
 CONTROL_RESPONSE_BYTES = FRAME_HEADER_SIZE + 16 + FRAME_CRC_SIZE
 GET_CONFIG_FORMAT = "<BBBIHBiiiBHBB"
@@ -190,6 +202,10 @@ class NodeStats:
     fifo_overrun_events: int = 0
     fifo_discarded_samples: int = 0
     fifo_uncertain_loss_events: int = 0
+    drdy_timestamp_ring_overflow: int = 0
+    timing_binding_mismatch: int = 0
+    timing_binding_invalidations: int = 0
+    timing_segment_id: int = 0
 
 
 @dataclass
@@ -198,6 +214,51 @@ class BurstPacket:
     first_sample_seq: int
     sample_count: int
     payload: bytes
+    sample_encoding: int = SAMPLE_ENCODING_RAW_XYZ24
+    sample_payload_offset: int = struct.calcsize(BURST_HEADER_FORMAT)
+    timing_format_version: int = 0
+    timestamp_source: int = 0
+    timestamp_quality_flags: int = TIMING_QUALITY_INVALID
+    boot_epoch: int = 0
+    timing_segment_id: int = 0
+    first_device_time_us: int = 0
+    last_device_time_us: int = 0
+    sample_period_q16_us: int = 0
+    max_fit_residual_us: int = 0
+
+    def device_time_us_for_index(self, index: int) -> int | None:
+        if index < 0 or index >= self.sample_count:
+            raise IndexError(index)
+        if self.sample_encoding != SAMPLE_ENCODING_RAW_XYZ24_TIME_V2:
+            return None
+        if self.timestamp_quality_flags & TIMING_QUALITY_INVALID:
+            return None
+        if self.sample_count == 1:
+            return self.first_device_time_us
+        interval = self.last_device_time_us - self.first_device_time_us
+        return self.first_device_time_us + (interval * index) // (self.sample_count - 1)
+
+
+@dataclass
+class NodeCapabilities:
+    command: int
+    status: int
+    capabilities_version: int
+    burst_format_max: int
+    feature_flags: int
+    max_samples_per_packet: int
+
+
+@dataclass
+class TimeSyncResponse:
+    command: int
+    status: int
+    version: int
+    sync_id: int
+    boot_epoch: int
+    echoed_t1_host_monotonic_ns: int
+    t2_node_rx_us: int
+    t3_node_tx_us: int
 
 
 @dataclass
@@ -535,6 +596,13 @@ def parse_buffer_state(payload: bytes) -> BufferState:
 
 
 def parse_stats(payload: bytes) -> NodeStats:
+    if len(payload) >= struct.calcsize(STATS_FORMAT_V8):
+        values = struct.unpack(
+            STATS_FORMAT_V8,
+            payload[: struct.calcsize(STATS_FORMAT_V8)],
+        )
+        return NodeStats(*values)
+
     if len(payload) >= struct.calcsize(STATS_FORMAT_V7):
         values = struct.unpack(STATS_FORMAT_V7, payload[: struct.calcsize(STATS_FORMAT_V7)])
         return NodeStats(*values)
@@ -628,22 +696,97 @@ def parse_commit_response(payload: bytes) -> tuple[int, int, int]:
 
 
 def parse_burst_packet(payload: bytes) -> Optional[BurstPacket]:
-    if len(payload) < struct.calcsize(BURST_HEADER_FORMAT):
+    header_size = struct.calcsize(BURST_HEADER_FORMAT)
+    if len(payload) < header_size:
         return None
 
     command, status, packet_seq, first_sample_seq, sample_count, sample_encoding = struct.unpack(
         BURST_HEADER_FORMAT,
         payload[: struct.calcsize(BURST_HEADER_FORMAT)],
     )
-    if command != CMD_GRANT_BURST_READ or status != STATUS_OK or sample_encoding != SAMPLE_ENCODING_RAW_XYZ24:
+    if command != CMD_GRANT_BURST_READ or status != STATUS_OK or sample_count == 0:
         return None
 
-    return BurstPacket(
+    packet = BurstPacket(
         packet_seq=packet_seq,
         first_sample_seq=first_sample_seq,
         sample_count=sample_count,
         payload=payload,
+        sample_encoding=sample_encoding,
     )
+    if sample_encoding == SAMPLE_ENCODING_RAW_XYZ24:
+        expected_size = header_size + sample_count * 9
+        return packet if len(payload) == expected_size else None
+
+    if sample_encoding != SAMPLE_ENCODING_RAW_XYZ24_TIME_V2:
+        return None
+
+    timing_size = struct.calcsize(BURST_TIMING_V2_FORMAT)
+    expected_size = header_size + timing_size + sample_count * 9
+    if len(payload) != expected_size:
+        return None
+
+    values = struct.unpack(
+        BURST_TIMING_V2_FORMAT,
+        payload[header_size:header_size + timing_size],
+    )
+    (
+        packet.timing_format_version,
+        packet.timestamp_source,
+        packet.timestamp_quality_flags,
+        packet.boot_epoch,
+        packet.timing_segment_id,
+        packet.first_device_time_us,
+        packet.last_device_time_us,
+        packet.sample_period_q16_us,
+        packet.max_fit_residual_us,
+    ) = values
+    packet.sample_payload_offset = header_size + timing_size
+
+    if packet.timing_format_version != TIMING_FORMAT_VERSION_V2:
+        return None
+    if packet.boot_epoch == 0 or packet.sample_period_q16_us == 0:
+        return None
+    if packet.sample_count > 1 and packet.last_device_time_us <= packet.first_device_time_us:
+        return None
+    if packet.sample_count == 1 and packet.last_device_time_us != packet.first_device_time_us:
+        return None
+    return packet
+
+
+def build_get_capabilities_payload() -> bytes:
+    return bytes([CMD_GET_CAPABILITIES])
+
+
+def parse_capabilities(payload: bytes) -> NodeCapabilities:
+    size = struct.calcsize(GET_CAPABILITIES_FORMAT)
+    if len(payload) != size:
+        raise ValueError("invalid GetCapabilities response length")
+    return NodeCapabilities(*struct.unpack(GET_CAPABILITIES_FORMAT, payload))
+
+
+def build_time_sync_payload(sync_id: int, t1_host_monotonic_ns: int) -> bytes:
+    return struct.pack(
+        TIME_SYNC_COMMAND_FORMAT,
+        CMD_TIME_SYNC,
+        1,
+        sync_id,
+        t1_host_monotonic_ns,
+    )
+
+
+def parse_time_sync_response(payload: bytes) -> TimeSyncResponse:
+    size = struct.calcsize(TIME_SYNC_RESPONSE_FORMAT)
+    if len(payload) != size:
+        raise ValueError("invalid TimeSync response length")
+    response = TimeSyncResponse(
+        *struct.unpack(TIME_SYNC_RESPONSE_FORMAT, payload)
+    )
+    if response.command != CMD_TIME_SYNC or response.version != 1:
+        raise ValueError("invalid TimeSync response identity")
+    if response.t3_node_tx_us < response.t2_node_rx_us:
+        raise ValueError("TimeSync node clock moved backwards")
+    return response
 
 
 def build_ping_payload(user_payload: bytes) -> bytes:

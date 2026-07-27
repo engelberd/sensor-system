@@ -73,6 +73,7 @@ GET_STATUS_FORMAT_V4 = "<BBBBHBIIIIQIHBBIIIIII"
 GET_STATUS_FORMAT_V5 = GET_STATUS_FORMAT_V4 + "III"
 GET_STATUS_FORMAT_V6 = GET_STATUS_FORMAT_V5 + "IIII"
 GET_STATUS_FORMAT_V7 = GET_STATUS_FORMAT_V6 + "IIII"
+GET_STATUS_FORMAT_V8 = GET_STATUS_FORMAT_V7 + "IIII"
 GET_DIAGNOSTIC_INFO_FORMAT = "<BBIBBHHIIIIH"
 # Current firmware places debug fields before arg0/arg1. Keep the legacy
 # layouts below so dumps from older nodes remain readable.
@@ -247,6 +248,10 @@ class StatusView:
     fifo_overrun_events: int = 0
     fifo_discarded_samples: int = 0
     fifo_uncertain_loss_events: int = 0
+    drdy_timestamp_ring_overflow: int = 0
+    timing_binding_mismatch: int = 0
+    timing_binding_invalidations: int = 0
+    timing_segment_id: int = 0
 
 
 @dataclass
@@ -577,6 +582,48 @@ def parse_config_view(payload: bytes) -> ConfigView:
 
 
 def parse_status_view(payload: bytes) -> StatusView:
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V8):
+        values = struct.unpack(
+            GET_STATUS_FORMAT_V8,
+            payload[: struct.calcsize(GET_STATUS_FORMAT_V8)],
+        )
+        return StatusView(
+            node_id=values[2],
+            node_state=values[3],
+            odr_hz=values[4],
+            range_g=values[5],
+            protocol_version=values[6],
+            firmware_version=values[7],
+            dropped_samples=values[8],
+            uptime_ms=values[9],
+            last_sample_seq=values[10],
+            last_progress_ms_ago=values[11],
+            last_error_code=values[12],
+            reset_cause=values[13],
+            diagnostic_flags=values[14],
+            fifo_poll_fallback_reads=values[15],
+            soft_recover_count=values[16],
+            no_data_with_irq=values[17],
+            no_data_without_irq=values[18],
+            irq_int1_events=values[19],
+            irq_drdy_events=values[20],
+            gpio_int1_edges=values[21],
+            gpio_drdy_edges=values[22],
+            debug_config_snapshot=values[23],
+            irq_status_not_full=values[24],
+            irq_fifo_entries_lt_3=values[25],
+            irq_fifo_entries_lt_watermark=values[26],
+            debug_irq_snapshot=values[27],
+            spurious_int1_events=values[28],
+            fifo_overrun_events=values[29],
+            fifo_discarded_samples=values[30],
+            fifo_uncertain_loss_events=values[31],
+            drdy_timestamp_ring_overflow=values[32],
+            timing_binding_mismatch=values[33],
+            timing_binding_invalidations=values[34],
+            timing_segment_id=values[35],
+        )
+
     if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V7):
         values = struct.unpack(GET_STATUS_FORMAT_V7, payload[: struct.calcsize(GET_STATUS_FORMAT_V7)])
         return StatusView(
@@ -1197,6 +1244,10 @@ def print_status(status: StatusView) -> None:
     print(f"  fifo_overruns    : {status.fifo_overrun_events}")
     print(f"  fifo_discarded   : {status.fifo_discarded_samples}")
     print(f"  fifo_loss_unknown: {status.fifo_uncertain_loss_events}")
+    print(f"  drdy_ring_ovf    : {status.drdy_timestamp_ring_overflow}")
+    print(f"  timing_mismatch  : {status.timing_binding_mismatch}")
+    print(f"  timing_invalid   : {status.timing_binding_invalidations}")
+    print(f"  timing_segment   : {status.timing_segment_id}")
     print(f"  irq_last_status  : 0x{irq_debug['status_reg']:02X}")
     print(f"  irq_last_entries : {irq_debug['fifo_entries']}")
     print(f"  irq_last_wm      : {irq_debug['watermark']}")

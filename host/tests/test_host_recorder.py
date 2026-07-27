@@ -4,12 +4,18 @@ import unittest
 from argparse import Namespace
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
+import struct
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from host.common.system_config import HostSystemConfig
 from host.host_recorder import (
     RecorderNode,
+    SampleRecord,
+    AcquisitionWindowedWriter,
+    Hdf5Writer,
     WindowedWriter,
     emit_sample_flow_changes,
     emit_stats_changes,
@@ -17,6 +23,23 @@ from host.host_recorder import (
     maybe_refresh_window_start_temperature,
     resolve_window_timezone,
     update_rate_metrics,
+)
+from host.host_lab import (
+    BURST_HEADER_FORMAT,
+    BURST_TIMING_V2_FORMAT,
+    CAPABILITY_BURST_TIME_V2,
+    CAPABILITY_TIME_SYNC_V1,
+    CMD_GET_CAPABILITIES,
+    CMD_GRANT_BURST_READ,
+    CMD_TIME_SYNC,
+    GET_CAPABILITIES_FORMAT,
+    SAMPLE_ENCODING_RAW_XYZ24_TIME_V2,
+    STATUS_OK,
+    TIME_SYNC_RESPONSE_FORMAT,
+    TIMING_QUALITY_INVALID,
+    parse_capabilities,
+    parse_burst_packet,
+    parse_time_sync_response,
 )
 
 
@@ -43,6 +66,7 @@ class RecorderWindowingTests(unittest.TestCase):
             timeout=0.5,
             error_sleep=0.1,
             temperature_interval=3600.0,
+            timing_mode="legacy",
         )
 
     def test_windowed_paths_follow_configured_timezone(self) -> None:
@@ -119,6 +143,258 @@ class RecorderWindowingTests(unittest.TestCase):
         self.assertEqual(node.next_temperature_at, 3642.0)
         self.assertEqual(captured_events[0][0], "temperature_sampled")
         self.assertEqual(captured_events[0][1]["fields"]["reason"], "window_start")
+
+
+class TimedBurstParserTests(unittest.TestCase):
+    def build_timed_payload(self, *, quality: int = 1) -> bytes:
+        header = struct.pack(
+            BURST_HEADER_FORMAT,
+            CMD_GRANT_BURST_READ,
+            STATUS_OK,
+            9,
+            100,
+            2,
+            SAMPLE_ENCODING_RAW_XYZ24_TIME_V2,
+        )
+        timing = struct.pack(
+            BURST_TIMING_V2_FORMAT,
+            2,
+            1,
+            quality,
+            0x1122334455667788,
+            7,
+            5_000_000,
+            5_008_000,
+            8_000 << 16,
+            3,
+        )
+        return header + timing + bytes(18)
+
+    def test_v2_parser_reconstructs_endpoint_times(self) -> None:
+        packet = parse_burst_packet(self.build_timed_payload())
+        self.assertIsNotNone(packet)
+        assert packet is not None
+        self.assertEqual(packet.boot_epoch, 0x1122334455667788)
+        self.assertEqual(packet.timing_segment_id, 7)
+        self.assertEqual(packet.device_time_us_for_index(0), 5_000_000)
+        self.assertEqual(packet.device_time_us_for_index(1), 5_008_000)
+
+    def test_invalid_quality_never_materializes_device_time(self) -> None:
+        packet = parse_burst_packet(
+            self.build_timed_payload(quality=TIMING_QUALITY_INVALID)
+        )
+        self.assertIsNotNone(packet)
+        assert packet is not None
+        self.assertIsNone(packet.device_time_us_for_index(0))
+
+    def test_v2_parser_rejects_truncated_payload(self) -> None:
+        self.assertIsNone(parse_burst_packet(self.build_timed_payload()[:-1]))
+
+    def test_capabilities_and_time_sync_responses_are_strictly_parsed(
+        self,
+    ) -> None:
+        capabilities = parse_capabilities(struct.pack(
+            GET_CAPABILITIES_FORMAT,
+            CMD_GET_CAPABILITIES,
+            STATUS_OK,
+            1,
+            2,
+            CAPABILITY_BURST_TIME_V2 | CAPABILITY_TIME_SYNC_V1,
+            32,
+        ))
+        self.assertEqual(capabilities.burst_format_max, 2)
+        self.assertEqual(capabilities.max_samples_per_packet, 32)
+
+        response = parse_time_sync_response(struct.pack(
+            TIME_SYNC_RESPONSE_FORMAT,
+            CMD_TIME_SYNC,
+            STATUS_OK,
+            1,
+            17,
+            0x1234,
+            9_000_000,
+            1_000_000,
+            1_000_010,
+        ))
+        self.assertEqual(response.sync_id, 17)
+        self.assertEqual(response.boot_epoch, 0x1234)
+        with self.assertRaises(ValueError):
+            parse_time_sync_response(struct.pack(
+                TIME_SYNC_RESPONSE_FORMAT,
+                CMD_TIME_SYNC,
+                STATUS_OK,
+                1,
+                17,
+                0x1234,
+                9_000_000,
+                1_000_010,
+                1_000_000,
+            ))
+
+
+class AcquisitionWindowWriterTests(unittest.TestCase):
+    def test_splits_samples_at_half_open_boundary_and_finalizes_atomically(
+        self,
+    ) -> None:
+        import h5py
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = RecorderWindowingTests().make_args(
+                output_dir=tmp,
+                window_timezone_name="UTC",
+            )
+            args.timing_mode = "required"
+            args.compression = "none"
+            node = RecorderNode(
+                node_id=1,
+                config=SimpleNamespace(
+                    odr_hz=250,
+                    range_g=2,
+                    high_pass_corner=0,
+                    fifo_watermark=30,
+                    offset_x=0,
+                    offset_y=0,
+                    offset_z=0,
+                ),
+            )
+            writer = AcquisitionWindowedWriter(
+                args,
+                metadata={},
+                nodes=[node],
+            )
+            boundary_ns = int(
+                datetime(
+                    2026,
+                    4,
+                    30,
+                    10,
+                    10,
+                    tzinfo=timezone.utc,
+                ).timestamp()
+                * 1_000_000_000
+            )
+            samples = [
+                SampleRecord(
+                    1, 10, 1.0, 2.0, 3.0, 4,
+                    device_time_us=1000,
+                    boot_epoch=7,
+                    timing_segment_id=2,
+                    timing_quality_flags=1,
+                    acquisition_utc_ns=boundary_ns - 1_000_000,
+                    timing_uncertainty_ns=100,
+                ),
+                SampleRecord(
+                    1, 11, 1.0, 2.0, 3.0, 4,
+                    device_time_us=9000,
+                    boot_epoch=7,
+                    timing_segment_id=2,
+                    timing_quality_flags=1,
+                    acquisition_utc_ns=boundary_ns,
+                    timing_uncertainty_ns=0,
+                ),
+            ]
+            writer.write_samples(1, samples)
+            writer.write_samples(1, samples)
+            writer.close()
+
+            files = sorted(Path(tmp).rglob("*.h5"))
+            self.assertEqual(len(files), 2)
+            self.assertEqual(list(Path(tmp).rglob("*.partial")), [])
+            for path in files:
+                with h5py.File(path, "r") as handle:
+                    self.assertEqual(handle.attrs["schema_version"], 5)
+                    self.assertTrue(handle.attrs["complete"])
+                    self.assertEqual(handle["nodes/1/samples"].shape[0], 1)
+                    self.assertEqual(
+                        handle["nodes/1/time_anchors"].shape[0],
+                        1,
+                    )
+
+    def test_partial_recovery_truncates_unjournaled_dataset_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "capture.h5.partial"
+            node = RecorderNode(
+                node_id=1,
+                config=SimpleNamespace(
+                    odr_hz=250,
+                    range_g=2,
+                    high_pass_corner=0,
+                    fifo_watermark=30,
+                    offset_x=0,
+                    offset_y=0,
+                    offset_z=0,
+                ),
+            )
+            writer = Hdf5Writer(path, {}, "none")
+            writer.add_node(node)
+            sample = SampleRecord(
+                1, 10, 1.0, 2.0, 3.0, 4,
+                boot_epoch=7,
+                timing_segment_id=2,
+            )
+            writer.write_samples(1, [sample])
+
+            dataset = writer.datasets[1]
+            dataset.resize((2,))
+            dataset[1] = dataset[0]
+            writer.close()
+
+            recovered = Hdf5Writer(path, {}, "none", append=True)
+            recovered.add_node(node)
+            self.assertEqual(recovered.datasets[1].shape[0], 1)
+            self.assertEqual(recovered.ingest_batches.shape[0], 1)
+            recovered.close()
+
+    def test_hdf_time_anchors_never_join_packets_or_segments(self) -> None:
+        import h5py
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "capture.h5"
+            node = RecorderNode(
+                node_id=1,
+                config=SimpleNamespace(
+                    odr_hz=250,
+                    range_g=2,
+                    high_pass_corner=0,
+                    fifo_watermark=30,
+                    offset_x=0,
+                    offset_y=0,
+                    offset_z=0,
+                ),
+            )
+            writer = Hdf5Writer(path, {}, "none")
+            writer.add_node(node)
+            samples = [
+                SampleRecord(
+                    1, 10 + index, 1.0, 2.0, 3.0,
+                    4 if index < 2 else 5,
+                    device_time_us=1000 + index * 8000,
+                    boot_epoch=7,
+                    timing_segment_id=2 if index < 2 else 3,
+                    timing_quality_flags=1,
+                    acquisition_utc_ns=1_000_000_000 + index * 8_000_000,
+                    timing_uncertainty_ns=100,
+                )
+                for index in range(4)
+            ]
+            writer.write_samples(1, samples)
+            writer.finalize()
+            writer.close()
+
+            with h5py.File(path, "r") as handle:
+                anchors = handle["nodes/1/time_anchors"]
+                self.assertEqual(anchors.shape[0], 2)
+                self.assertEqual(list(anchors["packet_seq"]), [4, 5])
+                self.assertEqual(list(anchors["timing_segment_id"]), [2, 3])
+                self.assertEqual(list(anchors["sample_count"]), [2, 2])
+                self.assertEqual(
+                    int(anchors[0]["first_acquisition_utc_ns"]),
+                    1_000_000_000,
+                )
+                self.assertEqual(
+                    int(anchors[1]["last_acquisition_utc_ns"]),
+                    1_024_000_000,
+                )
 
 
 class SystemConfigCompatibilityTests(unittest.TestCase):

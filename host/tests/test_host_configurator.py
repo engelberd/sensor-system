@@ -20,6 +20,7 @@ from host.host_configurator import (
     GET_STATUS_FORMAT_V5,
     GET_STATUS_FORMAT_V6,
     GET_STATUS_FORMAT_V7,
+    GET_STATUS_FORMAT_V8,
     READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT,
     READ_DIAGNOSTIC_EVENT_FORMAT,
     ConfigView,
@@ -205,6 +206,22 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(status.fifo_overrun_events, 2)
         self.assertEqual(status.fifo_discarded_samples, 4)
         self.assertEqual(status.fifo_uncertain_loss_events, 1)
+
+    def test_parse_v8_status_view_includes_timing_diagnostics(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V8,
+            0x40, 0, 7, 2, 250, 2, 2, 0x00030700, 9,
+            12345, 67890, 3, 0, 1, 0,
+            12, 2, 5, 9, 101, 0, 303, 0, 0x00001E06,
+            33, 44, 55, 0x0C1E0000,
+            77, 2, 4, 1,
+            8, 9, 10, 11,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.drdy_timestamp_ring_overflow, 8)
+        self.assertEqual(status.timing_binding_mismatch, 9)
+        self.assertEqual(status.timing_binding_invalidations, 10)
+        self.assertEqual(status.timing_segment_id, 11)
 
     def test_parse_v2_status_view_keeps_new_fields_defaulted(self) -> None:
         payload = struct.pack(

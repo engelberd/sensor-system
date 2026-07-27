@@ -6,12 +6,13 @@ from collections import deque
 import csv
 import json
 import math
+import os
 import socket
 import signal
 import struct
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
@@ -26,6 +27,7 @@ import serial
 try:
     from host_lab import (
         BURST_HEADER_FORMAT,
+        CAPABILITY_TIME_SYNC_V1,
         CMD_GRANT_BURST_READ,
         HOST_NODE_ID,
         STATUS_NO_DATA,
@@ -35,21 +37,26 @@ try:
         ProtocolClient,
         build_buffer_state_payload,
         build_commit_payload,
+        build_get_capabilities_payload,
         build_get_config_payload,
         build_get_temperature_payload,
         build_grant_burst_payload,
         build_stats_payload,
+        build_time_sync_payload,
         effective_output_odr_hz,
         parse_buffer_state,
         parse_commit_response,
+        parse_capabilities,
         parse_config_view,
         parse_grant_burst_response,
         parse_stats,
+        parse_time_sync_response,
         parse_temperature_view,
     )
 except ModuleNotFoundError:
     from host.host_lab import (
         BURST_HEADER_FORMAT,
+        CAPABILITY_TIME_SYNC_V1,
         CMD_GRANT_BURST_READ,
         HOST_NODE_ID,
         STATUS_NO_DATA,
@@ -59,16 +66,20 @@ except ModuleNotFoundError:
         ProtocolClient,
         build_buffer_state_payload,
         build_commit_payload,
+        build_get_capabilities_payload,
         build_get_config_payload,
         build_get_temperature_payload,
         build_grant_burst_payload,
         build_stats_payload,
+        build_time_sync_payload,
         effective_output_odr_hz,
         parse_buffer_state,
         parse_commit_response,
+        parse_capabilities,
         parse_config_view,
         parse_grant_burst_response,
         parse_stats,
+        parse_time_sync_response,
         parse_temperature_view,
     )
 from host.common.runtime_status import (
@@ -76,6 +87,13 @@ from host.common.runtime_status import (
     JsonlEventWriter,
     RuntimeStatusNode,
     RuntimeStatusSnapshot,
+)
+from host.common.clock_models import (
+    ClockState,
+    NodeHostClockModel,
+    SampleClockModel,
+    TimeSyncObservation,
+    UtcCorrelationModel,
 )
 from host.host_configurator import (
     CMD_GET_DIAGNOSTIC_INFO,
@@ -93,7 +111,7 @@ from host.common.version import PROJECT_VERSION
 
 
 SAMPLE_PAYLOAD_OFFSET = struct.calcsize(BURST_HEADER_FORMAT)
-RECORDER_SCHEMA_VERSION = 4
+RECORDER_SCHEMA_VERSION = 5
 RECORDER_VERSION = PROJECT_VERSION
 SAMPLE_FLOW_STALL_CONFIRM_S = 2.0
 DEFAULT_WINDOW_SECONDS = 600
@@ -110,6 +128,12 @@ class SampleRecord:
     y: float
     z: float
     packet_seq: int
+    device_time_us: Optional[int] = None
+    boot_epoch: int = 0
+    timing_segment_id: int = 0
+    timing_quality_flags: int = 0
+    acquisition_utc_ns: Optional[int] = None
+    timing_uncertainty_ns: Optional[int] = None
 
 
 @dataclass
@@ -152,6 +176,16 @@ class RecorderNode:
     next_diagnostic_event_id: int = 1
     diagnostic_dropped_events: int = 0
     diagnostic_clock_offset_ms: int | None = None
+    capabilities: object | None = None
+    sample_clock: SampleClockModel = field(default_factory=SampleClockModel)
+    node_host_clock: NodeHostClockModel = field(
+        default_factory=NodeHostClockModel
+    )
+    utc_clock: UtcCorrelationModel = field(
+        default_factory=UtcCorrelationModel
+    )
+    next_time_sync_at: float = 0.0
+    next_sync_id: int = 1
 
 
 class StopFlag:
@@ -194,10 +228,19 @@ class BaseWriter:
     def close(self) -> None:
         raise NotImplementedError
 
+    def write_clock_sync(
+        self,
+        node_id: int,
+        observation: TimeSyncObservation,
+        accepted: bool,
+    ) -> None:
+        del node_id, observation, accepted
+
 
 class CsvWriter(BaseWriter):
     def __init__(self, path: Path, metadata: dict[str, object], append: bool = False) -> None:
         self.path = path
+        self.append_mode = append
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.metadata = metadata
         self.node_metadata: list[dict[str, object]] = []
@@ -300,6 +343,9 @@ class CsvWriter(BaseWriter):
         self.handle.flush()
         self.temperature_handle.flush()
         self.gaps_handle.flush()
+        os.fsync(self.handle.fileno())
+        os.fsync(self.temperature_handle.fileno())
+        os.fsync(self.gaps_handle.fileno())
 
     def close(self) -> None:
         self.flush()
@@ -322,6 +368,7 @@ class Hdf5Writer(BaseWriter):
         self.h5py = h5py
         self.np = np
         self.path = path
+        self.append_mode = append
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.file = h5py.File(self.path, "a" if append else "w")
@@ -336,9 +383,31 @@ class Hdf5Writer(BaseWriter):
         self.datasets: dict[int, object] = {}
         self.temperature_datasets: dict[int, object] = {}
         self.gap_datasets: dict[int, object] = {}
+        self.anchor_datasets: dict[int, object] = {}
+        self.clock_sync_datasets: dict[int, object] = {}
+        self.seen_sample_keys: dict[int, set[tuple[int, int]]] = {}
         self.compression = None if compression == "none" else compression
+        ingest_dtype = self.np.dtype([
+            ("node_id", "u1"),
+            ("boot_epoch", "<u8"),
+            ("first_sample_seq", "<u8"),
+            ("last_sample_seq", "<u8"),
+            ("sample_start", "<u8"),
+            ("sample_end", "<u8"),
+            ("anchor_start", "<u8"),
+            ("anchor_end", "<u8"),
+        ])
+        self.ingest_batches = self.file.require_dataset(
+            "ingest_batches",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=(256,),
+            dtype=ingest_dtype,
+            compression=self.compression,
+        )
 
         self.file.attrs["schema_version"] = RECORDER_SCHEMA_VERSION
+        self.file.attrs["complete"] = False
         for key, value in metadata.items():
             self.file.attrs[key] = value
 
@@ -360,6 +429,8 @@ class Hdf5Writer(BaseWriter):
 
         sample_dtype = self.np.dtype([
             ("sample_seq", "<u8"),
+            ("boot_epoch", "<u8"),
+            ("timing_segment_id", "<u4"),
             ("x", "<f4"),
             ("y", "<f4"),
             ("z", "<f4"),
@@ -374,6 +445,29 @@ class Hdf5Writer(BaseWriter):
             ("expected_sample_seq", "<u8"),
             ("received_sample_seq", "<u8"),
             ("packet_seq", "<u4"),
+        ])
+        anchors_dtype = self.np.dtype([
+            ("boot_epoch", "<u8"),
+            ("timing_segment_id", "<u4"),
+            ("packet_seq", "<u4"),
+            ("first_sample_seq", "<u8"),
+            ("sample_count", "<u2"),
+            ("first_device_time_us", "<u8"),
+            ("last_device_time_us", "<u8"),
+            ("first_acquisition_utc_ns", "<u8"),
+            ("last_acquisition_utc_ns", "<u8"),
+            ("timing_quality_flags", "<u2"),
+            ("max_uncertainty_ns", "<u8"),
+        ])
+        clock_sync_dtype = self.np.dtype([
+            ("boot_epoch", "<u8"),
+            ("sync_id", "<u4"),
+            ("t1_host_monotonic_ns", "<u8"),
+            ("t2_node_rx_us", "<u8"),
+            ("t3_node_tx_us", "<u8"),
+            ("t4_host_monotonic_ns", "<u8"),
+            ("network_rtt_ns", "<i8"),
+            ("accepted", "u1"),
         ])
         dataset = group.require_dataset(
             "samples",
@@ -399,14 +493,56 @@ class Hdf5Writer(BaseWriter):
             dtype=gaps_dtype,
             compression=self.compression,
         )
+        anchors_dataset = group.require_dataset(
+            "time_anchors",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=(256,),
+            dtype=anchors_dtype,
+            compression=self.compression,
+        )
+        clock_sync_dataset = group.require_dataset(
+            "clock_sync",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=(256,),
+            dtype=clock_sync_dtype,
+            compression=self.compression,
+        )
+        if self.append_mode:
+            sample_end = 0
+            anchor_end = 0
+            for batch in self.ingest_batches:
+                if int(batch["node_id"]) != node.node_id:
+                    continue
+                sample_end = max(sample_end, int(batch["sample_end"]))
+                anchor_end = max(anchor_end, int(batch["anchor_end"]))
+            if dataset.shape[0] > sample_end:
+                dataset.resize((sample_end,))
+            if anchors_dataset.shape[0] > anchor_end:
+                anchors_dataset.resize((anchor_end,))
         self.datasets[node.node_id] = dataset
         self.temperature_datasets[node.node_id] = temperature_dataset
         self.gap_datasets[node.node_id] = gaps_dataset
+        self.anchor_datasets[node.node_id] = anchors_dataset
+        self.clock_sync_datasets[node.node_id] = clock_sync_dataset
+        self.seen_sample_keys[node.node_id] = {
+            (int(record["boot_epoch"]), int(record["sample_seq"]))
+            for record in dataset
+        }
 
     def write_samples(self, node_id: int, samples: list[SampleRecord]) -> None:
         if not samples:
             return
 
+        seen = self.seen_sample_keys[node_id]
+        samples = [
+            sample
+            for sample in samples
+            if (sample.boot_epoch, sample.sample_seq) not in seen
+        ]
+        if not samples:
+            return
         dataset = self.datasets[node_id]
         offset = dataset.shape[0]
         dataset.resize((offset + len(samples),))
@@ -415,6 +551,8 @@ class Hdf5Writer(BaseWriter):
         for i, sample in enumerate(samples):
             arr[i] = (
                 sample.sample_seq,
+                sample.boot_epoch,
+                sample.timing_segment_id,
                 sample.x,
                 sample.y,
                 sample.z,
@@ -422,6 +560,83 @@ class Hdf5Writer(BaseWriter):
             )
 
         dataset[offset:offset + len(samples)] = arr
+        seen.update(
+            (sample.boot_epoch, sample.sample_seq)
+            for sample in samples
+        )
+
+        anchors = self.anchor_datasets[node_id]
+        anchor_offset = anchors.shape[0]
+        timed_samples = [
+            sample for sample in samples
+            if sample.device_time_us is not None and sample.boot_epoch != 0
+        ]
+        timing_fragments: list[list[SampleRecord]] = []
+        for sample in timed_samples:
+            if not timing_fragments:
+                timing_fragments.append([sample])
+                continue
+            previous = timing_fragments[-1][-1]
+            same_fragment = (
+                sample.boot_epoch == previous.boot_epoch
+                and sample.timing_segment_id == previous.timing_segment_id
+                and sample.packet_seq == previous.packet_seq
+                and sample.timing_quality_flags
+                == previous.timing_quality_flags
+                and sample.sample_seq == previous.sample_seq + 1
+            )
+            if same_fragment:
+                timing_fragments[-1].append(sample)
+            else:
+                timing_fragments.append([sample])
+        if timing_fragments:
+            anchors.resize((anchor_offset + len(timing_fragments),))
+            anchor_records = []
+            for fragment in timing_fragments:
+                first = fragment[0]
+                last = fragment[-1]
+                max_uncertainty_ns = max(
+                    sample.timing_uncertainty_ns or 0
+                    for sample in fragment
+                )
+                anchor_records.append((
+                    first.boot_epoch,
+                    first.timing_segment_id,
+                    first.packet_seq,
+                    first.sample_seq,
+                    len(fragment),
+                    first.device_time_us,
+                    last.device_time_us,
+                    first.acquisition_utc_ns or 0,
+                    last.acquisition_utc_ns or 0,
+                    first.timing_quality_flags,
+                    max_uncertainty_ns,
+                ))
+            anchors[
+                anchor_offset:anchor_offset + len(timing_fragments)
+            ] = self.np.array(
+                anchor_records,
+                dtype=anchors.dtype,
+            )
+
+        # Durably persist datasets before publishing the ingest marker.
+        self.flush()
+        marker_offset = self.ingest_batches.shape[0]
+        self.ingest_batches.resize((marker_offset + 1,))
+        self.ingest_batches[marker_offset:marker_offset + 1] = self.np.array(
+            [(
+                node_id,
+                samples[0].boot_epoch,
+                samples[0].sample_seq,
+                samples[-1].sample_seq,
+                offset,
+                offset + len(samples),
+                anchor_offset,
+                anchors.shape[0],
+            )],
+            dtype=self.ingest_batches.dtype,
+        )
+        self.flush()
 
     def write_temperature(self, node_id: int, records: list[TemperatureRecord]) -> None:
         if not records:
@@ -458,6 +673,42 @@ class Hdf5Writer(BaseWriter):
 
     def flush(self) -> None:
         self.file.flush()
+        try:
+            handle = self.file.id.get_vfd_handle()
+            if isinstance(handle, int):
+                os.fsync(handle)
+        except (AttributeError, OSError, TypeError):
+            pass
+
+    def write_clock_sync(
+        self,
+        node_id: int,
+        observation: TimeSyncObservation,
+        accepted: bool,
+    ) -> None:
+        dataset = self.clock_sync_datasets[node_id]
+        offset = dataset.shape[0]
+        dataset.resize((offset + 1,))
+        dataset[offset:offset + 1] = self.np.array(
+            [(
+                observation.boot_epoch,
+                observation.sync_id,
+                observation.t1_host_monotonic_ns,
+                observation.t2_node_rx_us,
+                observation.t3_node_tx_us,
+                observation.t4_host_monotonic_ns,
+                observation.network_rtt_ns,
+                1 if accepted else 0,
+            )],
+            dtype=dataset.dtype,
+        )
+
+    def finalize(self) -> None:
+        self.file.attrs["complete"] = True
+        self.file.attrs["finalized_utc"] = (
+            datetime.now(timezone.utc).isoformat()
+        )
+        self.flush()
 
     def close(self) -> None:
         self.flush()
@@ -532,6 +783,8 @@ class WindowedWriter(BaseWriter):
             return self.writer
 
         if self.writer is not None:
+            if isinstance(self.writer, Hdf5Writer):
+                self.writer.finalize()
             self.writer.close()
 
         window_start = self.aligned_window_start(resolved_now)
@@ -588,10 +841,277 @@ class WindowedWriter(BaseWriter):
 
     def close(self) -> None:
         if self.writer is not None:
+            if isinstance(self.writer, Hdf5Writer):
+                self.writer.finalize()
             self.writer.close()
             self.writer = None
             self.current_window_start = None
             self.current_window_end = None
+
+    def write_clock_sync(
+        self,
+        node_id: int,
+        observation: TimeSyncObservation,
+        accepted: bool,
+    ) -> None:
+        writer = self.ensure_writer()
+        writer.write_clock_sync(node_id, observation, accepted)
+
+
+class AcquisitionWindowedWriter(WindowedWriter):
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        metadata: dict[str, object],
+        nodes: list[RecorderNode],
+    ) -> None:
+        super().__init__(args, metadata, nodes)
+        self.active_windows: dict[
+            datetime,
+            tuple[Path, Path, Hdf5Writer],
+        ] = {}
+        self.finalized_windows: set[datetime] = set()
+        self.max_open_windows = 3
+        self.pending_clock_sync: dict[
+            int,
+            list[tuple[TimeSyncObservation, bool]],
+        ] = {}
+        self.pending_temperatures: dict[int, list[TemperatureRecord]] = {}
+        self.pending_gaps: list[tuple[int, int, int, int]] = []
+
+    def add_node(self, node: RecorderNode) -> None:
+        del node
+
+    def _window_metadata(
+        self,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> dict[str, object]:
+        result = dict(self.metadata)
+        result["window_start_utc"] = window_start.isoformat()
+        result["window_end_utc"] = window_end.isoformat()
+        result["nominal_window_start_utc_ns"] = round(
+            window_start.timestamp() * 1_000_000_000
+        )
+        result["nominal_window_end_utc_ns"] = round(
+            window_end.timestamp() * 1_000_000_000
+        )
+        result["window_timezone"] = self.args.window_timezone_name
+        result["window_start_local"] = (
+            window_start.astimezone(self.window_timezone).isoformat()
+        )
+        result["window_end_local"] = (
+            window_end.astimezone(self.window_timezone).isoformat()
+        )
+        result["file_created_utc"] = (
+            datetime.now(timezone.utc).isoformat()
+        )
+        return result
+
+    def _ensure_window(self, window_start: datetime) -> Hdf5Writer:
+        existing = self.active_windows.get(window_start)
+        if existing is not None:
+            return existing[2]
+        if window_start in self.finalized_windows:
+            raise RuntimeError(
+                f"late data targets finalized window {window_start.isoformat()}"
+            )
+
+        window_end = self.window_end_for(window_start)
+        final_path = self.window_path_for(window_start)
+        partial_path = Path(str(final_path) + ".partial")
+        if final_path.exists():
+            raise RuntimeError(
+                f"acquisition window is already finalized: {final_path}"
+            )
+        writer = Hdf5Writer(
+            partial_path,
+            self._window_metadata(window_start, window_end),
+            self.args.compression,
+            append=partial_path.exists(),
+        )
+        for node in self.nodes:
+            writer.add_node(node)
+            for observation, accepted in self.pending_clock_sync.get(
+                node.node_id,
+                [],
+            ):
+                writer.write_clock_sync(
+                    node.node_id,
+                    observation,
+                    accepted,
+                )
+            pending_temperatures = self.pending_temperatures.pop(
+                node.node_id,
+                [],
+            )
+            if pending_temperatures:
+                writer.write_temperature(
+                    node.node_id,
+                    pending_temperatures,
+                )
+        for (
+            gap_node_id,
+            expected_sample_seq,
+            received_sample_seq,
+            packet_seq,
+        ) in self.pending_gaps:
+            writer.write_gap(
+                gap_node_id,
+                expected_sample_seq,
+                received_sample_seq,
+                packet_seq,
+            )
+        self.pending_gaps.clear()
+        self.active_windows[window_start] = (
+            final_path,
+            partial_path,
+            writer,
+        )
+        self.current_window_start = window_start
+        self.current_window_end = window_end
+        self.current_path = final_path
+        self.writer = writer
+        print(f"[FILE] {partial_path} (active)")
+
+        while len(self.active_windows) > self.max_open_windows:
+            oldest = min(self.active_windows)
+            if oldest == window_start:
+                raise RuntimeError("open-window limit would finalize incoming late data")
+            self._finalize_window(oldest)
+        return writer
+
+    def _finalize_window(self, window_start: datetime) -> None:
+        final_path, partial_path, writer = self.active_windows.pop(
+            window_start
+        )
+        writer.finalize()
+        writer.close()
+        os.replace(partial_path, final_path)
+        try:
+            directory_fd = os.open(
+                final_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+        self.finalized_windows.add(window_start)
+        print(f"[FILE] {final_path} (complete)")
+
+    def _sample_window(self, sample: SampleRecord) -> datetime:
+        if (
+            sample.acquisition_utc_ns is None
+            or sample.timing_uncertainty_ns is None
+        ):
+            raise RuntimeError(
+                "timing mode required but sample has no acquisition time"
+            )
+        when = datetime.fromtimestamp(
+            sample.acquisition_utc_ns / 1_000_000_000,
+            tz=timezone.utc,
+        )
+        window_start = self.aligned_window_start(when)
+        window_end = self.window_end_for(window_start)
+        start_ns = round(window_start.timestamp() * 1_000_000_000)
+        end_ns = round(window_end.timestamp() * 1_000_000_000)
+        lower = sample.acquisition_utc_ns - sample.timing_uncertainty_ns
+        upper = sample.acquisition_utc_ns + sample.timing_uncertainty_ns
+        if lower < start_ns or upper >= end_ns:
+            raise RuntimeError(
+                f"sample {sample.sample_seq} timing uncertainty crosses "
+                "an acquisition window boundary"
+            )
+        return window_start
+
+    def write_samples(
+        self,
+        node_id: int,
+        samples: list[SampleRecord],
+    ) -> None:
+        grouped: dict[datetime, list[SampleRecord]] = {}
+        for sample in samples:
+            grouped.setdefault(
+                self._sample_window(sample),
+                [],
+            ).append(sample)
+        for window_start in sorted(grouped):
+            self._ensure_window(window_start).write_samples(
+                node_id,
+                grouped[window_start],
+            )
+
+    def _latest_writer(self) -> Hdf5Writer:
+        if not self.active_windows:
+            return self._ensure_window(
+                self.aligned_window_start(datetime.now(timezone.utc))
+            )
+        return self.active_windows[max(self.active_windows)][2]
+
+    def write_temperature(
+        self,
+        node_id: int,
+        records: list[TemperatureRecord],
+    ) -> None:
+        if not self.active_windows:
+            self.pending_temperatures.setdefault(node_id, []).extend(records)
+            return
+        self._latest_writer().write_temperature(node_id, records)
+
+    def write_gap(
+        self,
+        node_id: int,
+        expected_sample_seq: int,
+        received_sample_seq: int,
+        packet_seq: int,
+    ) -> None:
+        if not self.active_windows:
+            self.pending_gaps.append((
+                node_id,
+                expected_sample_seq,
+                received_sample_seq,
+                packet_seq,
+            ))
+            return
+        self._latest_writer().write_gap(
+            node_id,
+            expected_sample_seq,
+            received_sample_seq,
+            packet_seq,
+        )
+
+    def write_clock_sync(
+        self,
+        node_id: int,
+        observation: TimeSyncObservation,
+        accepted: bool,
+    ) -> None:
+        self.pending_clock_sync.setdefault(node_id, []).append(
+            (observation, accepted)
+        )
+        self.pending_clock_sync[node_id] = self.pending_clock_sync[node_id][-64:]
+        if not self.active_windows:
+            return
+        self._latest_writer().write_clock_sync(
+            node_id,
+            observation,
+            accepted,
+        )
+
+    def flush(self) -> None:
+        for _, _, writer in self.active_windows.values():
+            writer.flush()
+
+    def close(self) -> None:
+        for window_start in sorted(tuple(self.active_windows)):
+            self._finalize_window(window_start)
+        self.writer = None
+        self.current_window_start = None
+        self.current_window_end = None
+        self.current_path = None
 
 
 def parse_node_list(value: str) -> list[int]:
@@ -640,15 +1160,31 @@ def decode_packet_samples(
     sample_count: int,
     packet_seq: int,
     range_g: int,
+    sample_payload_offset: int = SAMPLE_PAYLOAD_OFFSET,
+    boot_epoch: int = 0,
+    timing_segment_id: int = 0,
+    timing_quality_flags: int = 0,
+    first_device_time_us: int = 0,
+    last_device_time_us: int = 0,
 ) -> list[SampleRecord]:
-    expected_size = SAMPLE_PAYLOAD_OFFSET + sample_count * 9
+    expected_size = sample_payload_offset + sample_count * 9
     if len(packet_payload) < expected_size:
         raise ValueError("burst packet payload is shorter than declared sample_count")
 
     records: list[SampleRecord] = []
-    base = SAMPLE_PAYLOAD_OFFSET
+    base = sample_payload_offset
     for i in range(sample_count):
         offset = base + i * 9
+        device_time_us: Optional[int] = None
+        if boot_epoch != 0:
+            if sample_count == 1:
+                device_time_us = first_device_time_us
+            else:
+                device_time_us = (
+                    first_device_time_us
+                    + ((last_device_time_us - first_device_time_us) * i)
+                    // (sample_count - 1)
+                )
         records.append(
             SampleRecord(
                 node_id=node_id,
@@ -657,6 +1193,10 @@ def decode_packet_samples(
                 y=raw_lsb_to_m_s2(decode_i24_be(packet_payload[offset + 3:offset + 6]), range_g),
                 z=raw_lsb_to_m_s2(decode_i24_be(packet_payload[offset + 6:offset + 9]), range_g),
                 packet_seq=packet_seq,
+                device_time_us=device_time_us,
+                boot_epoch=boot_epoch,
+                timing_segment_id=timing_segment_id,
+                timing_quality_flags=timing_quality_flags,
             )
         )
     return records
@@ -717,6 +1257,147 @@ def send_commit(client: ProtocolClient, node_id: int, last_sample_seq: int, time
     return committed_sample_seq
 
 
+def send_and_parse_capabilities(
+    client: ProtocolClient,
+    node_id: int,
+    timeout_s: float,
+):
+    sequence = client.send_command(
+        node_id,
+        build_get_capabilities_payload(),
+    )
+    response = client.wait_for_response(node_id, sequence, timeout_s)
+    if response is None:
+        return None
+    try:
+        capabilities = parse_capabilities(response.payload)
+    except (ValueError, struct.error):
+        return None
+    if capabilities.status != STATUS_OK:
+        return None
+    return capabilities
+
+
+def refresh_time_sync(
+    client: ProtocolClient,
+    node: RecorderNode,
+    timeout_s: float,
+) -> TimeSyncObservation:
+    sync_id = node.next_sync_id
+    node.next_sync_id = (node.next_sync_id + 1) & 0xFFFFFFFF
+    if node.next_sync_id == 0:
+        node.next_sync_id = 1
+
+    monotonic_before_ns = time.monotonic_ns()
+    utc_ns = time.time_ns()
+    monotonic_after_ns = time.monotonic_ns()
+    node.utc_clock.observe(
+        monotonic_before_ns=monotonic_before_ns,
+        utc_ns=utc_ns,
+        monotonic_after_ns=monotonic_after_ns,
+    )
+
+    t1_host_monotonic_ns = time.monotonic_ns()
+    sequence = client.send_command(
+        node.node_id,
+        build_time_sync_payload(sync_id, t1_host_monotonic_ns),
+    )
+    response_frame = client.wait_for_response(
+        node.node_id,
+        sequence,
+        timeout_s,
+    )
+    t4_host_monotonic_ns = time.monotonic_ns()
+    if response_frame is None:
+        raise RuntimeError(f"node {node.node_id}: no TimeSync response")
+    response = parse_time_sync_response(response_frame.payload)
+    if response.status != STATUS_OK:
+        raise RuntimeError(
+            f"node {node.node_id}: TimeSync failed with status={response.status}"
+        )
+    if (
+        response.sync_id != sync_id
+        or response.echoed_t1_host_monotonic_ns != t1_host_monotonic_ns
+    ):
+        raise RuntimeError(f"node {node.node_id}: mismatched TimeSync echo")
+
+    observation = TimeSyncObservation(
+        boot_epoch=response.boot_epoch,
+        sync_id=sync_id,
+        t1_host_monotonic_ns=t1_host_monotonic_ns,
+        t2_node_rx_us=response.t2_node_rx_us,
+        t3_node_tx_us=response.t3_node_tx_us,
+        t4_host_monotonic_ns=t4_host_monotonic_ns,
+    )
+    if not node.node_host_clock.add(observation):
+        raise RuntimeError(f"node {node.node_id}: invalid TimeSync observation")
+    return observation
+
+
+def apply_packet_timing(
+    node: RecorderNode,
+    packet,
+    samples: list[SampleRecord],
+    *,
+    now_monotonic_ns: int,
+) -> None:
+    if (
+        packet.boot_epoch == 0
+        or packet.timestamp_quality_flags & 0x04
+        or not samples
+    ):
+        return
+
+    uncertainty_us = max(float(packet.max_fit_residual_us), 1.0)
+    node.sample_clock.add_anchor(
+        node_id=node.node_id,
+        boot_epoch=packet.boot_epoch,
+        timing_segment_id=packet.timing_segment_id,
+        sample_seq=packet.first_sample_seq,
+        device_time_us=packet.first_device_time_us,
+        uncertainty_us=uncertainty_us,
+    )
+    if packet.sample_count > 1:
+        node.sample_clock.add_anchor(
+            node_id=node.node_id,
+            boot_epoch=packet.boot_epoch,
+            timing_segment_id=packet.timing_segment_id,
+            sample_seq=packet.first_sample_seq + packet.sample_count - 1,
+            device_time_us=packet.last_device_time_us,
+            uncertainty_us=uncertainty_us,
+        )
+
+    if (
+        node.node_host_clock.estimate is None
+        or node.utc_clock.state != ClockState.LOCKED
+        or node.node_host_clock.boot_epoch != packet.boot_epoch
+    ):
+        return
+
+    for sample in samples:
+        if sample.device_time_us is None:
+            continue
+        host_ns, node_uncertainty_ns, state = (
+            node.node_host_clock.predict_host_monotonic_ns(
+                sample.device_time_us,
+                now_monotonic_ns=now_monotonic_ns,
+            )
+        )
+        if state not in (ClockState.LOCKED, ClockState.HOLDOVER):
+            continue
+        utc_ns, utc_uncertainty_ns, utc_state = (
+            node.utc_clock.to_utc_ns(host_ns)
+        )
+        if utc_state != ClockState.LOCKED:
+            continue
+        sample.acquisition_utc_ns = utc_ns
+        sample.timing_uncertainty_ns = round(
+            node_uncertainty_ns
+            + utc_uncertainty_ns
+            + packet.max_fit_residual_us * 1000
+        )
+
+
 def initialize_node(
     client: ProtocolClient,
     node_id: int,
@@ -727,6 +1408,11 @@ def initialize_node(
     state = send_and_parse_buffer_state(client, node_id, timeout_s)
     firmware_version = send_and_parse_version(client, node_id, timeout_s)
     node = RecorderNode(node_id=node_id, config=config, firmware_version=firmware_version)
+    node.capabilities = send_and_parse_capabilities(
+        client,
+        node_id,
+        timeout_s,
+    )
 
     if start_from == "newest":
         newest = state.newest_packet_last_seq or state.newest_seq
@@ -762,6 +1448,12 @@ def make_single_writer(
 
 def make_writer(args: argparse.Namespace, metadata: dict[str, object], nodes: list[RecorderNode]) -> BaseWriter:
     if args.output_dir:
+        if getattr(args, "timing_mode", "legacy") == "required":
+            if args.format != "hdf5":
+                raise RuntimeError(
+                    "timing mode required currently requires HDF5 output"
+                )
+            return AcquisitionWindowedWriter(args, metadata, nodes)
         return WindowedWriter(args, metadata, nodes)
     if not args.output:
         raise RuntimeError("either --output or --output-dir must be provided")
@@ -931,10 +1623,13 @@ def emit_stats_changes(
         ("fifo_uncertain_loss_events", "uncertain_sample_loss", "critical", "Wykryto możliwą stratę o nieznanym rozmiarze."),
         ("sensor_errors", "sensor_read_error", "error", "Wystąpił błąd odczytu czujnika."),
         ("soft_recover_count", "acquisition_recovery", "warning", "Firmware wznowił akwizycję."),
+        ("drdy_timestamp_ring_overflow", "drdy_ring_overflow", "critical", "Przepełnił się ring timestampów DRDY."),
+        ("timing_binding_mismatch", "timing_binding_mismatch", "critical", "Utracono jednoznaczne powiązanie DRDY z FIFO."),
+        ("timing_binding_invalidations", "timing_segment_invalidated", "error", "Segment czasu próbek został unieważniony."),
     )
     for field, event, severity, message in counters:
-        before = int(getattr(previous, field))
-        after = int(getattr(current, field))
+        before = int(getattr(previous, field, 0))
+        after = int(getattr(current, field, 0))
         if after <= before:
             continue
         fields = {
@@ -1333,6 +2028,18 @@ def record_one_burst(
             packet.sample_count,
             packet.packet_seq,
             node.config.range_g,
+            sample_payload_offset=packet.sample_payload_offset,
+            boot_epoch=packet.boot_epoch,
+            timing_segment_id=packet.timing_segment_id,
+            timing_quality_flags=packet.timestamp_quality_flags,
+            first_device_time_us=packet.first_device_time_us,
+            last_device_time_us=packet.last_device_time_us,
+        )
+        apply_packet_timing(
+            node,
+            packet,
+            samples,
+            now_monotonic_ns=time.monotonic_ns(),
         )
         if live is not None and samples:
             live.publish_samples(
@@ -1354,6 +2061,7 @@ def record_one_burst(
         expected_seq = last_contiguous_seq + 1
 
     writer.write_samples(node.node_id, batch)
+    writer.flush()
     node.committed_sample_seq = send_commit(
         client,
         node.node_id,
@@ -1466,7 +2174,16 @@ def parse_args() -> argparse.Namespace:
         help="Seconds between human-readable progress lines; runtime JSON is updated independently",
     )
     parser.add_argument("--flush-interval", type=float, default=2.0)
-    parser.add_argument("--stats-interval", type=float, default=5.0)
+    parser.add_argument("--stats-interval", type=float, default=30.0)
+    parser.add_argument(
+        "--timing-mode",
+        choices=["legacy", "observe", "required"],
+        default="legacy",
+        help=(
+            "legacy keeps receive-time rotation; observe computes acquisition "
+            "time without changing routing; required enforces acquisition-time routing"
+        ),
+    )
     parser.add_argument(
         "--temperature-interval",
         type=float,
@@ -1521,6 +2238,7 @@ def main() -> int:
         "window_seconds": args.window_seconds,
         "window_timezone": args.window_timezone_name,
         "recorder_version": RECORDER_VERSION,
+        "timing_mode": args.timing_mode,
         "host_name": socket.gethostname(),
     }
 
@@ -1541,6 +2259,18 @@ def main() -> int:
             for node in nodes:
                 refresh_stats(client, node, args.timeout)
                 capture_stats_baseline(node)
+                node.next_time_sync_at = started_at
+                if args.timing_mode == "required":
+                    flags = (
+                        node.capabilities.feature_flags
+                        if node.capabilities is not None
+                        else 0
+                    )
+                    if not (flags & CAPABILITY_TIME_SYNC_V1):
+                        raise RuntimeError(
+                            f"node {node.node_id}: timing mode required but "
+                            "TimeSync v1 is unavailable"
+                        )
 
             if args.live:
                 live_buffer = LiveBuffer()
@@ -1638,6 +2368,36 @@ def main() -> int:
                     loop_now_utc = datetime.now(timezone.utc)
                     for node in nodes:
                         try:
+                            if (
+                                args.timing_mode != "legacy"
+                                and now >= node.next_time_sync_at
+                            ):
+                                flags = (
+                                    node.capabilities.feature_flags
+                                    if node.capabilities is not None
+                                    else 0
+                                )
+                                if flags & CAPABILITY_TIME_SYNC_V1:
+                                    node.next_time_sync_at = now + 5.0
+                                    observation = refresh_time_sync(
+                                        client,
+                                        node,
+                                        args.timeout,
+                                    )
+                                    writer.write_clock_sync(
+                                        node.node_id,
+                                        observation,
+                                        True,
+                                    )
+                                    sync_interval = (
+                                        30.0
+                                        if node.node_host_clock.state
+                                        == ClockState.LOCKED
+                                        else 5.0
+                                    )
+                                    node.next_time_sync_at = (
+                                        time.monotonic() + sync_interval
+                                    )
                             maybe_refresh_window_start_temperature(
                                 client,
                                 writer,
