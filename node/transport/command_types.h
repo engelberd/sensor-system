@@ -33,6 +33,8 @@ enum class CommandType : uint8_t {
     ClearDiagnosticEvents = 0x47,
     GetPersistentDiagnosticRecord = 0x48,
     ClearPersistentDiagnosticRecord = 0x49,
+    GetCapabilities = 0x4A,
+    TimeSync = 0x4B,
 
     ReadLatest = 0x50,
     ReadFromSeq = 0x51,

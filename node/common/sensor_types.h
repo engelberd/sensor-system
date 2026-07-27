@@ -39,6 +39,9 @@ enum : uint8_t {
     SENSOR_DIAG_FLAG_INT1_EVENT = 0x04,
     SENSOR_DIAG_FLAG_DRDY_EVENT = 0x08,
     SENSOR_DIAG_FLAG_FIFO_LOSS_UNCERTAIN = 0x10,
+    SENSOR_DIAG_FLAG_TIMING_INVALID = 0x20,
+    SENSOR_DIAG_FLAG_DRDY_RING_OVERFLOW = 0x40,
+    SENSOR_DIAG_FLAG_DRDY_MISMATCH = 0x80,
 };
 
 struct SensorDiagnosticSnapshot {
@@ -54,6 +57,10 @@ struct SensorDiagnosticSnapshot {
     uint32_t drdy_gpio_edges = 0;
     uint8_t last_fifo_requested_samples = 0;
     uint8_t last_fifo_discarded_samples = 0;
+    uint32_t drdy_timestamp_ring_overflow = 0;
+    uint32_t timing_binding_mismatch = 0;
+    uint32_t timing_binding_invalidations = 0;
+    uint32_t timing_segment_id = 0;
 };
 
 struct SelfTestResult {

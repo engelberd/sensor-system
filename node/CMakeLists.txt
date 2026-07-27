@@ -9,6 +9,28 @@ project(sensor_system_node C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+set(SENSOR_SYSTEM_BOARD_PROFILE "custom_v2" CACHE STRING
+    "Node board profile: custom_v2 or legacy_eval")
+set_property(CACHE SENSOR_SYSTEM_BOARD_PROFILE PROPERTY STRINGS
+    custom_v2 legacy_eval)
+option(SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2
+    "Enable experimental DRDY timestamping v2" OFF)
+
+if(SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "custom_v2")
+    set(SENSOR_SYSTEM_BOARD_PROFILE_VALUE 1)
+elseif(SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "legacy_eval")
+    set(SENSOR_SYSTEM_BOARD_PROFILE_VALUE 2)
+else()
+    message(FATAL_ERROR
+        "Unknown SENSOR_SYSTEM_BOARD_PROFILE='${SENSOR_SYSTEM_BOARD_PROFILE}'")
+endif()
+
+if(SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2)
+    set(SENSOR_SYSTEM_TIMESTAMPING_V2_VALUE 1)
+else()
+    set(SENSOR_SYSTEM_TIMESTAMPING_V2_VALUE 0)
+endif()
+
 pico_sdk_init()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -102,9 +124,14 @@ endfunction()
 
 function(sensor_system_node_configure_common_target target)
     target_include_directories(${target} PRIVATE ${SENSOR_SYSTEM_NODE_INCLUDE_DIRS})
+    target_compile_definitions(${target} PRIVATE
+        SENSOR_SYSTEM_BOARD_PROFILE=${SENSOR_SYSTEM_BOARD_PROFILE_VALUE}
+        SENSOR_TIMESTAMPING_V2_ENABLED=${SENSOR_SYSTEM_TIMESTAMPING_V2_VALUE}
+    )
     target_link_libraries(${target}
         pico_stdlib
         pico_multicore
+        pico_rand
         hardware_spi
         hardware_uart
         hardware_dma

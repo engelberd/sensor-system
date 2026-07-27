@@ -26,11 +26,15 @@ public:
     Transport(Rs485Port& port,
               ControllerT& controller,
               IDataPlane& data_plane,
-              volatile uint8_t* requested_action = nullptr)
+              volatile uint8_t* requested_action = nullptr,
+              uint64_t boot_epoch = 0,
+              bool time_sync_enabled = false)
         : port_(port),
           controller_(controller),
           data_plane_(data_plane),
-          requested_action_(requested_action) {
+          requested_action_(requested_action),
+          boot_epoch_(boot_epoch),
+          time_sync_enabled_(time_sync_enabled && boot_epoch != 0) {
     }
 
     bool init() {
@@ -154,7 +158,7 @@ private:
             return false;
         }
 
-        handle_frame(frame);
+        handle_frame(frame, time_us_64());
         discard_rx_prefix(frame_size);
         align_rx_buffer_to_magic();
         return true;
@@ -183,7 +187,7 @@ private:
         }
     }
 
-    void handle_frame(const DecodedFrame& frame) {
+    void handle_frame(const DecodedFrame& frame, uint64_t t2_node_rx_us) {
         if (frame.type != FrameType::Command) {
             return;
         }
@@ -209,6 +213,12 @@ private:
         size_t response_payload_len = 0;
 
         const uint8_t cmd = frame.payload[0];
+
+        if (time_sync_enabled_ &&
+            cmd == static_cast<uint8_t>(CommandType::TimeSync)) {
+            (void)queue_time_sync_response(frame, t2_node_rx_us);
+            return;
+        }
 
         const StatusCode st = controller_.handle_command(
             cmd,
@@ -288,6 +298,50 @@ private:
         return true;
     }
 
+    bool queue_time_sync_response(const DecodedFrame& frame,
+                                  uint64_t t2_node_rx_us) {
+        if (pending_response_count_ >= MAX_PENDING_RESPONSES) {
+            return false;
+        }
+
+        TimeSyncResponsePayload response{};
+        response.command = static_cast<uint8_t>(CommandType::TimeSync);
+        response.version = 1;
+        response.boot_epoch = boot_epoch_;
+        response.t2_node_rx_us = t2_node_rx_us;
+
+        if (frame.payload == nullptr ||
+            frame.payload_length != sizeof(TimeSyncCommandPayload)) {
+            response.status = static_cast<uint8_t>(StatusCode::InvalidParam);
+        } else {
+            TimeSyncCommandPayload request{};
+            std::memcpy(&request, frame.payload, sizeof(request));
+            response.sync_id = request.sync_id;
+            response.echoed_t1_host_monotonic_ns =
+                request.t1_host_monotonic_ns;
+            response.status = static_cast<uint8_t>(
+                request.version == 1
+                    ? StatusCode::Ok
+                    : StatusCode::Unsupported
+            );
+        }
+
+        PendingResponseSlot& slot =
+            pending_response_queue_[pending_response_tail_];
+        slot.frame_len = 0;
+        slot.destination = frame.source;
+        slot.source = controller_.node_id();
+        slot.sequence = frame.sequence;
+        slot.time_sync_payload = response;
+        slot.late_time_sync = true;
+        slot.deferred_action = DeferredActionT::None;
+        slot.deferred_baudrate = 0;
+        pending_response_tail_ =
+            (pending_response_tail_ + 1) % MAX_PENDING_RESPONSES;
+        ++pending_response_count_;
+        return true;
+    }
+
     void process_tx() {
         if (tx_kind_ != TxKind::None) {
             return;
@@ -296,6 +350,28 @@ private:
         // 1. Odpowiedzi na komendy mają najwyższy priorytet
         if (pending_response_count_ > 0) {
             PendingResponseSlot& slot = pending_response_queue_[pending_response_head_];
+            if (slot.late_time_sync) {
+                slot.time_sync_payload.t3_node_tx_us = time_us_64();
+                slot.frame_len = encoder_.encode_response_frame_to(
+                    slot.destination,
+                    slot.source,
+                    slot.sequence,
+                    0,
+                    reinterpret_cast<const uint8_t*>(
+                        &slot.time_sync_payload
+                    ),
+                    sizeof(slot.time_sync_payload),
+                    slot.frame,
+                    sizeof(slot.frame)
+                );
+                if (slot.frame_len == 0) {
+                    slot.late_time_sync = false;
+                    pending_response_head_ =
+                        (pending_response_head_ + 1) % MAX_PENDING_RESPONSES;
+                    --pending_response_count_;
+                    return;
+                }
+            }
             if (port_.start_tx_dma(slot.frame, slot.frame_len)) {
                 tx_kind_ = TxKind::Response;
                 active_response_action_ = slot.deferred_action;
@@ -303,6 +379,11 @@ private:
                 slot.frame_len = 0;
                 slot.deferred_action = DeferredActionT::None;
                 slot.deferred_baudrate = 0;
+                slot.late_time_sync = false;
+                slot.destination = 0;
+                slot.source = 0;
+                slot.sequence = 0;
+                slot.time_sync_payload = {};
                 pending_response_head_ =
                     (pending_response_head_ + 1) % MAX_PENDING_RESPONSES;
                 --pending_response_count_;
@@ -390,6 +471,11 @@ private:
         size_t frame_len = 0;
         DeferredActionT deferred_action = DeferredActionT::None;
         uint32_t deferred_baudrate = 0;
+        bool late_time_sync = false;
+        uint8_t destination = 0;
+        uint8_t source = 0;
+        uint32_t sequence = 0;
+        TimeSyncResponsePayload time_sync_payload{};
     };
 
     PendingResponseSlot pending_response_queue_[MAX_PENDING_RESPONSES]{};
@@ -398,4 +484,6 @@ private:
     size_t pending_response_count_ = 0;
     DeferredActionT active_response_action_ = DeferredActionT::None;
     uint32_t active_response_baudrate_ = 0;
+    uint64_t boot_epoch_ = 0;
+    bool time_sync_enabled_ = false;
 };

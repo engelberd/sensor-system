@@ -17,11 +17,15 @@ Adxl355Driver* Adxl355Driver::active_instance_ = nullptr;
 Adxl355Driver::Adxl355Driver(spi_inst_t* spi,
                              uint cs_pin,
                              int drdy_pin,
-                             int int1_pin)
+                             int int1_pin,
+                             bool enable_sample_timestamps)
     : spi_(spi),
       cs_pin_(cs_pin),
       drdy_pin_(drdy_pin),
-      int1_pin_(int1_pin) {
+      int1_pin_(int1_pin),
+      sample_timestamps_enabled_(
+          enable_sample_timestamps && drdy_pin >= 0
+      ) {
 }
 
 // ============================================================
@@ -42,13 +46,16 @@ SensorStatus Adxl355Driver::init() {
         gpio_set_dir(static_cast<uint>(int1_pin_), GPIO_IN);
         gpio_pull_down(static_cast<uint>(int1_pin_));
 
-        active_instance_ = this;
     }
 
     if (drdy_pin_ >= 0) {
         gpio_init(static_cast<uint>(drdy_pin_));
         gpio_set_dir(static_cast<uint>(drdy_pin_), GPIO_IN);
         gpio_pull_up(static_cast<uint>(drdy_pin_));
+    }
+
+    if (int1_pin_ >= 0 || drdy_pin_ >= 0) {
+        active_instance_ = this;
     }
 
     capture_gpio_debug_levels();
@@ -187,7 +194,26 @@ SensorStatus Adxl355Driver::read_average_sample(AccelSample& avg, size_t count) 
 SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
                                               size_t max_samples,
                                               size_t& samples_read) {
+    return read_fifo_samples_timed(
+        samples,
+        nullptr,
+        max_samples,
+        samples_read
+    );
+}
+
+SensorStatus Adxl355Driver::read_fifo_samples_timed(
+    AccelSample* samples,
+    SampleDeviceTime* times,
+    size_t max_samples,
+    size_t& samples_read
+) {
     samples_read = 0;
+    if (times != nullptr) {
+        for (size_t i = 0; i < max_samples; ++i) {
+            times[i] = {};
+        }
+    }
     diag_.flags &= static_cast<uint8_t>(
         ~(SENSOR_DIAG_FLAG_FIFO_EMPTY_ENTRY |
           SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH |
@@ -234,6 +260,9 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
     if (st != SensorStatus::Ok) {
         // A failed SPI transaction may already have advanced the FIFO read pointer.
         diag_.flags |= SENSOR_DIAG_FLAG_FIFO_LOSS_UNCERTAIN;
+        invalidate_timing_binding(
+            TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+        );
         diag_.last_fifo_read_status = static_cast<uint8_t>(st);
         return st;
     }
@@ -248,6 +277,10 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         st = decode_fifo_entry(&buffer[base + 0], x_entry);
         if (st != SensorStatus::Ok) {
             diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
+            (void)consume_fifo_timestamps(to_read, times, samples_read);
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+            );
             diag_.last_fifo_read_status = static_cast<uint8_t>(st);
             return st;
         }
@@ -255,6 +288,10 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         st = decode_fifo_entry(&buffer[base + 3], y_entry);
         if (st != SensorStatus::Ok) {
             diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
+            (void)consume_fifo_timestamps(to_read, times, samples_read);
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+            );
             diag_.last_fifo_read_status = static_cast<uint8_t>(st);
             return st;
         }
@@ -262,6 +299,10 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         st = decode_fifo_entry(&buffer[base + 6], z_entry);
         if (st != SensorStatus::Ok) {
             diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
+            (void)consume_fifo_timestamps(to_read, times, samples_read);
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+            );
             diag_.last_fifo_read_status = static_cast<uint8_t>(st);
             return st;
         }
@@ -269,6 +310,10 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         if (x_entry.is_empty || y_entry.is_empty || z_entry.is_empty) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_EMPTY_ENTRY;
             diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
+            (void)consume_fifo_timestamps(to_read, times, samples_read);
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+            );
             diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
             return SensorStatus::NoData;
         }
@@ -276,6 +321,10 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         if (!x_entry.is_x_axis) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
             diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
+            (void)consume_fifo_timestamps(to_read, times, samples_read);
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+            );
             diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
             return SensorStatus::InvalidSample;
         }
@@ -283,6 +332,10 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         if (y_entry.is_x_axis || z_entry.is_x_axis) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
             diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
+            (void)consume_fifo_timestamps(to_read, times, samples_read);
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+            );
             diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
             return SensorStatus::InvalidSample;
         }
@@ -293,12 +346,21 @@ SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
         samples_read = i + 1;
     }
 
+    (void)consume_fifo_timestamps(to_read, times, samples_read);
     diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::Ok);
     return SensorStatus::Ok;
 }
 
 bool Adxl355Driver::supports_fifo() const {
     return true;
+}
+bool Adxl355Driver::supports_sample_timestamps() const {
+    return sample_timestamps_enabled_;
+}
+void Adxl355Driver::notify_fifo_timing_discontinuity(
+    uint16_t quality_flags
+) {
+    invalidate_timing_binding(quality_flags);
 }
 bool Adxl355Driver::supports_data_ready_interrupt() const {
     return int1_pin_ >= 0;
@@ -534,20 +596,27 @@ SensorStatus Adxl355Driver::configure_fifo(uint8_t watermark) {
         int_map = ADXL355::INT_FULL_EN1 | ADXL355::INT_OVR_EN1;
     }
 
-    st = set_drdy_enabled_internal(false);
+    st = set_drdy_enabled_internal(sample_timestamps_enabled_);
     if (st != SensorStatus::Ok) return st;
 
     st = write_register(ADXL355::INT_MAP, int_map);
     if (st != SensorStatus::Ok) return st;
 
-    st = enter_measurement_mode();
-    if (st != SensorStatus::Ok) return st;
-
-    st = refresh_diagnostic_snapshot();
-    if (st == SensorStatus::Ok && int1_pin_ >= 0) {
+    reset_timing_binding(TIMING_QUALITY_RECOVERY, sample_timestamps_enabled_);
+    if (int1_pin_ >= 0 || sample_timestamps_enabled_) {
         enable_int1_irq();
     }
-    return st;
+
+    st = enter_measurement_mode();
+    if (st != SensorStatus::Ok) {
+        disable_int1_irq();
+        invalidate_timing_binding(
+            TIMING_QUALITY_INVALID | TIMING_QUALITY_RECOVERY
+        );
+        return st;
+    }
+
+    return refresh_diagnostic_snapshot();
 }
 
 void Adxl355Driver::clear_pending_irq_sources() {
@@ -560,33 +629,62 @@ void Adxl355Driver::clear_pending_irq_sources() {
 }
 
 void Adxl355Driver::disable_int1_irq() {
-    if (int1_pin_ < 0) {
-        return;
+    if (int1_pin_ >= 0) {
+        gpio_set_irq_enabled(
+            static_cast<uint>(int1_pin_),
+            GPIO_IRQ_EDGE_RISE,
+            false
+        );
+        gpio_acknowledge_irq(
+            static_cast<uint>(int1_pin_),
+            GPIO_IRQ_EDGE_RISE
+        );
     }
-    gpio_set_irq_enabled(static_cast<uint>(int1_pin_), GPIO_IRQ_EDGE_RISE, false);
-    gpio_acknowledge_irq(static_cast<uint>(int1_pin_), GPIO_IRQ_EDGE_RISE);
+    if (drdy_pin_ >= 0) {
+        gpio_set_irq_enabled(
+            static_cast<uint>(drdy_pin_),
+            GPIO_IRQ_EDGE_RISE,
+            false
+        );
+        gpio_acknowledge_irq(
+            static_cast<uint>(drdy_pin_),
+            GPIO_IRQ_EDGE_RISE
+        );
+    }
     int1_irq_enabled_ = false;
+    drdy_irq_enabled_ = false;
     clear_pending_irq_sources();
 }
 
 void Adxl355Driver::enable_int1_irq() {
-    if (int1_pin_ < 0) {
+    if (int1_pin_ < 0 && (!sample_timestamps_enabled_ || drdy_pin_ < 0)) {
         return;
     }
 
-    const uint pin = static_cast<uint>(int1_pin_);
-    gpio_acknowledge_irq(pin, GPIO_IRQ_EDGE_RISE);
     clear_pending_irq_sources();
+    const uint callback_pin = static_cast<uint>(
+        int1_pin_ >= 0 ? int1_pin_ : drdy_pin_
+    );
+    gpio_acknowledge_irq(callback_pin, GPIO_IRQ_EDGE_RISE);
     gpio_set_irq_enabled_with_callback(
-        pin,
+        callback_pin,
         GPIO_IRQ_EDGE_RISE,
         true,
         &Adxl355Driver::gpio_irq_handler
     );
-    int1_irq_enabled_ = true;
+    int1_irq_enabled_ = int1_pin_ >= 0;
+
+    if (sample_timestamps_enabled_ && drdy_pin_ >= 0) {
+        const uint drdy_pin = static_cast<uint>(drdy_pin_);
+        gpio_acknowledge_irq(drdy_pin, GPIO_IRQ_EDGE_RISE);
+        if (drdy_pin != callback_pin) {
+            gpio_set_irq_enabled(drdy_pin, GPIO_IRQ_EDGE_RISE, true);
+        }
+        drdy_irq_enabled_ = true;
+    }
 
     // Enabling an edge interrupt while INT1 is already asserted would miss it.
-    if (gpio_get(pin)) {
+    if (int1_pin_ >= 0 && gpio_get(static_cast<uint>(int1_pin_))) {
         const uint32_t irq_state = save_and_disable_interrupts();
         data_ready_sources_ |= SENSOR_DIAG_FLAG_INT1_EVENT;
         restore_interrupts(irq_state);
@@ -605,6 +703,27 @@ void Adxl355Driver::gpio_irq_handler(uint gpio, uint32_t events) {
     }
 
     if (gpio == static_cast<uint>(active_instance_->drdy_pin_)) {
+        const DrdyTimestamp timestamp{
+            active_instance_->next_drdy_event_seq_++,
+            time_us_64()
+        };
+        if (active_instance_->sample_timestamps_enabled_ &&
+            !active_instance_->drdy_timestamps_.push_from_isr(timestamp)) {
+            if (active_instance_->timing_binding_valid_ &&
+                active_instance_->diag_.timing_binding_invalidations
+                    != UINT32_MAX) {
+                ++active_instance_->diag_.timing_binding_invalidations;
+            }
+            active_instance_->timing_binding_valid_ = false;
+            active_instance_->timing_invalid_flags_ = static_cast<uint16_t>(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_RING_OVERFLOW
+            );
+            active_instance_->diag_.flags |=
+                SENSOR_DIAG_FLAG_TIMING_INVALID |
+                SENSOR_DIAG_FLAG_DRDY_RING_OVERFLOW;
+            active_instance_->diag_.drdy_timestamp_ring_overflow =
+                active_instance_->drdy_timestamps_.overflow_count();
+        }
         if (active_instance_->diag_.drdy_gpio_edges != UINT32_MAX) {
             ++active_instance_->diag_.drdy_gpio_edges;
         }
@@ -618,6 +737,113 @@ void Adxl355Driver::gpio_irq_handler(uint gpio, uint32_t events) {
         active_instance_->data_ready_sources_ |= SENSOR_DIAG_FLAG_INT1_EVENT;
         active_instance_->diag_.last_int1_level = static_cast<uint8_t>(gpio_get(gpio) ? 1u : 0u);
     }
+}
+
+void Adxl355Driver::reset_timing_binding(uint16_t quality_flags, bool valid) {
+    const uint32_t irq_state = save_and_disable_interrupts();
+    drdy_timestamps_.reset();
+    next_drdy_event_seq_ = 1;
+    last_consumed_drdy_event_seq_ = 0;
+    ++timing_segment_id_;
+    if (timing_segment_id_ == 0) {
+        timing_segment_id_ = 1;
+    }
+    timing_binding_valid_ = valid;
+    timing_invalid_flags_ = valid
+        ? static_cast<uint16_t>(TIMING_QUALITY_LOCKED | quality_flags)
+        : static_cast<uint16_t>(TIMING_QUALITY_INVALID | quality_flags);
+    diag_.flags &= static_cast<uint8_t>(
+        ~(SENSOR_DIAG_FLAG_TIMING_INVALID |
+          SENSOR_DIAG_FLAG_DRDY_RING_OVERFLOW |
+          SENSOR_DIAG_FLAG_DRDY_MISMATCH)
+    );
+    diag_.timing_segment_id = timing_segment_id_;
+    restore_interrupts(irq_state);
+}
+
+void Adxl355Driver::invalidate_timing_binding(uint16_t quality_flags) {
+    if (!sample_timestamps_enabled_) {
+        return;
+    }
+    const uint32_t irq_state = save_and_disable_interrupts();
+    const bool was_valid = timing_binding_valid_;
+    timing_binding_valid_ = false;
+    timing_invalid_flags_ = static_cast<uint16_t>(
+        timing_invalid_flags_ | TIMING_QUALITY_INVALID | quality_flags
+    );
+    diag_.flags |= SENSOR_DIAG_FLAG_TIMING_INVALID;
+    if (was_valid && diag_.timing_binding_invalidations != UINT32_MAX) {
+        ++diag_.timing_binding_invalidations;
+    }
+    restore_interrupts(irq_state);
+}
+
+bool Adxl355Driver::consume_fifo_timestamps(size_t consumed_samples,
+                                            SampleDeviceTime* times,
+                                            size_t valid_samples) {
+    if (!sample_timestamps_enabled_) {
+        return false;
+    }
+
+    if (drdy_timestamps_.consume_overflow_latched()) {
+        diag_.flags |=
+            SENSOR_DIAG_FLAG_TIMING_INVALID |
+            SENSOR_DIAG_FLAG_DRDY_RING_OVERFLOW;
+        invalidate_timing_binding(
+            TIMING_QUALITY_INVALID | TIMING_QUALITY_RING_OVERFLOW
+        );
+    }
+
+    bool batch_valid = timing_binding_valid_;
+    for (size_t i = 0; i < consumed_samples; ++i) {
+        DrdyTimestamp timestamp{};
+        if (!drdy_timestamps_.pop(timestamp)) {
+            batch_valid = false;
+            diag_.flags |=
+                SENSOR_DIAG_FLAG_TIMING_INVALID |
+                SENSOR_DIAG_FLAG_DRDY_MISMATCH;
+            if (diag_.timing_binding_mismatch != UINT32_MAX) {
+                ++diag_.timing_binding_mismatch;
+            }
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_DRDY_MISSING
+            );
+            continue;
+        }
+
+        if (last_consumed_drdy_event_seq_ != 0 &&
+            timestamp.event_seq != last_consumed_drdy_event_seq_ + 1u) {
+            batch_valid = false;
+            diag_.flags |=
+                SENSOR_DIAG_FLAG_TIMING_INVALID |
+                SENSOR_DIAG_FLAG_DRDY_MISMATCH;
+            if (diag_.timing_binding_mismatch != UINT32_MAX) {
+                ++diag_.timing_binding_mismatch;
+            }
+            invalidate_timing_binding(
+                TIMING_QUALITY_INVALID | TIMING_QUALITY_DRDY_EXCESS
+            );
+        }
+        last_consumed_drdy_event_seq_ = timestamp.event_seq;
+
+        if (times != nullptr && i < valid_samples) {
+            times[i].device_time_us = timestamp.device_time_us;
+            times[i].timing_segment_id = timing_segment_id_;
+            times[i].quality_flags = batch_valid
+                ? TIMING_QUALITY_LOCKED
+                : timing_invalid_flags_;
+            times[i].source = TimestampSource::DrdyTimeUs64;
+        }
+    }
+
+    if (!batch_valid && times != nullptr) {
+        for (size_t i = 0; i < valid_samples; ++i) {
+            times[i].timing_segment_id = timing_segment_id_;
+            times[i].quality_flags = timing_invalid_flags_;
+            times[i].source = TimestampSource::DrdyTimeUs64;
+        }
+    }
+    return batch_valid;
 }
 
 void Adxl355Driver::capture_gpio_debug_levels() {

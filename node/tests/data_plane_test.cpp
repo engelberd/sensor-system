@@ -149,6 +149,79 @@ void test_commit_finishes_active_burst_when_next_packet_is_trimmed() {
     assert(state.queued_packets == 0);
 }
 
+void test_timed_packet_contains_stable_v2_extension() {
+    TestDataPlane data_plane{};
+    data_plane.configure_timing(0x1122334455667788ULL, true);
+
+    StoredSample samples[2]{};
+    samples[0] = make_sample(100, 10);
+    samples[1] = make_sample(101, 20);
+    SampleDeviceTime times[2]{};
+    for (size_t i = 0; i < 2; ++i) {
+        times[i].device_time_us = 5'000'000u + i * 8'000u;
+        times[i].timing_segment_id = 7;
+        times[i].quality_flags = TIMING_QUALITY_LOCKED;
+        times[i].source = TimestampSource::DrdyTimeUs64;
+    }
+    data_plane.on_timed_samples(samples, times, 2);
+
+    assert(data_plane.start_burst(100, 1, 9) == StatusCode::Ok);
+    uint8_t first_payload[TestDataPlane::MAX_PACKET_PAYLOAD]{};
+    size_t first_size = 0;
+    assert(data_plane.try_build_current_packet_payload(
+        first_payload,
+        sizeof(first_payload),
+        first_size
+    ));
+
+    const BurstDataPayloadHeader header = decode_header(first_payload);
+    assert(
+        header.sample_encoding ==
+        static_cast<uint8_t>(SampleEncoding::RawXYZ24TimeV2)
+    );
+    assert(
+        first_size ==
+        sizeof(BurstDataPayloadHeader) +
+        sizeof(BurstTimingExtensionV2) +
+        2 * 9
+    );
+
+    BurstTimingExtensionV2 timing{};
+    std::memcpy(
+        &timing,
+        first_payload + sizeof(BurstDataPayloadHeader),
+        sizeof(timing)
+    );
+    assert(timing.timing_format_version == 2);
+    assert(timing.boot_epoch == 0x1122334455667788ULL);
+    assert(timing.timing_segment_id == 7);
+    assert(timing.first_device_time_us == 5'000'000u);
+    assert(timing.last_device_time_us == 5'008'000u);
+    assert(timing.sample_period_q16_us == (8'000u << 16));
+    assert(timing.max_fit_residual_us == 0);
+    assert((timing.timestamp_quality_flags & TIMING_QUALITY_INVALID) == 0);
+
+    uint8_t retry_payload[TestDataPlane::MAX_PACKET_PAYLOAD]{};
+    size_t retry_size = 0;
+    assert(!data_plane.try_build_current_packet_payload(
+        retry_payload,
+        sizeof(retry_payload),
+        retry_size
+    ));
+
+    data_plane.on_packet_transmitted();
+    assert(!data_plane.burst_active());
+
+    assert(data_plane.start_burst(100, 1, 9) == StatusCode::Ok);
+    assert(data_plane.try_build_current_packet_payload(
+        retry_payload,
+        sizeof(retry_payload),
+        retry_size
+    ));
+    assert(retry_size == first_size);
+    assert(std::memcmp(first_payload, retry_payload, first_size) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -156,5 +229,6 @@ int main() {
     test_burst_payload_contains_header_and_raw_xyz24_samples();
     test_commit_trims_packets_and_restarts_reads_after_commit();
     test_commit_finishes_active_burst_when_next_packet_is_trimmed();
+    test_timed_packet_contains_stable_v2_extension();
     return 0;
 }

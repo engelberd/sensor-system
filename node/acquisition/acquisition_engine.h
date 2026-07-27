@@ -54,6 +54,10 @@ struct AcquisitionStats {
     uint32_t fifo_overrun_events = 0;
     uint32_t fifo_discarded_samples = 0;
     uint32_t fifo_uncertain_loss_events = 0;
+    uint32_t drdy_timestamp_ring_overflow = 0;
+    uint32_t timing_binding_mismatch = 0;
+    uint32_t timing_binding_invalidations = 0;
+    uint32_t timing_segment_id = 0;
 };
 
 template <size_t BufferCapacity>
@@ -336,6 +340,13 @@ private:
         stats_.gpio_int1_edges = snapshot.int1_gpio_edges;
         stats_.gpio_drdy_edges = snapshot.drdy_gpio_edges;
         stats_.debug_config_snapshot = pack_debug_config_snapshot(snapshot);
+        stats_.drdy_timestamp_ring_overflow =
+            snapshot.drdy_timestamp_ring_overflow;
+        stats_.timing_binding_mismatch =
+            snapshot.timing_binding_mismatch;
+        stats_.timing_binding_invalidations =
+            snapshot.timing_binding_invalidations;
+        stats_.timing_segment_id = snapshot.timing_segment_id;
     }
 
     int32_t pack_sensor_snapshot_locked(bool irq_seen) {
@@ -638,6 +649,9 @@ private:
 
             if ((status & ADXL355::STATUS_FIFO_OVR_MASK) != 0) {
                 saturating_increment(stats_.fifo_overrun_events);
+                accelerometer_.notify_fifo_timing_discontinuity(
+                    TIMING_QUALITY_INVALID | TIMING_QUALITY_FIFO_OVERRUN
+                );
                 // ADXL355 exposes only a sticky overrun bit, so one sample is a lower bound.
                 saturating_increment(stats_.dropped_samples);
                 if (diagnostics_ != nullptr &&
@@ -654,8 +668,14 @@ private:
             }
 
             size_t samples_read = 0;
+            SampleDeviceTime sample_times[32]{};
             const SensorStatus st =
-                accelerometer_.read_fifo_samples(samples, 32, samples_read);
+                accelerometer_.read_fifo_samples_timed(
+                    samples,
+                    sample_times,
+                    32,
+                    samples_read
+                );
             const SensorDiagnosticSnapshot read_diag = accelerometer_.diagnostic_snapshot();
             const uint32_t discarded_samples = read_diag.last_fifo_discarded_samples;
 
@@ -673,13 +693,61 @@ private:
                 saturating_add(stats_.fifo_samples_read, static_cast<uint32_t>(samples_read));
                 total_samples_read += samples_read;
 
+                if (accelerometer_.supports_sample_timestamps()) {
+                    bool timing_valid = true;
+                    for (size_t i = 0; i < samples_read; ++i) {
+                        if (!sample_times[i].valid()) {
+                            timing_valid = false;
+                            break;
+                        }
+                    }
+                    if (!timing_valid) {
+                        saturating_add(
+                            stats_.dropped_samples,
+                            static_cast<uint32_t>(
+                                (samples_read + 1u) /
+                                DecimatingFilterX2::kDecimationFactor
+                            )
+                        );
+                        saturating_increment(stats_.sensor_errors);
+                        resampler_.reset();
+                        if (has_last_config_) {
+                            const SensorStatus recovery_status =
+                                apply_fifo_config_locked(last_config_);
+                            if (recovery_status == SensorStatus::Ok) {
+                                saturating_increment(
+                                    stats_.soft_recover_count
+                                );
+                                stats_.last_soft_recover_ms = now_ms_value;
+                            }
+                        }
+                        record_fault_locked(
+                            DiagnosticSeverity::Error,
+                            DiagnosticEventCode::InvalidSample,
+                            SensorStatus::InvalidSample,
+                            static_cast<int32_t>(samples_read)
+                        );
+                        return;
+                    }
+                }
+
                 StoredSample stored_batch[32]{};
+                SampleDeviceTime stored_times[32]{};
                 size_t stored_count = 0;
 
                 for (size_t i = 0; i < samples_read; ++i) {
                     StoredSample stored{};
-                    if (process_and_store_sample_locked(samples[i], stored)) {
-                        stored_batch[stored_count++] = stored;
+                    SampleDeviceTime output_time{};
+                    if (process_and_store_sample_locked(
+                            samples[i],
+                            accelerometer_.supports_sample_timestamps()
+                                ? &sample_times[i]
+                                : nullptr,
+                            stored,
+                            output_time)) {
+                        stored_batch[stored_count] = stored;
+                        stored_times[stored_count] = output_time;
+                        ++stored_count;
                     }
                 }
 
@@ -693,7 +761,11 @@ private:
                 record_recovery_locked(previous_no_data, previous_sensor_errors);
 
                 if (sample_sink_ != nullptr && stored_count > 0) {
-                    sample_sink_->on_samples(stored_batch, stored_count);
+                    sample_sink_->on_timed_samples(
+                        stored_batch,
+                        stored_times,
+                        stored_count
+                    );
                 }
             }
 
@@ -797,7 +869,12 @@ private:
         stats_.consecutive_sensor_errors = 0;
 
         StoredSample stored{};
-        if (!process_and_store_sample_locked(sample, stored)) {
+        SampleDeviceTime output_time{};
+        if (!process_and_store_sample_locked(
+                sample,
+                nullptr,
+                stored,
+                output_time)) {
             return;
         }
 
@@ -809,9 +886,15 @@ private:
     }
 
     bool process_and_store_sample_locked(const AccelSample& input,
-                                         StoredSample& stored) {
+                                         const SampleDeviceTime* input_time,
+                                         StoredSample& stored,
+                                         SampleDeviceTime& output_time) {
         AccelSample output{};
-        if (!resampler_.process(input, output)) {
+        const bool produced =
+            input_time != nullptr
+                ? resampler_.process(input, *input_time, output, output_time)
+                : resampler_.process(input, output);
+        if (!produced) {
             return false;
         }
 

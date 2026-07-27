@@ -7,6 +7,7 @@
 #include "acquisition/acquisition_engine.h"
 #include "boot_shared/boot_runtime_api.h"
 #include "common/device_identity.h"
+#include "config/board_profile.h"
 #include "common/node_types.h"
 #include "common/protocol_ids.h"
 #include "common/sensor_types.h"
@@ -200,6 +201,9 @@ public:
             case CommandType::ClearPersistentDiagnosticRecord:
                 return handle_clear_persistent_diagnostic_record(response, response_len);
 
+            case CommandType::GetCapabilities:
+                return handle_get_capabilities(response, response_len);
+
             case CommandType::ReadLatest:
                 return handle_read_latest(payload, payload_len, response, response_len);
 
@@ -248,6 +252,34 @@ private:
     static constexpr uint32_t kDiagnosticDegradedWindowMs = 10000;
     static constexpr uint8_t kDiagnosticFlagFaultSnapshot = 0x01u;
     static constexpr uint8_t kDiagnosticFlagLiveUsbEnabled = 0x02u;
+
+    StatusCode handle_get_capabilities(uint8_t* out, size_t& out_len) {
+        if (out == nullptr) {
+            out_len = 0;
+            return StatusCode::InvalidParam;
+        }
+
+        GetCapabilitiesResponsePayload response{};
+        response.command =
+            static_cast<uint8_t>(CommandType::GetCapabilities);
+        response.status = static_cast<uint8_t>(StatusCode::Ok);
+        response.capabilities_version = 1;
+        response.burst_format_max =
+            BoardProfile::kTimestampingV2Enabled ? 2 : 1;
+        response.feature_flags = BoardProfile::kTimestampingV2Enabled
+            ? static_cast<uint32_t>(
+                CAPABILITY_BURST_TIME_V2 |
+                CAPABILITY_TIME_SYNC_V1 |
+                CAPABILITY_DRDY_CLOCK_MODEL |
+                CAPABILITY_BOOT_EPOCH
+            )
+            : 0u;
+        response.max_samples_per_packet = 32;
+
+        std::memcpy(out, &response, sizeof(response));
+        out_len = sizeof(response);
+        return StatusCode::Ok;
+    }
     static constexpr uint8_t kDiagnosticFlagWatchdogReset = 0x04u;
     static constexpr uint8_t kDiagnosticFlagSampleStall = 0x08u;
     static constexpr uint8_t kDiagnosticFlagDegradedAcquisition = 0x10u;
@@ -1089,6 +1121,12 @@ private:
         resp.fifo_overrun_events = stats.fifo_overrun_events;
         resp.fifo_discarded_samples = stats.fifo_discarded_samples;
         resp.fifo_uncertain_loss_events = stats.fifo_uncertain_loss_events;
+        resp.drdy_timestamp_ring_overflow =
+            stats.drdy_timestamp_ring_overflow;
+        resp.timing_binding_mismatch = stats.timing_binding_mismatch;
+        resp.timing_binding_invalidations =
+            stats.timing_binding_invalidations;
+        resp.timing_segment_id = stats.timing_segment_id;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -1163,6 +1201,12 @@ private:
         resp.fifo_overrun_events = st.fifo_overrun_events;
         resp.fifo_discarded_samples = st.fifo_discarded_samples;
         resp.fifo_uncertain_loss_events = st.fifo_uncertain_loss_events;
+        resp.drdy_timestamp_ring_overflow =
+            st.drdy_timestamp_ring_overflow;
+        resp.timing_binding_mismatch = st.timing_binding_mismatch;
+        resp.timing_binding_invalidations =
+            st.timing_binding_invalidations;
+        resp.timing_segment_id = st.timing_segment_id;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);

@@ -114,12 +114,67 @@ void test_reset_restarts_warmup_and_sequence() {
     assert(next_sample_seq == output_count);
 }
 
+void assert_first_output_uses_center_timestamp(
+    DecimationFilterProfile profile,
+    size_t first_output_raw_count,
+    size_t center_input_index
+) {
+    DecimatingFilterX2 filter{};
+    filter.set_profile(profile);
+
+    for (size_t i = 0; i < first_output_raw_count; ++i) {
+        const uint64_t input_time_us =
+            1'000'000u + static_cast<uint64_t>(i * i + 7 * i);
+        AccelSample output{};
+        uint64_t output_time_us = 0;
+        const bool produced = filter.process(
+            make_sample(static_cast<int32_t>(i + 1)),
+            input_time_us,
+            output,
+            output_time_us
+        );
+
+        if (i + 1 < first_output_raw_count) {
+            assert(!produced);
+            continue;
+        }
+
+        assert(produced);
+        const uint64_t expected_time_us =
+            1'000'000u +
+            static_cast<uint64_t>(
+                center_input_index * center_input_index + 7 * center_input_index
+            );
+        assert(output_time_us == expected_time_us);
+    }
+}
+
+void test_output_time_is_center_fir_input_time() {
+    // The first output is produced one raw sample after the tap window first
+    // becomes full because the x2 decimator's phase is even.
+    assert_first_output_uses_center_timestamp(
+        DecimationFilterProfile::Light,
+        16,
+        8
+    );
+    assert_first_output_uses_center_timestamp(
+        DecimationFilterProfile::Balanced,
+        32,
+        16
+    );
+    assert_first_output_uses_center_timestamp(
+        DecimationFilterProfile::Aggressive,
+        64,
+        32
+    );
+}
+
 }  // namespace
 
 int main() {
     test_output_cadence_after_warmup();
     test_constant_signal_is_preserved();
     test_reset_restarts_warmup_and_sequence();
+    test_output_time_is_center_fir_input_time();
     return 0;
 }
-

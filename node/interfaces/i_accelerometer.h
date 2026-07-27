@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "common/sensor_types.h"
+#include "timing/sample_timing.h"
 
 class IAccelerometer {
 public:
@@ -17,9 +18,28 @@ public:
     virtual SensorStatus read_fifo_samples(AccelSample* samples,
                                            size_t max_samples,
                                            size_t& samples_read) = 0;
+    virtual SensorStatus read_fifo_samples_timed(
+        AccelSample* samples,
+        SampleDeviceTime* times,
+        size_t max_samples,
+        size_t& samples_read
+    ) {
+        const SensorStatus status =
+            read_fifo_samples(samples, max_samples, samples_read);
+        if (times != nullptr) {
+            for (size_t i = 0; i < samples_read; ++i) {
+                times[i] = {};
+            }
+        }
+        return status;
+    }
     virtual SensorStatus read_fifo_entries(uint8_t& entries) = 0;
 
     virtual bool supports_fifo() const = 0;
+    virtual bool supports_sample_timestamps() const { return false; }
+    virtual void notify_fifo_timing_discontinuity(uint16_t quality_flags) {
+        (void)quality_flags;
+    }
     virtual SensorStatus configure_fifo(uint8_t watermark) = 0;
 
     virtual bool supports_data_ready_interrupt() const = 0;

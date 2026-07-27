@@ -9,13 +9,15 @@
 #include "common/sensor_types.h"
 #include "interfaces/i_accelerometer.h"
 #include "interfaces/i_temperature_sensor.h"
+#include "timing/drdy_timestamp_ring.h"
 
 class Adxl355Driver : public IAccelerometer, public ITemperatureSensor {
 public:
     explicit Adxl355Driver(spi_inst_t* spi,
                            uint cs_pin,
                            int drdy_pin = -1,
-                           int int1_pin = -1);
+                           int int1_pin = -1,
+                           bool enable_sample_timestamps = false);
 
     SensorStatus init() override;
     SensorStatus check_device() override;
@@ -24,8 +26,18 @@ public:
     SensorStatus read_fifo_samples(AccelSample* samples,
                                    size_t max_samples,
                                    size_t& samples_read) override;
+    SensorStatus read_fifo_samples_timed(
+        AccelSample* samples,
+        SampleDeviceTime* times,
+        size_t max_samples,
+        size_t& samples_read
+    ) override;
 
     bool supports_fifo() const override;
+    bool supports_sample_timestamps() const override;
+    void notify_fifo_timing_discontinuity(
+        uint16_t quality_flags
+    ) override;
     SensorStatus configure_fifo(uint8_t watermark) override;
 
     bool supports_data_ready_interrupt() const override;
@@ -54,17 +66,31 @@ private:
     int drdy_pin_;
     int int1_pin_;
     bool initialized_ = false;
+    bool sample_timestamps_enabled_ = false;
     uint8_t current_range_g_ = 2;
     SensorDiagnosticSnapshot diag_{};
 
     static Adxl355Driver* active_instance_;
     volatile uint8_t data_ready_sources_ = 0;
     bool int1_irq_enabled_ = false;
+    bool drdy_irq_enabled_ = false;
+    static constexpr size_t kDrdyTimestampCapacity = 512;
+    DrdyTimestampRing<kDrdyTimestampCapacity> drdy_timestamps_{};
+    uint64_t next_drdy_event_seq_ = 1;
+    uint64_t last_consumed_drdy_event_seq_ = 0;
+    uint32_t timing_segment_id_ = 1;
+    volatile bool timing_binding_valid_ = false;
+    volatile uint16_t timing_invalid_flags_ = TIMING_QUALITY_INVALID;
 
     static void gpio_irq_handler(uint gpio, uint32_t events);
     void disable_int1_irq();
     void enable_int1_irq();
     void clear_pending_irq_sources();
+    void reset_timing_binding(uint16_t quality_flags, bool valid);
+    void invalidate_timing_binding(uint16_t quality_flags);
+    bool consume_fifo_timestamps(size_t consumed_samples,
+                                 SampleDeviceTime* times,
+                                 size_t valid_samples);
 
     
 

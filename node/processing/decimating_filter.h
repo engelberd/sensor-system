@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "common/sensor_types.h"
+#include "timing/sample_timing.h"
 
 enum class DecimationFilterProfile : uint8_t {
     Light = 0,
@@ -23,6 +24,9 @@ public:
         for (auto& sample : ring_) {
             sample = {};
         }
+        for (auto& timestamp : time_ring_) {
+            timestamp = {};
+        }
     }
 
     void set_profile(DecimationFilterProfile profile) {
@@ -35,7 +39,47 @@ public:
     }
 
     bool process(const AccelSample& input, AccelSample& output) {
+        return process_internal(input, SampleDeviceTime{}, output, nullptr);
+    }
+
+    bool process(const AccelSample& input,
+                 uint64_t input_time_us,
+                 AccelSample& output,
+                 uint64_t& output_time_us) {
+        SampleDeviceTime input_time{};
+        input_time.device_time_us = input_time_us;
+        input_time.quality_flags = TIMING_QUALITY_LOCKED;
+        input_time.source = TimestampSource::DrdyTimeUs64;
+        SampleDeviceTime output_time{};
+        const bool produced = process(
+            input,
+            input_time,
+            output,
+            output_time
+        );
+        output_time_us = output_time.device_time_us;
+        return produced;
+    }
+
+    bool process(const AccelSample& input,
+                 const SampleDeviceTime& input_time,
+                 AccelSample& output,
+                 SampleDeviceTime& output_time) {
+        return process_internal(
+            input,
+            input_time,
+            output,
+            &output_time
+        );
+    }
+
+private:
+    bool process_internal(const AccelSample& input,
+                          const SampleDeviceTime& input_time,
+                          AccelSample& output,
+                          SampleDeviceTime* output_time) {
         ring_[write_index_] = input;
+        time_ring_[write_index_] = input_time;
         write_index_ = (write_index_ + 1) % kMaxTaps;
 
         if (samples_seen_ < kMaxTaps) {
@@ -50,10 +94,17 @@ public:
         output.x = filter_axis(Axis::X);
         output.y = filter_axis(Axis::Y);
         output.z = filter_axis(Axis::Z);
+        if (output_time != nullptr) {
+            const size_t taps = tap_count();
+            const size_t oldest_index =
+                (write_index_ + kMaxTaps - taps) % kMaxTaps;
+            const size_t center_index =
+                (oldest_index + (taps - 1) / 2) % kMaxTaps;
+            *output_time = time_ring_[center_index];
+        }
         return true;
     }
 
-private:
     enum class Axis : uint8_t {
         X,
         Y,
@@ -148,9 +199,9 @@ private:
 
 private:
     AccelSample ring_[kMaxTaps]{};
+    SampleDeviceTime time_ring_[kMaxTaps]{};
     size_t write_index_ = 0;
     size_t samples_seen_ = 0;
     uint8_t phase_ = 0;
     DecimationFilterProfile profile_ = DecimationFilterProfile::Balanced;
 };
-

@@ -18,6 +18,41 @@ struct ResponsePayloadHeader {
     uint8_t status;
 };
 
+enum CapabilityFlag : uint32_t {
+    CAPABILITY_BURST_TIME_V2 = 1u << 0,
+    CAPABILITY_TIME_SYNC_V1 = 1u << 1,
+    CAPABILITY_DRDY_CLOCK_MODEL = 1u << 2,
+    CAPABILITY_BOOT_EPOCH = 1u << 3,
+    CAPABILITY_HOLDOVER_QUALITY = 1u << 4,
+};
+
+struct GetCapabilitiesResponsePayload {
+    uint8_t command;
+    uint8_t status;
+    uint8_t capabilities_version;
+    uint8_t burst_format_max;
+    uint32_t feature_flags;
+    uint16_t max_samples_per_packet;
+};
+
+struct TimeSyncCommandPayload {
+    uint8_t command;
+    uint8_t version;
+    uint32_t sync_id;
+    uint64_t t1_host_monotonic_ns;
+};
+
+struct TimeSyncResponsePayload {
+    uint8_t command;
+    uint8_t status;
+    uint8_t version;
+    uint32_t sync_id;
+    uint64_t boot_epoch;
+    uint64_t echoed_t1_host_monotonic_ns;
+    uint64_t t2_node_rx_us;
+    uint64_t t3_node_tx_us;
+};
+
 struct VersionResponsePayload {
     uint8_t command;
     uint8_t status;
@@ -166,6 +201,10 @@ struct GetStatusResponsePayload {
     uint32_t fifo_overrun_events;
     uint32_t fifo_discarded_samples;
     uint32_t fifo_uncertain_loss_events;
+    uint32_t drdy_timestamp_ring_overflow;
+    uint32_t timing_binding_mismatch;
+    uint32_t timing_binding_invalidations;
+    uint32_t timing_segment_id;
 };
 
 struct GetTemperatureResponsePayload {
@@ -230,6 +269,10 @@ struct GetStatsResponsePayload {
     uint32_t fifo_overrun_events;
     uint32_t fifo_discarded_samples;
     uint32_t fifo_uncertain_loss_events;
+    uint32_t drdy_timestamp_ring_overflow;
+    uint32_t timing_binding_mismatch;
+    uint32_t timing_binding_invalidations;
+    uint32_t timing_segment_id;
 };
 
 struct GetDiagnosticInfoResponsePayload {
@@ -363,7 +406,8 @@ struct CommitReadUpToResponsePayload {
 };
 
 enum class SampleEncoding : uint8_t {
-    RawXYZ24 = 1
+    RawXYZ24 = 1,
+    RawXYZ24TimeV2 = 2,
 };
 
 struct BurstDataPayloadHeader {
@@ -375,14 +419,34 @@ struct BurstDataPayloadHeader {
     uint8_t sample_encoding;
 };
 
+struct BurstTimingExtensionV2 {
+    uint8_t timing_format_version;
+    uint8_t timestamp_source;
+    uint16_t timestamp_quality_flags;
+    uint64_t boot_epoch;
+    uint32_t timing_segment_id;
+    uint64_t first_device_time_us;
+    uint64_t last_device_time_us;
+    uint32_t sample_period_q16_us;
+    uint32_t max_fit_residual_us;
+};
+
 #pragma pack(pop)
 
 static_assert(sizeof(ResponsePayloadHeader) == 2, "ResponsePayloadHeader size mismatch");
+static_assert(sizeof(GetCapabilitiesResponsePayload) == 10,
+              "GetCapabilitiesResponsePayload size mismatch");
+static_assert(sizeof(TimeSyncCommandPayload) == 14,
+              "TimeSyncCommandPayload size mismatch");
+static_assert(sizeof(TimeSyncResponsePayload) == 39,
+              "TimeSyncResponsePayload size mismatch");
 static_assert(sizeof(SetBaudRateCommandPayload) == 5, "SetBaudRateCommandPayload size mismatch");
 static_assert(sizeof(CommissionDiscoverCommandPayload) == 5, "CommissionDiscoverCommandPayload size mismatch");
 static_assert(sizeof(CommissionAssignNodeIdCommandPayload) == 10, "CommissionAssignNodeIdCommandPayload size mismatch");
 static_assert(sizeof(CommissionIdentityResponsePayload) == 11, "CommissionIdentityResponsePayload size mismatch");
 static_assert(sizeof(ReadSamplesResponseHeader) == 12, "ReadSamplesResponseHeader size mismatch");
+static_assert(sizeof(BurstDataPayloadHeader) == 17, "BurstDataPayloadHeader size mismatch");
+static_assert(sizeof(BurstTimingExtensionV2) == 40, "BurstTimingExtensionV2 size mismatch");
 static_assert(sizeof(GrantBurstReadCommandPayload) == 11, "GrantBurstReadCommandPayload size mismatch");
 static_assert(sizeof(GrantBurstReadResponsePayload) == 12, "GrantBurstReadResponsePayload size mismatch");
 static_assert(sizeof(CommitReadUpToCommandPayload) == 9, "CommitReadUpToCommandPayload size mismatch");

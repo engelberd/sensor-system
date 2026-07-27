@@ -2,6 +2,7 @@
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/rand.h"
 #include "hardware/spi.h"
 #include "hardware/watchdog.h"
 #include "boards/pico.h"
@@ -12,6 +13,7 @@
 #include "boot_shared/boot_runtime_api.h"
 #include "config/config_manager.h"
 #include "config/config_store_flash.h"
+#include "config/board_profile.h"
 #include "controller/node_controller.h"
 #include "diagnostics/diagnostic_store.h"
 #include "diagnostics/persistent_diagnostic_store.h"
@@ -24,17 +26,7 @@
 #include "transport/transport.h"
 
 #define SPI_PORT   spi1
-#define PIN_MISO   12
-#define PIN_CS     13
-#define PIN_SCK    10
-#define PIN_MOSI   11
-#define PIN_DRDY   14
-#define PIN_INT1   15  // preferred: FIFO watermark/overrun interrupt (INT1)
-
 #define RS485_UART uart0
-#define PIN_RS485_TX 0
-#define PIN_RS485_RX 1
-#define PIN_RS485_DE 2
 
 static constexpr uint32_t SAFE_BOOT_DELAY_MS = 5000;
 static constexpr uint32_t WATCHDOG_TIMEOUT_MS = 3000;
@@ -73,9 +65,9 @@ static void signal_starting() {
 static void setup_spi() {
     spi_init(SPI_PORT, SENSOR_SPI_BAUD);
 
-    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
-    gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
-    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
+    gpio_set_function(BoardProfile::kSpiMiso, GPIO_FUNC_SPI);
+    gpio_set_function(BoardProfile::kSpiSck,  GPIO_FUNC_SPI);
+    gpio_set_function(BoardProfile::kSpiMosi, GPIO_FUNC_SPI);
 
     spi_set_format(
         SPI_PORT,
@@ -112,6 +104,11 @@ int main() {
     sleep_ms(SAFE_BOOT_DELAY_MS);
 
     printf("\n=== ADXL355 NODE START ===\n");
+    printf(
+        "board_profile=%s timestamping_v2=%s\n",
+        BoardProfile::kName,
+        BoardProfile::kTimestampingV2Enabled ? "enabled" : "disabled"
+    );
 
     DiagnosticResetCause reset_cause = DiagnosticResetCause::PowerOn;
     if (watchdog_enable_caused_reboot()) {
@@ -148,16 +145,30 @@ int main() {
     );
 
     static AcquisitionBuffer<ACQ_BUFFER_CAPACITY> acq_buffer;
-    static Adxl355Driver driver(SPI_PORT, PIN_CS, PIN_DRDY, PIN_INT1);
+    static Adxl355Driver driver(
+        SPI_PORT,
+        BoardProfile::kSpiCs,
+        BoardProfile::kDrdy,
+        BoardProfile::kInt1,
+        BoardProfile::kTimestampingV2Enabled
+    );
     static DataPlaneT data_plane;
+    uint64_t boot_epoch = get_rand_64();
+    if (boot_epoch == 0) {
+        boot_epoch = 1;
+    }
+    data_plane.configure_timing(
+        boot_epoch,
+        BoardProfile::kTimestampingV2Enabled
+    );
     static AcquisitionT acquisition(driver, acq_buffer, &data_plane, &diagnostics);
 
     static Rs485Port rs485_port(
         RS485_UART,
-        PIN_RS485_TX,
-        PIN_RS485_RX,
+        BoardProfile::kRs485Tx,
+        BoardProfile::kRs485Rx,
         RS485_BAUD,
-        PIN_RS485_DE
+        BoardProfile::kRs485De
     );
 
     if (!rs485_port.init()) {
@@ -219,7 +230,9 @@ int main() {
         rs485_port,
         controller,
         data_plane,
-        &runtime.requested_action
+        &runtime.requested_action,
+        boot_epoch,
+        BoardProfile::kTimestampingV2Enabled
     );
 
     if (!transport.init()) {
