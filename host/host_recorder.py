@@ -878,6 +878,14 @@ class AcquisitionWindowedWriter(WindowedWriter):
         ] = {}
         self.pending_temperatures: dict[int, list[TemperatureRecord]] = {}
         self.pending_gaps: list[tuple[int, int, int, int]] = []
+        self.quarantine_writers: dict[
+            str,
+            tuple[Path, Path, Hdf5Writer],
+        ] = {}
+        self.quarantine_session_id = (
+            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            + f"-{os.getpid()}"
+        )
 
     def add_node(self, node: RecorderNode) -> None:
         del node
@@ -985,6 +993,16 @@ class AcquisitionWindowedWriter(WindowedWriter):
         final_path, partial_path, writer = self.active_windows.pop(
             window_start
         )
+        self._publish_writer(final_path, partial_path, writer)
+        self.finalized_windows.add(window_start)
+        print(f"[FILE] {final_path} (complete)")
+
+    def _publish_writer(
+        self,
+        final_path: Path,
+        partial_path: Path,
+        writer: Hdf5Writer,
+    ) -> None:
         writer.finalize()
         writer.close()
         os.replace(partial_path, final_path)
@@ -999,17 +1017,64 @@ class AcquisitionWindowedWriter(WindowedWriter):
                 os.close(directory_fd)
         except OSError:
             pass
-        self.finalized_windows.add(window_start)
-        print(f"[FILE] {final_path} (complete)")
 
-    def _sample_window(self, sample: SampleRecord) -> datetime:
+    def _ensure_quarantine(self, reason: str) -> Hdf5Writer:
+        existing = self.quarantine_writers.get(reason)
+        if existing is not None:
+            return existing[2]
+        created = datetime.now(timezone.utc)
+        directory = (
+            Path(self.args.output_dir)
+            / "quarantine"
+            / created.strftime("%Y-%m-%d")
+        )
+        filename = (
+            f"{self.args.channel_name}_timing-{reason}_"
+            f"{self.quarantine_session_id}.h5"
+        )
+        final_path = directory / filename
+        partial_path = Path(str(final_path) + ".partial")
+        metadata = dict(self.metadata)
+        metadata.update({
+            "timing_quarantine": True,
+            "timing_quarantine_reason": reason,
+            "normal_measurement_window": False,
+            "file_created_utc": created.isoformat(),
+        })
+        writer = Hdf5Writer(
+            partial_path,
+            metadata,
+            self.args.compression,
+            append=partial_path.exists(),
+        )
+        for node in self.nodes:
+            writer.add_node(node)
+            for observation, accepted in self.pending_clock_sync.get(
+                node.node_id,
+                [],
+            ):
+                writer.write_clock_sync(
+                    node.node_id,
+                    observation,
+                    accepted,
+                )
+        self.quarantine_writers[reason] = (
+            final_path,
+            partial_path,
+            writer,
+        )
+        print(f"[QUARANTINE] {partial_path} reason={reason}")
+        return writer
+
+    def _classify_sample(
+        self,
+        sample: SampleRecord,
+    ) -> tuple[Optional[datetime], Optional[str]]:
         if (
             sample.acquisition_utc_ns is None
             or sample.timing_uncertainty_ns is None
         ):
-            raise RuntimeError(
-                "timing mode required but sample has no acquisition time"
-            )
+            return None, "unsynced"
         when = datetime.fromtimestamp(
             sample.acquisition_utc_ns / 1_000_000_000,
             tz=timezone.utc,
@@ -1021,11 +1086,13 @@ class AcquisitionWindowedWriter(WindowedWriter):
         lower = sample.acquisition_utc_ns - sample.timing_uncertainty_ns
         upper = sample.acquisition_utc_ns + sample.timing_uncertainty_ns
         if lower < start_ns or upper >= end_ns:
-            raise RuntimeError(
-                f"sample {sample.sample_seq} timing uncertainty crosses "
-                "an acquisition window boundary"
-            )
-        return window_start
+            return None, "ambiguous"
+        if (
+            window_start in self.finalized_windows
+            or self.window_path_for(window_start).exists()
+        ):
+            return None, "late"
+        return window_start, None
 
     def write_samples(
         self,
@@ -1033,15 +1100,23 @@ class AcquisitionWindowedWriter(WindowedWriter):
         samples: list[SampleRecord],
     ) -> None:
         grouped: dict[datetime, list[SampleRecord]] = {}
+        quarantined: dict[str, list[SampleRecord]] = {}
         for sample in samples:
-            grouped.setdefault(
-                self._sample_window(sample),
-                [],
-            ).append(sample)
+            window_start, reason = self._classify_sample(sample)
+            if reason is not None:
+                quarantined.setdefault(reason, []).append(sample)
+            else:
+                assert window_start is not None
+                grouped.setdefault(window_start, []).append(sample)
         for window_start in sorted(grouped):
             self._ensure_window(window_start).write_samples(
                 node_id,
                 grouped[window_start],
+            )
+        for reason, reason_samples in sorted(quarantined.items()):
+            self._ensure_quarantine(reason).write_samples(
+                node_id,
+                reason_samples,
             )
 
     def _latest_writer(self) -> Hdf5Writer:
@@ -1094,20 +1169,34 @@ class AcquisitionWindowedWriter(WindowedWriter):
         )
         self.pending_clock_sync[node_id] = self.pending_clock_sync[node_id][-64:]
         if not self.active_windows:
-            return
-        self._latest_writer().write_clock_sync(
-            node_id,
-            observation,
-            accepted,
-        )
+            pass
+        else:
+            self._latest_writer().write_clock_sync(
+                node_id,
+                observation,
+                accepted,
+            )
+        for _, _, writer in self.quarantine_writers.values():
+            writer.write_clock_sync(node_id, observation, accepted)
 
     def flush(self) -> None:
         for _, _, writer in self.active_windows.values():
+            writer.flush()
+        for _, _, writer in self.quarantine_writers.values():
             writer.flush()
 
     def close(self) -> None:
         for window_start in sorted(tuple(self.active_windows)):
             self._finalize_window(window_start)
+        for reason in sorted(tuple(self.quarantine_writers)):
+            final_path, partial_path, writer = (
+                self.quarantine_writers.pop(reason)
+            )
+            self._publish_writer(final_path, partial_path, writer)
+            print(
+                f"[QUARANTINE] {final_path} "
+                f"reason={reason} (complete)"
+            )
         self.writer = None
         self.current_window_start = None
         self.current_window_end = None

@@ -396,6 +396,74 @@ class AcquisitionWindowWriterTests(unittest.TestCase):
                     1_024_000_000,
                 )
 
+    def test_required_mode_quarantines_unsynced_and_ambiguous_samples(
+        self,
+    ) -> None:
+        import h5py
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = RecorderWindowingTests().make_args(
+                output_dir=tmp,
+                window_timezone_name="UTC",
+            )
+            args.timing_mode = "required"
+            args.compression = "none"
+            node = RecorderNode(
+                node_id=1,
+                config=SimpleNamespace(
+                    odr_hz=250,
+                    range_g=2,
+                    high_pass_corner=0,
+                    fifo_watermark=30,
+                    offset_x=0,
+                    offset_y=0,
+                    offset_z=0,
+                ),
+            )
+            writer = AcquisitionWindowedWriter(
+                args,
+                metadata={},
+                nodes=[node],
+            )
+            boundary_ns = int(
+                datetime(
+                    2026, 4, 30, 10, 10, tzinfo=timezone.utc
+                ).timestamp() * 1_000_000_000
+            )
+            writer.write_samples(1, [
+                SampleRecord(
+                    1, 10, 1.0, 2.0, 3.0, 4,
+                    device_time_us=1000,
+                    boot_epoch=7,
+                    timing_segment_id=2,
+                    timing_quality_flags=1,
+                ),
+                SampleRecord(
+                    1, 11, 1.0, 2.0, 3.0, 4,
+                    device_time_us=9000,
+                    boot_epoch=7,
+                    timing_segment_id=2,
+                    timing_quality_flags=1,
+                    acquisition_utc_ns=boundary_ns + 1_000_000,
+                    timing_uncertainty_ns=2_000_000,
+                ),
+            ])
+            writer.close()
+
+            files = sorted(Path(tmp).rglob("*.h5"))
+            self.assertEqual(len(files), 2)
+            reasons = set()
+            for path in files:
+                with h5py.File(path, "r") as handle:
+                    self.assertTrue(handle.attrs["timing_quarantine"])
+                    reasons.add(handle.attrs["timing_quarantine_reason"])
+                    self.assertTrue(handle.attrs["complete"])
+                    self.assertEqual(
+                        handle["nodes/1/samples"].shape[0],
+                        1,
+                    )
+            self.assertEqual(reasons, {"unsynced", "ambiguous"})
+
 
 class SystemConfigCompatibilityTests(unittest.TestCase):
     def test_legacy_config_defaults_to_ten_minute_windows(self) -> None:
