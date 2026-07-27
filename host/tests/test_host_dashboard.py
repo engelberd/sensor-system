@@ -37,6 +37,54 @@ class DashboardRepositoryTests(unittest.TestCase):
         self.assertFalse(node["receiving_samples"])
         self.assertIn("brak próbek", node["alerts"])
 
+    def test_overview_ignores_nodes_from_disabled_channels(self) -> None:
+        repository = DashboardRepository(
+            Path("/tmp/not-used-system-config.json")
+        )
+        channels = [
+            {
+                "enabled": True,
+                "running": True,
+                "restart_count": 0,
+                "nodes": [
+                    {
+                        "enabled": True,
+                        "online": True,
+                        "receiving_samples": True,
+                        "samples_written": 100,
+                        "gaps_detected": 0,
+                        "alerts": [],
+                    }
+                ],
+            },
+            {
+                "enabled": False,
+                "running": False,
+                "restart_count": 0,
+                "nodes": [
+                    {
+                        "enabled": True,
+                        "online": False,
+                        "receiving_samples": False,
+                        "samples_written": 0,
+                        "gaps_detected": 0,
+                        "alerts": ["offline"],
+                    }
+                ],
+            },
+        ]
+
+        overview = repository._build_overview(
+            channels,
+            events=[],
+            raw_status=None,
+        )
+
+        self.assertEqual(overview["nodes_total"], 2)
+        self.assertEqual(overview["nodes_enabled"], 1)
+        self.assertEqual(overview["nodes_online"], 1)
+        self.assertEqual(overview["attention_count"], 0)
+
     def create_live_hdf5(self, path: Path) -> None:
         try:
             import h5py  # type: ignore

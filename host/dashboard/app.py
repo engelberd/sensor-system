@@ -4570,18 +4570,32 @@ class DashboardRepository:
         channels_enabled = sum(1 for channel in channels if channel["enabled"])
         channels_running = sum(1 for channel in channels if channel["running"])
         nodes = [node for channel in channels for node in channel["nodes"]]
+        enabled_nodes = [
+            node
+            for channel in channels
+            if channel["enabled"]
+            for node in channel["nodes"]
+            if node["enabled"]
+        ]
         nodes_total = len(nodes)
-        nodes_enabled = sum(1 for node in nodes if node["enabled"])
-        nodes_online = sum(1 for node in nodes if node["online"])
-        nodes_receiving_samples = sum(1 for node in nodes if node["receiving_samples"] is True)
+        nodes_enabled = len(enabled_nodes)
+        nodes_online = sum(1 for node in enabled_nodes if node["online"])
+        nodes_receiving_samples = sum(
+            1 for node in enabled_nodes
+            if node["receiving_samples"] is True
+        )
         nodes_without_samples = sum(
-            1 for node in nodes
+            1 for node in enabled_nodes
             if node["online"] and node["receiving_samples"] is False
         )
-        samples_written_total = sum(node["samples_written"] for node in nodes)
-        gaps_detected_total = sum(node["gaps_detected"] for node in nodes)
+        samples_written_total = sum(
+            node["samples_written"] for node in enabled_nodes
+        )
+        gaps_detected_total = sum(
+            node["gaps_detected"] for node in enabled_nodes
+        )
         restart_count_total = sum(channel["restart_count"] for channel in channels)
-        attention_count = sum(len(node["alerts"]) for node in nodes)
+        attention_count = sum(len(node["alerts"]) for node in enabled_nodes)
         severity_counts = event_severity_counts(events)
         updated = parse_iso8601(raw_status.get("updated_utc")) if raw_status else None
         age_seconds = None
