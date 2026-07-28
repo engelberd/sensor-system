@@ -1,6 +1,6 @@
 # Rollout timestampingu — linie C, E, G i H
 
-Data: 2026-07-27  
+Data: 2026-07-27
 System: testowy, rejestracja bez określonego czasu zakończenia
 
 ## Zakres

@@ -1,7 +1,7 @@
 # Plan wdrożenia timestampingu DRDY i rotacji HDF5 v5
 
-Status: implementacja offline ukończona; rollout L1–L4 oczekuje  
-Zasada nadrzędna: żadnych operacji na produkcyjnym czujniku bez osobnej zgody  
+Status: implementacja offline ukończona; rollout L1–L4 oczekuje
+Zasada nadrzędna: żadnych operacji na produkcyjnym czujniku bez osobnej zgody
 Strategia migracji: `legacy -> observe -> required`, host przed firmware
 
 ## 0. Stan implementacji

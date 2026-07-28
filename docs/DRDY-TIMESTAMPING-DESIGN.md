@@ -1,7 +1,7 @@
 # Projekt deterministycznego czasu próbek DRDY
 
-Status: zaimplementowany i zweryfikowany offline; rollout sprzętowy oczekuje  
-Zakres: firmware noda, protokół RS485 i recorder HDF5  
+Status: zaimplementowany i zweryfikowany offline; rollout sprzętowy oczekuje
+Zakres: firmware noda, protokół RS485 i recorder HDF5
 Poza zakresem: programowanie urządzenia, operacje na portach i usługach produkcyjnych
 
 ## 1. Decyzje i założenia

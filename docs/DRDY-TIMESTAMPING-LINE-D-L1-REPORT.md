@@ -1,7 +1,7 @@
 # Raport L1 timestampingu — linia D, node 1
 
-Data: 2026-07-27  
-System: testowy  
+Data: 2026-07-27
+System: testowy
 Zakres: jeden ADXL355, `/dev/ttyCH9344USB3`, node `1`
 
 ## Konfiguracja i obraz
