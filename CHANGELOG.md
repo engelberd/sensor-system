@@ -15,6 +15,8 @@
   runtime overlay and setup guide for KiCad, Pico SDK and USB-RS485 workflows.
 - Replaced historical `adxl355-*` systemd unit names with product-wide
   `sensor-system-*` services and standardized production storage under `var/`.
+- Added a reproducible read-only SFTP layout exposing the canonical `var/`
+  tree instead of the retired top-level `data/` directory.
 
 Wersjonowanie projektu stosuje format `MAJOR.MINOR.PATCH`. Numer wydania jest
 wspólny dla narzędzi hosta i firmware'u.

@@ -1,0 +1,7 @@
+Match User sftpdata
+    ChrootDirectory /var/sftp-ro
+    ForceCommand internal-sftp -R -d /var
+    PasswordAuthentication yes
+    PermitTTY no
+    AllowTcpForwarding no
+    X11Forwarding no

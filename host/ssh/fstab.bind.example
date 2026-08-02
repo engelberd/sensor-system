@@ -1,0 +1,2 @@
+# Replace /opt/sensor-system with the absolute repository/deployment path.
+/opt/sensor-system/var /var/sftp-ro/var none bind 0 0

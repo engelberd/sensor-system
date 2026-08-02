@@ -76,8 +76,10 @@ host, the minimum local setup is:
 2. Install udev rule (edit VID/PID/serial first on the target host):
    - copy `host/udev/99-sensor-system-rs485.rules.example` to `/etc/udev/rules.d/99-sensor-system-rs485.rules`
    - reload rules and replug the adapter (or `udevadm trigger`)
-3. Create the output directory (example):
-   - `sudo mkdir -p /data/sensor-system && sudo chown -R $USER:$USER /data/sensor-system`
+3. Create the canonical local directories:
+   - run `./hostctl paths --init`
+   - verify recordings under `var/recordings`, archives under `var/archive`,
+     and logs under `var/log`
 4. Install the recording service:
    - copy `host/systemd/sensor-system-recorder.service.example` to `/etc/systemd/system/sensor-system-recorder.service`
    - edit paths/args
@@ -91,6 +93,9 @@ host, the minimum local setup is:
    - edit paths/args if needed
    - `sudo systemctl daemon-reload`
    - `sudo systemctl enable --now sensor-system-supervisor.service sensor-system-dashboard.service`
+6. If read-only data export over SFTP is required, follow
+   `host/ssh/README.md`; bind the complete product `var/` directory into the
+   root-owned chroot and keep credentials outside Git.
 
 ## 4) Suggested pre-flight tests before final install
 
