@@ -18,10 +18,14 @@ The authoritative constants are in [boot/boot_config.h](/home/anone/pico-project
 After:
 
 ```bash
-cmake -S node -B node/build
+cmake -S node --preset board-v2
 cmake --build node/build
 cmake --build node/build --target sensor_system_node_release
 ```
+
+Use preset `board-v1` for the legacy evaluation wiring. It builds separately
+under `node/build.v1`, so configuring one board can no longer silently reuse
+the other board's cached pins.
 
 the important artifacts are:
 
@@ -72,7 +76,7 @@ Raspberry Pi host:
 ```bash
 git clone https://github.com/raspberrypi/pico-sdk.git
 export PICO_SDK_PATH=$PWD/pico-sdk
-cmake -S node -B node/build
+cmake -S node --preset board-v2
 cmake --build node/build
 ```
 
@@ -125,7 +129,8 @@ node should be running the application, not sitting in bootloader update mode.
 
 ## Hardware Pinout
 
-The current node firmware uses `spi1` for the ADXL355 evaluation board.
+The firmware uses `spi1`, with pins selected by the immutable board revision.
+Do not infer the wiring from a host name or node ID.
 
 | Power / ADXL355 signal | ADXL355 pin | Pico 2 pin        | Wire color |
 | ---------------------- | ----------: | ----------------- | ---------- |
@@ -133,12 +138,12 @@ The current node firmware uses `spi1` for the ADXL355 evaluation board.
 | VDDIO / ADXL 3V3       |           1 | 3V3               | Orange     |
 | VDD / ADXL 3V3         |           3 | 3V3               | Orange     |
 | GND                    |           5 | GND               | Black      |
-| SCLK/Vssio             |          10 | GPIO14 / SPI1 SCK | Yellow     |
-| MOSI/SDA               |          12 | GPIO15 / SPI1 TX  | Green      |
+| SCLK/Vssio             |          10 | V1: GPIO14, V2: GPIO10 | Yellow |
+| MOSI/SDA               |          12 | V1: GPIO15, V2: GPIO11 | Green  |
 | MISO/SDA               |          11 | GPIO12 / SPI1 RX  | Blue       |
 | CS/SCL                 |           8 | GPIO13            | White      |
-| DRDY                   |           6 | GPIO11            | Purple     |
-| INT1                   |           2 | GPIO10            | Gray       |
+| DRDY                   |           6 | V1: GPIO11, V2: GPIO14 | Purple |
+| INT1                   |           2 | V1: GPIO10, V2: GPIO15 | Gray   |
 | INT2                   |           4 | Not connected     | -          |
 
 Do not drive the ADXL355 `V1P8ANA`, `V1P8DIG`, or `Vddio` output pins from the
@@ -148,6 +153,9 @@ RS485 connects through the HAT, so no separate Pico GPIO jumper wiring is
 needed in the release harness. Keep the Pico, ADXL355 board, and RS485 HAT
 grounds common. Connect the RS485 A/B pair according to the HAT markings and
 keep polarity consistent across the bus.
+
+Both revisions use GPIO0/GPIO1 for RS485 TX/RX. V2 additionally uses GPIO2 for
+driver enable; V1 has no firmware-controlled DE pin.
 
 ## Remote Update Over RS485
 

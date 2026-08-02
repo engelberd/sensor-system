@@ -175,7 +175,7 @@ def build_worker_command(
     status_file: Path,
     event_log: Path,
 ) -> list[str]:
-    return [
+    command = [
         python_executable,
         str(recorder_script),
         "--channel-name",
@@ -240,6 +240,9 @@ def build_worker_command(
         "--event-log",
         str(event_log),
     ]
+    if channel.nodes[0].board_revision is not None:
+        command.extend(["--board-revision", str(channel.nodes[0].board_revision)])
+    return command
 
 
 def rotate_process_log(path: Path, max_bytes: int, backup_count: int) -> bool:

@@ -367,6 +367,7 @@ class NodeDeviceService:
         return {
             "channel_name": channel_name,
             "node_id": config.node_id,
+            "board_revision": config.board_revision,
             "baudrate": config.baudrate,
             "sensor_odr_hz": config.odr_hz,
             "output_odr_hz": effective_output_odr_hz(config.odr_hz),

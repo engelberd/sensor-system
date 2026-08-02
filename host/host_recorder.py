@@ -192,7 +192,7 @@ def send_and_parse_version(client: ProtocolClient, node_id: int, timeout_s: floa
     try:
         command, status, fw_major, fw_minor, fw_patch, _protocol_version = struct.unpack(
             GET_VERSION_FORMAT,
-            response.payload,
+            response.payload[: struct.calcsize(GET_VERSION_FORMAT)],
         )
     except struct.error as exc:
         raise RuntimeError(f"node {node_id}: malformed GetVersion response") from exc
@@ -431,6 +431,7 @@ def make_writer(args: argparse.Namespace, metadata: dict[str, object], nodes: li
             node_address=nodes[0].node_id,
             sensor_id=args.sensor_id or None,
             hardware_id=args.hardware_id or None,
+            board_revision=args.board_revision or nodes[0].config.board_revision,
         )
         return CaptureV1WindowedWriter(args, metadata, nodes, identity)
     if args.output_dir:
@@ -1161,6 +1162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sensor-label", default="A")
     parser.add_argument("--sensor-id", default="")
     parser.add_argument("--hardware-id", default="")
+    parser.add_argument("--board-revision", type=int, choices=[1, 2])
     parser.add_argument("--capture-schema", type=int, choices=[1, 5], default=5)
     parser.add_argument("--nodes", type=parse_node_list, default=[1], help="Comma separated node ids, e.g. 1,2")
     parser.add_argument("--output", help="Single output file path, e.g. run.h5 or run.csv")
@@ -1276,6 +1278,15 @@ def main() -> int:
                 for node_id in args.nodes
             ]
             for node in nodes:
+                if (
+                    args.board_revision is not None
+                    and node.config.board_revision is not None
+                    and args.board_revision != node.config.board_revision
+                ):
+                    raise RuntimeError(
+                        f"node {node.node_id}: configured board_revision="
+                        f"{args.board_revision}, reported={node.config.board_revision}"
+                    )
                 refresh_stats(client, node, args.timeout)
                 capture_stats_baseline(node)
                 node.next_time_sync_at = started_at

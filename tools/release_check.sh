@@ -38,6 +38,20 @@ if ./sgit ls-files 'host/systemd/*.service' | grep -q .; then
     exit 2
 fi
 
+tracked_diagnostics="$(
+    ./sgit ls-files diagnostics |
+    while IFS= read -r path; do
+        if [[ "${path}" != "diagnostics/README-diagnostics.md" && -e "${path}" ]]; then
+            echo "${path}"
+        fi
+    done
+)"
+if [[ -n "${tracked_diagnostics}" ]]; then
+    echo "[ERROR] Surowa diagnostyka nadal jest śledzona:" >&2
+    echo "${tracked_diagnostics}" >&2
+    exit 2
+fi
+
 echo "[1/5] Testy hosta"
 host/.venv/bin/python -m unittest discover -s host/tests
 
@@ -50,6 +64,25 @@ host/.venv/bin/python -m compileall -q host
 
 echo "[4/5] Budowanie firmware'u"
 cmake --build node/build
+
+host/.venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+
+package = json.loads(
+    Path("node/build/sensor-system-node-update-package.json").read_text(
+        encoding="utf-8"
+    )
+)
+expected = {"legacy_eval": 1, "custom_v2": 2}
+profile = package.get("board_profile")
+revision = package.get("board_revision")
+if profile not in expected or revision != expected[profile]:
+    raise SystemExit(
+        f"[ERROR] Niespójny profil paczki: profile={profile}, revision={revision}"
+    )
+print(f"[OK] Firmware profile={profile}, board_revision={revision}")
+PY
 
 echo "[5/5] Pakowanie release'u ${VERSION}"
 cmake --build node/build --target sensor_system_node_release

@@ -112,7 +112,7 @@ class ArchiveV1Compactor:
         return int(attrs.get("window_start_utc_ns", -1)), reader.path.name
 
     @staticmethod
-    def _identity(reader: CaptureV1Reader) -> tuple[int, str, str, int, str]:
+    def _identity(reader: CaptureV1Reader) -> tuple[int, str, str, int, str, int]:
         attrs = reader.file.attrs
         return (
             int(attrs["channel_id"]),
@@ -120,6 +120,7 @@ class ArchiveV1Compactor:
             _as_text(attrs.get("sensor_id", "")),
             int(attrs["node_address"]),
             _as_text(attrs.get("hardware_id", "")),
+            int(attrs.get("board_revision", 0)),
         )
 
     @staticmethod
@@ -222,9 +223,18 @@ class ArchiveV1Compactor:
                     raise RuntimeError(f"Capture {path} is outside {archive_day}")
                 readers.append(reader)
             readers.sort(key=self._source_order)
-            identity = self._identity(readers[0])
-            if any(self._identity(reader) != identity for reader in readers[1:]):
+            identities = [self._identity(reader) for reader in readers]
+            identity_base = identities[0][:-1]
+            if any(candidate[:-1] != identity_base for candidate in identities[1:]):
                 raise RuntimeError("Capture inputs do not describe one sensor")
+            known_board_revisions = {
+                candidate[-1] for candidate in identities if candidate[-1] != 0
+            }
+            if len(known_board_revisions) > 1:
+                raise RuntimeError("Capture inputs disagree on board_revision")
+            identity = identity_base + (
+                next(iter(known_board_revisions), 0),
+            )
             return self._write(readers, partial, output, archive_day, identity, compression)
         except Exception:
             # A failed conversion is intentionally left unpublished. Remove only
@@ -247,7 +257,7 @@ class ArchiveV1Compactor:
         }
         file = h5py.File(partial, "w")
         try:
-            channel_id, sensor_label, sensor_id, node_address, hardware_id = identity
+            channel_id, sensor_label, sensor_id, node_address, hardware_id, board_revision = identity
             attrs = file.attrs
             attrs["format_name"] = DataProduct.ARCHIVE.value
             attrs["schema_major"] = ARCHIVE_SCHEMA_MAJOR
@@ -258,6 +268,7 @@ class ArchiveV1Compactor:
             attrs["sensor_id"] = sensor_id
             attrs["node_address"] = node_address
             attrs["hardware_id"] = hardware_id
+            attrs["board_revision"] = board_revision
             firmwares = sorted({_as_text(r.file.attrs.get("firmware_version", "")) for r in readers})
             attrs["firmware_version"] = ",".join(firmwares)
             attrs["archive_day_utc"] = archive_day.isoformat()

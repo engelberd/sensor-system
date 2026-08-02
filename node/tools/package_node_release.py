@@ -48,12 +48,14 @@ def copy_required(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def write_release_readme(path: Path, release_name: str) -> None:
+def write_release_readme(path: Path, release_name: str, board_profile: str) -> None:
     path.write_text(
         f"""# Sensor System Node {release_name}
 
-This package contains node firmware artifacts only. Host tools and host
-configuration are released separately.
+This package contains node firmware artifacts for board profile
+`{board_profile}` only. Host tools and host configuration are released
+separately. The update tool verifies this profile against `board_revision`
+before flashing.
 
 ## Files
 
@@ -90,7 +92,8 @@ Keep `sensor-system-node-{release_name}-slot-a.bin` and
 
 ## ADXL355 Wiring
 
-The firmware uses `spi1` for the ADXL355 evaluation board.
+The firmware uses `spi1`. This package is for `{board_profile}`; the table
+shows both revisions so the physical board can be identified before flashing.
 
 | Power / ADXL355 signal | ADXL355 pin | Pico 2 pin | Wire color |
 | --- | ---: | --- | --- |
@@ -98,12 +101,12 @@ The firmware uses `spi1` for the ADXL355 evaluation board.
 | VDDIO / ADXL 3V3 | 1 | 3V3 | Orange |
 | VDD / ADXL 3V3 | 3 | 3V3 | Orange |
 | GND | 5 | GND | Black |
-| SCLK/Vssio | 10 | GPIO14 / SPI1 SCK | Yellow |
-| MOSI/SDA | 12 | GPIO15 / SPI1 TX | Green |
+| SCLK/Vssio | 10 | V1: GPIO14, V2: GPIO10 | Yellow |
+| MOSI/SDA | 12 | V1: GPIO15, V2: GPIO11 | Green |
 | MISO/SDA | 11 | GPIO12 / SPI1 RX | Blue |
 | CS/SCL | 8 | GPIO13 | White |
-| DRDY | 6 | GPIO11 | Purple |
-| INT1 | 2 | GPIO10 | Gray |
+| DRDY | 6 | V1: GPIO11, V2: GPIO14 | Purple |
+| INT1 | 2 | V1: GPIO10, V2: GPIO15 | Gray |
 | INT2 | 4 | Not connected | - |
 
 Do not drive the ADXL355 `V1P8ANA`, `V1P8DIG`, or `Vddio` output pins from the
@@ -161,6 +164,9 @@ def main() -> int:
     if not update_package_src.exists():
         raise RuntimeError(f"missing build artifact: {update_package_src}")
     update_package = json.loads(update_package_src.read_text(encoding="utf-8"))
+    board_profile = str(update_package.get("board_profile", "unknown"))
+    if board_profile not in {"legacy_eval", "custom_v2"}:
+        raise RuntimeError(f"unsupported release board profile: {board_profile}")
     expected_version = version_int(version)
     if int(update_package.get("version", -1)) != expected_version:
         raise RuntimeError(
@@ -175,7 +181,7 @@ def main() -> int:
     copied.append(update_package_path)
 
     readme = release_dir / "README.md"
-    write_release_readme(readme, release_name)
+    write_release_readme(readme, release_name, board_profile)
     copied.append(readme)
 
     manifest = {
@@ -188,6 +194,8 @@ def main() -> int:
             "packed": expected_version,
         },
         "host_release_included": False,
+        "board_profile": board_profile,
+        "board_revision": {"legacy_eval": 1, "custom_v2": 2}[board_profile],
         "files": [
             {
                 "name": path.name,

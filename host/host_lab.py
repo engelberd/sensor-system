@@ -74,7 +74,8 @@ TIME_SYNC_RESPONSE_FORMAT = "<BBBIQQQQ"
 PACKET_FRAME_BYTES = FRAME_HEADER_SIZE + struct.calcsize(BURST_HEADER_FORMAT) + (SAMPLES_PER_PACKET * 9) + FRAME_CRC_SIZE
 CONTROL_RESPONSE_BYTES = FRAME_HEADER_SIZE + 16 + FRAME_CRC_SIZE
 GET_CONFIG_FORMAT_V1 = "<BBBIHBiiiBHBB"
-GET_CONFIG_FORMAT = "<BBBIHBiiiBHBBBBIQ"
+GET_CONFIG_FORMAT_V2 = "<BBBIHBiiiBHBBBBIQ"
+GET_CONFIG_FORMAT = GET_CONFIG_FORMAT_V2 + "B"
 GET_TEMPERATURE_FORMAT = "<BBHf"
 
 SUPPORTED_ODR_HZ = (
@@ -408,6 +409,7 @@ class ConfigView:
     decimation_factor: int = OUTPUT_DECIMATION_FACTOR
     config_revision: int = 0
     config_effective_sample_seq: int = 0
+    board_revision: int | None = None
 
 
 @dataclass
@@ -694,6 +696,12 @@ def parse_config_view(payload: bytes) -> ConfigView:
         values = struct.unpack(
             GET_CONFIG_FORMAT,
             payload[: struct.calcsize(GET_CONFIG_FORMAT)],
+        )
+        return ConfigView(*values)
+    if len(payload) >= struct.calcsize(GET_CONFIG_FORMAT_V2):
+        values = struct.unpack(
+            GET_CONFIG_FORMAT_V2,
+            payload[: struct.calcsize(GET_CONFIG_FORMAT_V2)],
         )
         return ConfigView(*values)
     values = struct.unpack(

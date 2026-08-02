@@ -21,6 +21,8 @@ from host.host_configurator import (
     GET_STATUS_FORMAT_V6,
     GET_STATUS_FORMAT_V7,
     GET_STATUS_FORMAT_V8,
+    GET_STATUS_FORMAT_V9,
+    GET_CONFIG_FORMAT,
     READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT,
     READ_DIAGNOSTIC_EVENT_FORMAT,
     ConfigView,
@@ -30,12 +32,22 @@ from host.host_configurator import (
     parse_persistent_diagnostic_record_view,
     parse_fault_snapshot_view,
     parse_status_view,
+    parse_config_view,
     sync_system_config_from_device_config,
 )
 from host.host_lab import STATS_FORMAT_V7, parse_stats
 
 
 class HostConfiguratorSyncTests(unittest.TestCase):
+    def test_parse_current_config_includes_board_revision(self) -> None:
+        payload = struct.pack(
+            GET_CONFIG_FORMAT,
+            0x20, 0, 1, 115200, 250, 2,
+            0, 0, 0, 30, 0, 1, 0, 1, 2, 7, 1234, 2,
+        )
+        config = parse_config_view(payload)
+        self.assertEqual(config.board_revision, 2)
+
     def test_sync_system_config_updates_confirmed_device_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "system_config.json"
@@ -222,6 +234,20 @@ class HostConfiguratorSyncTests(unittest.TestCase):
         self.assertEqual(status.timing_binding_mismatch, 9)
         self.assertEqual(status.timing_binding_invalidations, 10)
         self.assertEqual(status.timing_segment_id, 11)
+
+    def test_parse_v9_status_view_includes_board_revision(self) -> None:
+        payload = struct.pack(
+            GET_STATUS_FORMAT_V9,
+            0x40, 0, 7, 2, 250, 2, 4, 0x00040000, 9,
+            12345, 67890, 3, 0, 1, 0,
+            12, 2, 5, 9, 101, 0, 303, 0, 0x00001E06,
+            33, 44, 55, 0x0C1E0000,
+            77, 2, 4, 1,
+            8, 9, 10, 11,
+            2,
+        )
+        status = parse_status_view(payload)
+        self.assertEqual(status.board_revision, 2)
 
     def test_parse_v2_status_view_keeps_new_fields_defaulted(self) -> None:
         payload = struct.pack(

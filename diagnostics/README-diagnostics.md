@@ -1,5 +1,10 @@
 # Sensor System Diagnostics
 
+Raw diagnostic captures are operational data and are intentionally ignored by
+Git. Store a temporary investigation under `var/diagnostics/<date>-<incident>/`
+or another external data volume. When an incident is closed, keep only the
+reusable conclusion or procedure in documentation and remove the raw logs.
+
 This project uses a layered diagnostics model for Pico nodes on RS485:
 
 - cheap counters for steady-state health

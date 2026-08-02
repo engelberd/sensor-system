@@ -19,6 +19,22 @@ Then adapt the generated `host/system_config.json`. Release validation and
 publication are described in [RELEASING.md](RELEASING.md), and notable changes
 are listed in [CHANGELOG.md](CHANGELOG.md).
 
+Local runtime output has one predictable layout:
+
+- `var/recordings/` for new measurements
+- `var/archive/` for compacted archives
+- `var/log/` for host logs and events
+- `var/tmp/` for temporary artifacts
+- `/run/sensor-system/` for locks, commands and live status
+
+These directories are not versioned. Use `./hostctl paths` to display the
+effective paths for the active host configuration.
+
+Every installed node has an immutable hardware revision. Revision `1` is the
+legacy evaluation wiring and revision `2` is the custom V2 board. The current
+Sanok installation uses revision `2`; node IDs and sensor settings remain
+runtime configuration independent of that revision.
+
 ## Repository Notes
 
 In this Codex workspace the top-level `.git/` path is reserved by the
@@ -65,12 +81,16 @@ brew install cmake picotool arm-none-eabi-gcc
 Build the node firmware with explicit compiler paths when needed:
 
 ```bash
-cmake -S node -B node/build \
+cmake -S node --preset board-v2 \
   -DCMAKE_C_COMPILER=/opt/homebrew/bin/arm-none-eabi-gcc \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/arm-none-eabi-g++ \
   -DCMAKE_ASM_COMPILER=/opt/homebrew/bin/arm-none-eabi-gcc
 cmake --build node/build
 ```
+
+For a V1 board use `cmake -S node --preset board-v1` followed by
+`cmake --build node/build.v1`. Never reuse one build directory for both board
+revisions.
 
 The most important output files are:
 

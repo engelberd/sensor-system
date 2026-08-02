@@ -496,6 +496,7 @@ private:
         for (size_t i = 0; i < DEVICE_HARDWARE_ID_SIZE; ++i) {
             resp.hardware_id[i] = hardware_id.bytes[i];
         }
+        resp.board_revision = BoardProfile::kRevision;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -595,6 +596,7 @@ private:
         resp.fw_minor = FW_VERSION_MINOR;
         resp.fw_patch = FW_VERSION_PATCH;
         resp.protocol_version = PROTOCOL_VERSION;
+        resp.board_revision = BoardProfile::kRevision;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -656,6 +658,7 @@ private:
         resp.decimation_factor = DecimatingFilterX2::kDecimationFactor;
         resp.config_revision = config_revision_;
         resp.config_effective_sample_seq = config_effective_sample_seq_;
+        resp.board_revision = BoardProfile::kRevision;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -1139,6 +1142,7 @@ private:
         resp.timing_binding_invalidations =
             stats.timing_binding_invalidations;
         resp.timing_segment_id = stats.timing_segment_id;
+        resp.board_revision = BoardProfile::kRevision;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);

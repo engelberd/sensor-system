@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "board-v2",
+      "displayName": "Custom board V2",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "SENSOR_SYSTEM_BOARD_PROFILE": "custom_v2",
+        "SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2": "ON"
+      }
+    },
+    {
+      "name": "board-v1",
+      "displayName": "Legacy evaluation board V1",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build.v1",
+      "cacheVariables": {
+        "SENSOR_SYSTEM_BOARD_PROFILE": "legacy_eval",
+        "SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "board-v2", "configurePreset": "board-v2" },
+    { "name": "board-v1", "configurePreset": "board-v1" }
+  ]
+}

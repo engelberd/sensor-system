@@ -74,6 +74,7 @@ GET_STATUS_FORMAT_V5 = GET_STATUS_FORMAT_V4 + "III"
 GET_STATUS_FORMAT_V6 = GET_STATUS_FORMAT_V5 + "IIII"
 GET_STATUS_FORMAT_V7 = GET_STATUS_FORMAT_V6 + "IIII"
 GET_STATUS_FORMAT_V8 = GET_STATUS_FORMAT_V7 + "IIII"
+GET_STATUS_FORMAT_V9 = GET_STATUS_FORMAT_V8 + "B"
 GET_DIAGNOSTIC_INFO_FORMAT = "<BBIBBHHIIIIH"
 # Current firmware places debug fields before arg0/arg1. Keep the legacy
 # layouts below so dumps from older nodes remain readable.
@@ -89,7 +90,8 @@ READ_DIAGNOSTIC_EVENT_FORMAT = "<IIHBBQii"
 
 # Actual packed layouts from firmware.
 GET_CONFIG_FORMAT_V1 = "<BBBIHBiiiBHBB"
-GET_CONFIG_FORMAT = "<BBBIHBiiiBHBBBBIQ"
+GET_CONFIG_FORMAT_V2 = "<BBBIHBiiiBHBBBBIQ"
+GET_CONFIG_FORMAT = GET_CONFIG_FORMAT_V2 + "B"
 GET_STATUS_FORMAT = "<BBBBHBI I I".replace(" ", "")
 
 SUPPORTED_ODR_HZ = (
@@ -219,6 +221,7 @@ class ConfigView:
     decimation_factor: int = OUTPUT_DECIMATION_FACTOR
     config_revision: int = 0
     config_effective_sample_seq: int = 0
+    board_revision: int | None = None
 
 
 @dataclass
@@ -257,6 +260,7 @@ class StatusView:
     timing_binding_mismatch: int = 0
     timing_binding_invalidations: int = 0
     timing_segment_id: int = 0
+    board_revision: int | None = None
 
 
 @dataclass
@@ -337,6 +341,7 @@ class DiagnosticEventView:
 class CommissionIdentity:
     node_id: int
     hardware_id: bytes
+    board_revision: int | None = None
 
 
 @dataclass(frozen=True)
@@ -433,6 +438,8 @@ def sync_system_config_from_device_config(
     matched_entry["offset_x"] = updated.offset_x
     matched_entry["offset_y"] = updated.offset_y
     matched_entry["offset_z"] = updated.offset_z
+    if updated.board_revision is not None:
+        matched_entry["board_revision"] = updated.board_revision
     raw_nodes[matched_index] = matched_entry
     channel["baud"] = updated.baudrate
 
@@ -572,11 +579,12 @@ class ProtocolClient:
 
 
 def parse_config_view(payload: bytes) -> ConfigView:
-    config_format = (
-        GET_CONFIG_FORMAT
-        if len(payload) >= struct.calcsize(GET_CONFIG_FORMAT)
-        else GET_CONFIG_FORMAT_V1
-    )
+    if len(payload) >= struct.calcsize(GET_CONFIG_FORMAT):
+        config_format = GET_CONFIG_FORMAT
+    elif len(payload) >= struct.calcsize(GET_CONFIG_FORMAT_V2):
+        config_format = GET_CONFIG_FORMAT_V2
+    else:
+        config_format = GET_CONFIG_FORMAT_V1
     values = struct.unpack(
         config_format,
         payload[: struct.calcsize(config_format)],
@@ -599,10 +607,16 @@ def parse_config_view(payload: bytes) -> ConfigView:
         ),
         config_revision=values[15] if len(values) > 15 else 0,
         config_effective_sample_seq=values[16] if len(values) > 16 else 0,
+        board_revision=values[17] if len(values) > 17 else None,
     )
 
 
 def parse_status_view(payload: bytes) -> StatusView:
+    if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V9):
+        status = parse_status_view(payload[: struct.calcsize(GET_STATUS_FORMAT_V8)])
+        status.board_revision = payload[struct.calcsize(GET_STATUS_FORMAT_V8)]
+        return status
+
     if len(payload) >= struct.calcsize(GET_STATUS_FORMAT_V8):
         values = struct.unpack(
             GET_STATUS_FORMAT_V8,
@@ -1034,6 +1048,11 @@ def parse_commission_identity(payload: bytes) -> CommissionIdentity:
     return CommissionIdentity(
         node_id=payload[2],
         hardware_id=bytes(payload[3:3 + DEVICE_HARDWARE_ID_SIZE]),
+        board_revision=(
+            payload[3 + DEVICE_HARDWARE_ID_SIZE]
+            if len(payload) > 3 + DEVICE_HARDWARE_ID_SIZE
+            else None
+        ),
     )
 
 
@@ -1219,6 +1238,7 @@ def format_filter_profile(filter_profile: int) -> str:
 def print_config(config: ConfigView) -> None:
     print("Config:")
     print(f"  node_id        : {config.node_id}")
+    print(f"  board_revision : {config.board_revision if config.board_revision is not None else 'unknown'}")
     print(f"  baudrate       : {config.baudrate}")
     print(f"  sensor_odr_hz  : {config.odr_hz}")
     print(f"  output_odr_hz  : {format_effective_output_odr(config.odr_hz)}")
@@ -1243,6 +1263,7 @@ def print_status(status: StatusView) -> None:
     irq_debug = decode_irq_debug_snapshot(status.debug_irq_snapshot)
     print("Status:")
     print(f"  node_id          : {status.node_id}")
+    print(f"  board_revision   : {status.board_revision if status.board_revision is not None else 'unknown'}")
     print(f"  node_state       : {status.node_state}")
     print(f"  sensor_odr_hz    : {status.odr_hz}")
     print(f"  output_odr_hz    : {format_effective_output_odr(status.odr_hz)}")
@@ -1692,7 +1713,8 @@ def commission_scan(client: ProtocolClient, slot_count: int, timeout_s: float) -
     for identity in ordered:
         print(
             f"  hardware_id={format_hardware_id(identity.hardware_id)} "
-            f"node_id={identity.node_id}"
+            f"node_id={identity.node_id} "
+            f"board_revision={identity.board_revision if identity.board_revision is not None else 'unknown'}"
         )
     return ordered
 

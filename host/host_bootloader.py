@@ -55,6 +55,7 @@ FRAME_TYPE_RESPONSE = 0x03
 HOST_NODE_ID = 0xFE
 PING_COMMAND = 0x01
 ENTER_BOOTLOADER_COMMAND = 0x03
+GET_CONFIG_COMMAND = 0x20
 STATUS_OK = 0x00
 
 UPDATE_PACKET_MAGIC = 0x55505444
@@ -93,6 +94,9 @@ FLASH_PAGE_SIZE = 256
 DEFAULT_UPDATE_CHUNK_SIZE = 1024
 DEFAULT_SYSTEM_CONFIG_PATH = Path(__file__).resolve().parent / "system_config.json"
 RUNTIME_STATUS_STALE_AFTER_S = 10.0
+GET_CONFIG_FORMAT_V2 = "<BBBIHBiiiBHBBBBIQ"
+GET_CONFIG_FORMAT_V3 = GET_CONFIG_FORMAT_V2 + "B"
+BOARD_PROFILE_REVISIONS = {"legacy_eval": 1, "custom_v2": 2}
 
 
 def crc16_ccitt(data: bytes) -> int:
@@ -710,6 +714,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--enter-wait", type=float, help="Wait time after enter request, in seconds")
     parser.add_argument("--image", help="Path to firmware binary for upload")
+    parser.add_argument(
+        "--board-revision",
+        type=int,
+        choices=(1, 2),
+        help="Expected physical board revision (normally read from system config)",
+    )
+    parser.add_argument(
+        "--force-board-revision",
+        action="store_true",
+        help="Upload even when board revision is unknown or mismatched",
+    )
     parser.add_argument("--version", type=lambda raw: int(raw, 0), default=0, help="Image version")
     parser.add_argument("--chunk-size", type=int, help="Chunk payload size before page padding")
     parser.add_argument("--hello-retries", type=int, help="How many hello retries to do after enter")
@@ -873,6 +888,21 @@ def send_app_ping(ser: SerialLike, node_id: int, timeout_s: float) -> tuple[int,
         )
 
     return command, status
+
+
+def read_app_board_revision(
+    ser: SerialLike, node_id: int, timeout_s: float
+) -> int | None:
+    client = TransportClient(ser)
+    sequence = client.send_command(node_id, GET_CONFIG_COMMAND)
+    response = client.wait_for_response(node_id, sequence, timeout_s)
+    if response is None or len(response.payload) < 2:
+        return None
+    if response.payload[0] != GET_CONFIG_COMMAND or response.payload[1] != STATUS_OK:
+        return None
+    if len(response.payload) < struct.calcsize(GET_CONFIG_FORMAT_V3):
+        return None
+    return int(response.payload[struct.calcsize(GET_CONFIG_FORMAT_V2)])
 
 
 def enter_bootloader_via_maintenance(ser: SerialLike) -> None:
@@ -1117,6 +1147,73 @@ class ResolvedImage:
     timestamping_v2: bool | None = None
 
 
+def package_board_revision(image_path: Path) -> int | None:
+    if image_path.suffix.lower() != ".json":
+        return None
+    package = json.loads(image_path.read_text(encoding="utf-8"))
+    profile = package.get("board_profile")
+    explicit_revision = package.get("board_revision")
+    if profile is None:
+        return int(explicit_revision) if explicit_revision is not None else None
+    try:
+        profile_revision = BOARD_PROFILE_REVISIONS[str(profile)]
+    except KeyError as exc:
+        raise RuntimeError(f"unknown package board_profile: {profile}") from exc
+    if explicit_revision is not None and int(explicit_revision) != profile_revision:
+        raise RuntimeError(
+            f"package board_revision {explicit_revision} conflicts with board_profile {profile}"
+        )
+    return profile_revision
+
+
+def configured_board_revision(
+    system_config_path: Path, port: str, node_id: int
+) -> int | None:
+    if not system_config_path.exists():
+        return None
+    system_config = HostSystemConfig.load(system_config_path)
+    matches = [
+        node.board_revision
+        for channel in system_config.channels
+        if channel.port == port
+        for node in channel.nodes
+        if node.node_id == node_id and node.board_revision is not None
+    ]
+    if not matches:
+        return None
+    if len(set(matches)) != 1:
+        raise RuntimeError(
+            f"conflicting board revisions for port={port} node={node_id}"
+        )
+    return matches[0]
+
+
+def verify_board_compatibility(
+    *, package_revision: int | None, configured_revision: int | None,
+    reported_revision: int | None, force: bool
+) -> None:
+    known = [value for value in (configured_revision, reported_revision) if value is not None]
+    if len(set(known)) > 1 and not force:
+        raise RuntimeError(
+            "board revision reported by node does not match system config; "
+            "fix inventory or use --force-board-revision after physical verification"
+        )
+    actual_revision = reported_revision or configured_revision
+    if package_revision is None:
+        return
+    if actual_revision is None and not force:
+        raise RuntimeError(
+            f"package requires board revision {package_revision}, but the target revision "
+            "is unknown; add board_revision to system config or use "
+            "--force-board-revision after physical verification"
+        )
+    if actual_revision != package_revision and not force:
+        raise RuntimeError(
+            f"refusing incompatible update: package board revision {package_revision}, "
+            f"target board revision {actual_revision}"
+        )
+
+
 def resolve_update_image(image_path: Path, target_slot: int, version_override: int) -> ResolvedImage:
     if image_path.suffix.lower() != ".json":
         return ResolvedImage(path=image_path, version=version_override)
@@ -1202,6 +1299,34 @@ def main() -> int:
     )
 
     try:
+        if args.action == "upload" and image_path is not None:
+            system_config_path = resolve_system_config_path(args.system_config)
+            inventory_revision = (
+                args.board_revision
+                if args.board_revision is not None
+                else configured_board_revision(system_config_path, config.port, config.node)
+            )
+            try:
+                reported_revision = read_app_board_revision(
+                    ser, config.node, min(config.timeout, 2.0)
+                )
+            except Exception:  # node may already be in bootloader recovery
+                reported_revision = None
+            finally:
+                ser.reset_input_buffer()
+            required_revision = package_board_revision(image_path)
+            verify_board_compatibility(
+                package_revision=required_revision,
+                configured_revision=inventory_revision,
+                reported_revision=reported_revision,
+                force=args.force_board_revision,
+            )
+            print(
+                f"[BOARD] package={required_revision or 'unspecified'} "
+                f"inventory={inventory_revision or 'unknown'} "
+                f"reported={reported_revision or 'unknown'}"
+            )
+
         ser = maybe_enter_bootloader(ser, config, identity)
 
         update_client = UpdateClient(ser)

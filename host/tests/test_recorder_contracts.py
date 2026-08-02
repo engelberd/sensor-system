@@ -29,6 +29,16 @@ class RecorderContractTests(unittest.TestCase):
         )
         self.assertEqual(identity.sensor_label, "B")
 
+    def test_board_revision_is_validated(self) -> None:
+        identity = SensorIdentity(
+            channel_id=1, sensor_label="A", node_address=1, board_revision=2
+        )
+        self.assertEqual(identity.board_revision, 2)
+        with self.assertRaisesRegex(ValueError, "board_revision"):
+            SensorIdentity(
+                channel_id=1, sensor_label="A", node_address=1, board_revision=3
+            )
+
     def test_sensor_label_must_be_known(self) -> None:
         with self.assertRaisesRegex(ValueError, "range A..H"):
             SensorIdentity(channel_id=1, sensor_label="X", node_address=1)

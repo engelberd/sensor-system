@@ -85,6 +85,7 @@ class SensorIdentity:
     node_address: int
     sensor_id: str | None = None
     hardware_id: str | None = None
+    board_revision: int | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.channel_id <= 8:
@@ -97,6 +98,8 @@ class SensorIdentity:
             raise ValueError("sensor_id must be non-empty when provided")
         if self.hardware_id is not None and not self.hardware_id.strip():
             raise ValueError("hardware_id must be non-empty when provided")
+        if self.board_revision not in {None, 1, 2}:
+            raise ValueError("board_revision must be 1 or 2 when provided")
 
     @classmethod
     def temporary(cls, channel_id: int, node_address: int) -> "SensorIdentity":

@@ -17,6 +17,7 @@ namespace BoardProfile {
 
 #if SENSOR_SYSTEM_BOARD_PROFILE == SENSOR_BOARD_PROFILE_CUSTOM_V2
 static constexpr const char* kName = "custom_v2";
+static constexpr uint8_t kRevision = 2;
 static constexpr uint8_t kSpiMiso = 12;
 static constexpr uint8_t kSpiCs = 13;
 static constexpr uint8_t kSpiSck = 10;
@@ -26,6 +27,7 @@ static constexpr int8_t kInt1 = 15;
 static constexpr int8_t kRs485De = 2;
 #elif SENSOR_SYSTEM_BOARD_PROFILE == SENSOR_BOARD_PROFILE_LEGACY_EVAL
 static constexpr const char* kName = "legacy_eval";
+static constexpr uint8_t kRevision = 1;
 static constexpr uint8_t kSpiMiso = 12;
 static constexpr uint8_t kSpiCs = 13;
 static constexpr uint8_t kSpiSck = 14;

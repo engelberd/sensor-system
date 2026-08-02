@@ -98,6 +98,7 @@ class CaptureV1Writer(BaseWriter):
         attrs["sensor_id"] = self.identity.sensor_id or ""
         attrs["node_address"] = self.identity.node_address
         attrs["hardware_id"] = self.identity.hardware_id or ""
+        attrs["board_revision"] = self.identity.board_revision or 0
         attrs["created_utc_ns"] = int(
             datetime.now(timezone.utc).timestamp() * 1_000_000_000
         )

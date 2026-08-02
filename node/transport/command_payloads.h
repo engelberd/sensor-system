@@ -60,6 +60,7 @@ struct VersionResponsePayload {
     uint8_t fw_minor;
     uint8_t fw_patch;
     uint8_t protocol_version;
+    uint8_t board_revision;
 };
 
 struct RunSelfTestResponsePayload {
@@ -139,6 +140,7 @@ struct CommissionIdentityResponsePayload {
     uint8_t status;
     uint8_t node_id;
     uint8_t hardware_id[DEVICE_HARDWARE_ID_SIZE];
+    uint8_t board_revision;
 };
 
 struct GetConfigResponsePayload {
@@ -159,6 +161,7 @@ struct GetConfigResponsePayload {
     uint8_t decimation_factor;
     uint32_t config_revision;
     uint64_t config_effective_sample_seq;
+    uint8_t board_revision;
 };
 
 struct ReadLatestCommandPayload {
@@ -209,6 +212,7 @@ struct GetStatusResponsePayload {
     uint32_t timing_binding_mismatch;
     uint32_t timing_binding_invalidations;
     uint32_t timing_segment_id;
+    uint8_t board_revision;
 };
 
 struct GetTemperatureResponsePayload {
@@ -445,10 +449,16 @@ static_assert(sizeof(TimeSyncCommandPayload) == 14,
               "TimeSyncCommandPayload size mismatch");
 static_assert(sizeof(TimeSyncResponsePayload) == 39,
               "TimeSyncResponsePayload size mismatch");
+static_assert(sizeof(VersionResponsePayload) == 7,
+              "VersionResponsePayload size mismatch");
 static_assert(sizeof(SetBaudRateCommandPayload) == 5, "SetBaudRateCommandPayload size mismatch");
 static_assert(sizeof(CommissionDiscoverCommandPayload) == 5, "CommissionDiscoverCommandPayload size mismatch");
 static_assert(sizeof(CommissionAssignNodeIdCommandPayload) == 10, "CommissionAssignNodeIdCommandPayload size mismatch");
-static_assert(sizeof(CommissionIdentityResponsePayload) == 11, "CommissionIdentityResponsePayload size mismatch");
+static_assert(sizeof(CommissionIdentityResponsePayload) == 12, "CommissionIdentityResponsePayload size mismatch");
+static_assert(sizeof(GetConfigResponsePayload) == 42,
+              "GetConfigResponsePayload size mismatch");
+static_assert(sizeof(GetStatusResponsePayload) == 124,
+              "GetStatusResponsePayload size mismatch");
 static_assert(sizeof(ReadSamplesResponseHeader) == 12, "ReadSamplesResponseHeader size mismatch");
 static_assert(sizeof(BurstDataPayloadHeader) == 17, "BurstDataPayloadHeader size mismatch");
 static_assert(sizeof(BurstTimingExtensionV2) == 40, "BurstTimingExtensionV2 size mismatch");

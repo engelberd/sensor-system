@@ -14,6 +14,7 @@ BOOT_METADATA_VERSION = 2
 SLOT_NONE = 0
 SLOT_A = 1
 SLOT_B = 2
+BOARD_PROFILE_REVISIONS = {"legacy_eval": 1, "custom_v2": 2}
 
 
 def crc32(data: bytes) -> int:
@@ -110,11 +111,17 @@ def cmd_update_package(args: argparse.Namespace) -> int:
     slot_a_data = slot_a_bin.read_bytes()
     slot_b_data = slot_b_bin.read_bytes()
 
+    try:
+        board_revision = BOARD_PROFILE_REVISIONS[args.board_profile]
+    except KeyError as exc:
+        raise RuntimeError(f"unsupported board profile: {args.board_profile}") from exc
+
     payload = {
         "schema_version": 1,
         "format": "sensor_system_node_update_package",
         "version": version,
         "board_profile": args.board_profile,
+        "board_revision": board_revision,
         "timestamping_v2": bool(args.timestamping_v2),
         "slot_a": {
             "slot_id": SLOT_A,

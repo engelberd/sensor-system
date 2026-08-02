@@ -14,7 +14,8 @@ class SystemInfo:
 
 @dataclass(frozen=True)
 class StorageConfig:
-    root_dir: str = "runs/sensor-system"
+    root_dir: str = "var/recordings"
+    archive_dir: str = "var/archive"
     format: str = "hdf5"
     compression: str = "gzip"
     window_seconds: int = 600
@@ -24,9 +25,9 @@ class StorageConfig:
 @dataclass(frozen=True)
 class SupervisorConfig:
     status_file: str = "/run/sensor-system/supervisor.status.json"
-    event_log: str = "logs/sensor-system/supervisor.events.jsonl"
+    event_log: str = "var/log/supervisor.events.jsonl"
     channel_runtime_dir: str = "/run/sensor-system"
-    log_dir: str = "logs/sensor-system"
+    log_dir: str = "var/log"
     status_interval_s: float = 1.0
     restart_delay_s: float = 2.0
     restart_delay_max_s: float = 60.0
@@ -51,6 +52,7 @@ class NodeConfig:
     sensor_label: str | None = None
     sensor_id: str | None = None
     hardware_id: str | None = None
+    board_revision: int | None = None
     filter_profile: int | None = None
     decimation_factor: int | None = None
 
@@ -181,6 +183,7 @@ class HostSystemConfig:
             ),
             storage=StorageConfig(
                 root_dir=str(storage_data.get("root_dir", StorageConfig.root_dir)),
+                archive_dir=str(storage_data.get("archive_dir", StorageConfig.archive_dir)),
                 format=str(storage_data.get("format", StorageConfig.format)),
                 compression=str(storage_data.get("compression", StorageConfig.compression)),
                 window_seconds=int(storage_data.get("window_seconds", StorageConfig.window_seconds)),
@@ -267,6 +270,7 @@ class HostSystemConfig:
             system=SystemInfo(),
             storage=StorageConfig(
                 root_dir=str(storage_data.get("root_dir", StorageConfig.root_dir)),
+                archive_dir=str(storage_data.get("archive_dir", StorageConfig.archive_dir)),
                 format=str(storage_data.get("format", StorageConfig.format)),
                 compression=str(storage_data.get("compression", StorageConfig.compression)),
                 window_seconds=legacy_window_seconds,
@@ -315,9 +319,14 @@ class HostSystemConfig:
                 sensor_label=str(raw["sensor_label"]) if raw.get("sensor_label") is not None else None,
                 sensor_id=str(raw["sensor_id"]) if raw.get("sensor_id") is not None else None,
                 hardware_id=str(raw["hardware_id"]) if raw.get("hardware_id") is not None else None,
+                board_revision=int(raw["board_revision"]) if raw.get("board_revision") is not None else None,
                 filter_profile=int(raw["filter_profile"]) if raw.get("filter_profile") is not None else None,
                 decimation_factor=int(raw["decimation_factor"]) if raw.get("decimation_factor") is not None else None,
             )
+            if node.board_revision not in {None, 1, 2}:
+                raise ValueError(
+                    f"node {node.node_id} board_revision must be 1 or 2"
+                )
             if node.enabled:
                 nodes.append(node)
 

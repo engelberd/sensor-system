@@ -5,16 +5,17 @@
     "timezone": "Europe/Warsaw"
   },
   "storage": {
-    "root_dir": "runs/sensor-system",
+    "root_dir": "var/recordings",
+    "archive_dir": "var/archive",
     "format": "hdf5",
     "compression": "gzip",
     "window_seconds": 600
   },
   "supervisor": {
     "status_file": "/run/sensor-system/supervisor.status.json",
-    "event_log": "logs/sensor-system/supervisor.events.jsonl",
+    "event_log": "var/log/supervisor.events.jsonl",
     "channel_runtime_dir": "/run/sensor-system",
-    "log_dir": "logs/sensor-system",
+    "log_dir": "var/log",
     "status_interval_s": 1.0,
     "restart_delay_s": 2.0,
     "restart_delay_max_s": 60.0,
@@ -34,12 +35,14 @@
         {
           "id": 1,
           "name": "Czujnik 1",
+          "board_revision": 2,
           "enabled": true,
           "expected_odr_hz": 125
         },
         {
           "id": 2,
           "name": "Czujnik 2",
+          "board_revision": 2,
           "enabled": false,
           "expected_odr_hz": 125
         }
@@ -55,6 +58,7 @@
         {
           "id": 10,
           "name": "Czujnik 10",
+          "board_revision": 1,
           "enabled": true,
           "expected_odr_hz": 250
         }

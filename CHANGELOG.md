@@ -14,6 +14,12 @@ wspólny dla narzędzi hosta i firmware'u.
 - Jawne tożsamości kanałów 1–8 i tymczasowe etykiety sensorów A–H.
 - Raportowanie profilu filtra, decymacji, rewizji konfiguracji oraz licznika
   nasyceń kodowania signed-24.
+- Niezmienna `board_revision` raportowana przez konfigurację, status i
+  commissioning noda oraz zapisywana w Capture/Archive.
+- Oddzielne presety buildów V1 i V2 oraz kontrola zgodności rewizji przed
+  aktualizacją RS485.
+- Wspólny lokalny układ `var/recordings`, `var/archive`, `var/diagnostics` i
+  `var/log`, wraz z komendą `hostctl paths`.
 
 ### Poprawiono
 
@@ -23,8 +29,11 @@ wspólny dla narzędzi hosta i firmware'u.
   `.partial`; restart kontynuuje ten sam plik, a zaległe okna uszczelnia
   atomowo po upływie ich czasu.
 - Trwała konfiguracja v3 jest migrowana do v4 bez utraty adresu i ustawień.
-- Produkcyjny build domyślnie używa faktycznego profilu `legacy_eval` z
-  timestampingiem DRDY v2, a pakiet aktualizacyjny jawnie zapisuje oba parametry.
+- Build bieżącej instalacji używa profilu `custom_v2`; V1 jest budowany w
+  osobnym katalogu presetem `board-v1`. Pakiety zapisują profil i liczbową
+  rewizję sprzętu.
+- Zamknięte snapshoty i surowe logi diagnostyczne usunięto z drzewa produktu;
+  kolejne zrzuty są ignorowane przez Git.
 - Aktualizacja A/B pozostaje odzyskiwalna, gdy adres serwisowy ma wartość 0.
 
 ### Wdrożenie

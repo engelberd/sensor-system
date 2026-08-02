@@ -21,6 +21,10 @@ will own RS485 communication plus future remote updates.
 - **Persistent config is correct**: verify `node_id`, ODR, range, watermark, and
   offsets via `./hostctl config ... get-config` and save what you need before
   installation.
+- **Board identity is correct**: set `board_revision` in the host inventory and
+  verify that `get-config` reports the same value. Updates reject V1/V2
+  mismatches unless an operator explicitly forces the check after physically
+  identifying the board.
 - **Fresh nodes are commissioned before install**: factory images now start as
   unassigned (`node_id=0`). Use `./hostctl config --port ... commission-scan`
   and `commission-assign` to give each new node a unique runtime address.
@@ -60,6 +64,7 @@ host, the minimum local setup is:
 1. Create Python venv and install dependencies:
    - `python3 -m venv host/.venv`
    - `host/.venv/bin/python -m pip install -r host/requirements-recorder.txt`
+   - run `./hostctl paths --init` and verify the displayed recording location
 2. Install udev rule (edit VID/PID/serial first on the target host):
    - copy `host/udev/99-sensor-system-rs485.rules.example` to `/etc/udev/rules.d/99-sensor-system-rs485.rules`
    - reload rules and replug the adapter (or `udevadm trigger`)

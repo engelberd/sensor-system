@@ -9,7 +9,9 @@ __pycache__/
 runs/
 data/
 logs/
-diagnostics/2026-07-24_tmp-full-recovery/
+var/
+diagnostics/*
+!diagnostics/README-diagnostics.md
 .DS_Store
 .git-main/
 .git-node-history/

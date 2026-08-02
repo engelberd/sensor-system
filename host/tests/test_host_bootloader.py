@@ -252,6 +252,32 @@ class HostBootloaderTests(unittest.TestCase):
             self.assertEqual(resolved.board_profile, "legacy_eval")
             self.assertTrue(resolved.timestamping_v2)
 
+    def test_board_revision_mismatch_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "refusing incompatible update"):
+            hb.verify_board_compatibility(
+                package_revision=2,
+                configured_revision=1,
+                reported_revision=1,
+                force=False,
+            )
+
+    def test_reported_board_must_match_inventory(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "does not match system config"):
+            hb.verify_board_compatibility(
+                package_revision=2,
+                configured_revision=1,
+                reported_revision=2,
+                force=False,
+            )
+
+    def test_force_allows_physically_verified_board_override(self) -> None:
+        hb.verify_board_compatibility(
+            package_revision=2,
+            configured_revision=1,
+            reported_revision=None,
+            force=True,
+        )
+
     def test_transport_codec_resync(self) -> None:
         payload = b"\x01\x02\x03"
         encoded = hb.TransportCodec.encode(

@@ -9,7 +9,7 @@ project(sensor_system_node C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-set(SENSOR_SYSTEM_BOARD_PROFILE "legacy_eval" CACHE STRING
+set(SENSOR_SYSTEM_BOARD_PROFILE "custom_v2" CACHE STRING
     "Node board profile: custom_v2 or legacy_eval")
 set_property(CACHE SENSOR_SYSTEM_BOARD_PROFILE PROPERTY STRINGS
     custom_v2 legacy_eval)
