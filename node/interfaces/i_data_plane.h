@@ -19,6 +19,7 @@ struct DataPlaneState {
     uint32_t queued_packets = 0;
     uint32_t packet_capacity = 0;
     uint32_t packet_overwrite_count = 0;
+    uint32_t encoding_saturation_count = 0;
 };
 
 class IDataPlane {

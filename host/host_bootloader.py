@@ -783,7 +783,10 @@ def resolve_config(args: argparse.Namespace) -> HostConfig:
 
 
 def validate_config(config: HostConfig, action: str, image_path: Optional[str]) -> Optional[str]:
-    if config.node <= 0 or config.node >= 0xFF:
+    # Address 0 is the application's unassigned identity and can be copied to
+    # boot metadata during a failed trial boot.  Maintenance must be able to
+    # address it explicitly so the node remains recoverable.
+    if config.node < 0 or config.node >= 0xFF:
         return f"invalid node id: {config.node}"
 
     if config.timeout <= 0:
@@ -1110,6 +1113,8 @@ def probe_device(ser: SerialLike, config: HostConfig) -> None:
 class ResolvedImage:
     path: Path
     version: int
+    board_profile: str | None = None
+    timestamping_v2: bool | None = None
 
 
 def resolve_update_image(image_path: Path, target_slot: int, version_override: int) -> ResolvedImage:
@@ -1130,7 +1135,18 @@ def resolve_update_image(image_path: Path, target_slot: int, version_override: i
         raise RuntimeError(f"update image not found: {resolved_path}")
 
     version = version_override if version_override != 0 else int(package.get("version", 0))
-    return ResolvedImage(path=resolved_path, version=version)
+    return ResolvedImage(
+        path=resolved_path,
+        version=version,
+        board_profile=(
+            str(package["board_profile"])
+            if package.get("board_profile") is not None else None
+        ),
+        timestamping_v2=(
+            bool(package["timestamping_v2"])
+            if package.get("timestamping_v2") is not None else None
+        ),
+    )
 
 
 def main() -> int:
@@ -1235,6 +1251,11 @@ def main() -> int:
                 )
 
             resolved_image = resolve_update_image(image_path, target_slot, args.version)
+            if resolved_image.board_profile is not None:
+                print(
+                    f"[PACKAGE] board_profile={resolved_image.board_profile} "
+                    f"timestamping_v2={resolved_image.timestamping_v2}"
+                )
             effective_chunk_size = min(config.chunk_size, packed_chunk)
             upload_image(
                 update_client,

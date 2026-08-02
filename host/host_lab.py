@@ -54,7 +54,8 @@ CAPABILITY_BURST_TIME_V2 = 1 << 0
 CAPABILITY_TIME_SYNC_V1 = 1 << 1
 SAMPLES_PER_PACKET = 32
 
-BUFFER_STATE_FORMAT = "<BBQQIIIQQQIII"
+BUFFER_STATE_FORMAT_V1 = "<BBQQIIIQQQIII"
+BUFFER_STATE_FORMAT = BUFFER_STATE_FORMAT_V1 + "I"
 STATS_FORMAT_V1 = "<BBQ" + ("I" * 12)
 STATS_FORMAT_V2 = "<BBQ" + ("I" * 12) + "Q" + ("I" * 3)
 STATS_FORMAT_V3 = "<BBQ" + ("I" * 12) + "Q" + ("I" * 9)
@@ -72,7 +73,8 @@ TIME_SYNC_COMMAND_FORMAT = "<BBIQ"
 TIME_SYNC_RESPONSE_FORMAT = "<BBBIQQQQ"
 PACKET_FRAME_BYTES = FRAME_HEADER_SIZE + struct.calcsize(BURST_HEADER_FORMAT) + (SAMPLES_PER_PACKET * 9) + FRAME_CRC_SIZE
 CONTROL_RESPONSE_BYTES = FRAME_HEADER_SIZE + 16 + FRAME_CRC_SIZE
-GET_CONFIG_FORMAT = "<BBBIHBiiiBHBB"
+GET_CONFIG_FORMAT_V1 = "<BBBIHBiiiBHBB"
+GET_CONFIG_FORMAT = "<BBBIHBiiiBHBBBBIQ"
 GET_TEMPERATURE_FORMAT = "<BBHf"
 
 SUPPORTED_ODR_HZ = (
@@ -160,6 +162,7 @@ class BufferState:
     queued_packets: int
     packet_capacity: int
     packet_overwrite_count: int
+    encoding_saturation_count: int = 0
 
 
 @dataclass
@@ -401,6 +404,10 @@ class ConfigView:
     act_threshold: int
     act_count: int
     high_pass_corner: int
+    filter_profile: int = 255
+    decimation_factor: int = OUTPUT_DECIMATION_FACTOR
+    config_revision: int = 0
+    config_effective_sample_seq: int = 0
 
 
 @dataclass
@@ -591,7 +598,12 @@ class ProtocolClient:
 
 
 def parse_buffer_state(payload: bytes) -> BufferState:
-    values = struct.unpack(BUFFER_STATE_FORMAT, payload[: struct.calcsize(BUFFER_STATE_FORMAT)])
+    buffer_format = (
+        BUFFER_STATE_FORMAT
+        if len(payload) >= struct.calcsize(BUFFER_STATE_FORMAT)
+        else BUFFER_STATE_FORMAT_V1
+    )
+    values = struct.unpack(buffer_format, payload[: struct.calcsize(buffer_format)])
     return BufferState(*values)
 
 
@@ -678,7 +690,16 @@ def parse_stats(payload: bytes) -> NodeStats:
 
 
 def parse_config_view(payload: bytes) -> ConfigView:
-    values = struct.unpack(GET_CONFIG_FORMAT, payload[: struct.calcsize(GET_CONFIG_FORMAT)])
+    if len(payload) >= struct.calcsize(GET_CONFIG_FORMAT):
+        values = struct.unpack(
+            GET_CONFIG_FORMAT,
+            payload[: struct.calcsize(GET_CONFIG_FORMAT)],
+        )
+        return ConfigView(*values)
+    values = struct.unpack(
+        GET_CONFIG_FORMAT_V1,
+        payload[: struct.calcsize(GET_CONFIG_FORMAT_V1)],
+    )
     return ConfigView(*values)
 
 

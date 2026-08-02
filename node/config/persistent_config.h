@@ -5,7 +5,7 @@
 #include "common/device_config.h"
 
 static constexpr uint32_t PERSISTENT_CONFIG_MAGIC = 0x43464732; // CFG2
-static constexpr uint16_t PERSISTENT_CONFIG_VERSION = 3;
+static constexpr uint16_t PERSISTENT_CONFIG_VERSION = 4;
 
 #pragma pack(push, 1)
 struct PersistentConfig {

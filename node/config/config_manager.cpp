@@ -94,6 +94,10 @@ const DeviceConfig& ConfigManager::current() const {
     return current_config_.device;
 }
 
+uint32_t ConfigManager::generation() const {
+    return current_config_.generation;
+}
+
 void ConfigManager::replace_device_config(const DeviceConfig& config) {
     current_config_.device = sanitize_device_config(config);
     finalize(current_config_);
@@ -130,6 +134,12 @@ void ConfigManager::set_high_pass_corner(uint8_t high_pass_corner) {
     finalize(current_config_);
 }
 
+void ConfigManager::set_filter_profile(uint8_t filter_profile) {
+    current_config_.device.filter_profile = filter_profile;
+    current_config_.device = sanitize_device_config(current_config_.device);
+    finalize(current_config_);
+}
+
 void ConfigManager::set_offset(int32_t x, int32_t y, int32_t z) {
     current_config_.device.offset_x = x;
     current_config_.device.offset_y = y;
@@ -150,6 +160,7 @@ DeviceConfig ConfigManager::make_default_device_config() {
     cfg.odr_hz = 250;
     cfg.range_g = 2;
     cfg.high_pass_corner = 0;
+    cfg.filter_profile = 1;
     cfg.offset_x = 0;
     cfg.offset_y = 0;
     cfg.offset_z = 0;
@@ -166,6 +177,10 @@ DeviceConfig ConfigManager::sanitize_device_config(DeviceConfig config) {
 
     if (config.high_pass_corner > 7) {
         config.high_pass_corner = 0;
+    }
+
+    if (config.filter_profile > 2) {
+        config.filter_profile = 1;
     }
 
     if (config.fifo_watermark < 3) {

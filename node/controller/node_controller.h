@@ -50,6 +50,8 @@ public:
     bool init() {
         const auto st = acquisition_.init(config_.current());
         init_status_ = st;
+        config_revision_ = config_.generation();
+        config_effective_sample_seq_ = acquisition_.stats().next_sample_seq;
         if (diagnostics_ != nullptr) {
             if (st == SensorStatus::Ok) {
                 diagnostics_->record(
@@ -439,6 +441,8 @@ private:
         }
 
         config_.replace_device_config(config);
+        ++config_revision_;
+        config_effective_sample_seq_ = acquisition_.stats().next_sample_seq;
         if (diagnostics_ != nullptr) {
             diagnostics_->record(
                 DiagnosticSeverity::Info,
@@ -466,6 +470,8 @@ private:
         }
 
         config_.replace_device_config(config);
+        ++config_revision_;
+        config_effective_sample_seq_ = acquisition_.stats().next_sample_seq;
         if (diagnostics_ != nullptr) {
             diagnostics_->record(
                 DiagnosticSeverity::Info,
@@ -646,6 +652,10 @@ private:
         resp.act_threshold = cfg.act_threshold;
         resp.act_count = cfg.act_count;
         resp.high_pass_corner = cfg.high_pass_corner;
+        resp.filter_profile = cfg.filter_profile;
+        resp.decimation_factor = DecimatingFilterX2::kDecimationFactor;
+        resp.config_revision = config_revision_;
+        resp.config_effective_sample_seq = config_effective_sample_seq_;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -982,6 +992,8 @@ private:
         DeviceConfig config = config_.current();
         config.baudrate = cmd->baudrate;
         config_.replace_device_config(config);
+        ++config_revision_;
+        config_effective_sample_seq_ = acquisition_.stats().next_sample_seq;
 
         deferred_baudrate_ = cmd->baudrate;
         deferred_action_ = DeferredAction::ApplyBaudRate;
@@ -1151,6 +1163,7 @@ private:
         resp.queued_packets = dp.queued_packets;
         resp.packet_capacity = dp.packet_capacity;
         resp.packet_overwrite_count = dp.packet_overwrite_count;
+        resp.encoding_saturation_count = dp.encoding_saturation_count;
 
         std::memcpy(out, &resp, sizeof(resp));
         out_len = sizeof(resp);
@@ -1619,4 +1632,6 @@ private:
     DeferredAction deferred_action_ = DeferredAction::None;
     uint32_t deferred_baudrate_ = 0;
     uint32_t temperature_error_streak_ = 0;
+    uint32_t config_revision_ = 0;
+    uint64_t config_effective_sample_seq_ = 0;
 };

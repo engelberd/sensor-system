@@ -18,6 +18,7 @@ public:
     void reset_to_defaults();
 
     const DeviceConfig& current() const;
+    uint32_t generation() const;
     void replace_device_config(const DeviceConfig& config);
 
     static DeviceConfig default_device_config();
@@ -27,6 +28,7 @@ public:
     void set_odr(uint16_t odr_hz);
     void set_range(uint8_t range_g);
     void set_high_pass_corner(uint8_t high_pass_corner);
+    void set_filter_profile(uint8_t filter_profile);
     void set_offset(int32_t x, int32_t y, int32_t z);
     void set_fifo_watermark(uint8_t fifo_watermark);
 

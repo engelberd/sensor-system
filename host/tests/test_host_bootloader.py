@@ -231,6 +231,27 @@ class HostBootloaderTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
+    def test_unassigned_node_zero_is_recoverable_in_maintenance(self) -> None:
+        config = hb.HostConfig(node=0)
+        self.assertIsNone(hb.validate_config(config, "hello", None))
+
+    def test_update_package_exposes_hardware_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "slot-a.bin"
+            image.write_bytes(b"firmware")
+            package = root / "update.json"
+            package.write_text(json.dumps({
+                "format": "sensor_system_node_update_package",
+                "version": 0x00000400,
+                "board_profile": "legacy_eval",
+                "timestamping_v2": True,
+                "slot_a": {"path": image.name},
+            }), encoding="utf-8")
+            resolved = hb.resolve_update_image(package, hb.SLOT_A, 0)
+            self.assertEqual(resolved.board_profile, "legacy_eval")
+            self.assertTrue(resolved.timestamping_v2)
+
     def test_transport_codec_resync(self) -> None:
         payload = b"\x01\x02\x03"
         encoded = hb.TransportCodec.encode(

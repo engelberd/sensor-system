@@ -68,6 +68,12 @@ class SupervisorWorkerCommandTests(unittest.TestCase):
         self.assertEqual(command[console_interval_index], "30.0")
         timing_mode_index = command.index("--timing-mode") + 1
         self.assertEqual(command[timing_mode_index], "legacy")
+        capture_schema_index = command.index("--capture-schema") + 1
+        self.assertEqual(command[capture_schema_index], "5")
+        channel_id_index = command.index("--channel-id") + 1
+        self.assertEqual(command[channel_id_index], "1")
+        sensor_label_index = command.index("--sensor-label") + 1
+        self.assertEqual(command[sensor_label_index], "A")
 
     def test_worker_command_passes_required_timing_mode(self) -> None:
         config = HostSystemConfig.from_dict(

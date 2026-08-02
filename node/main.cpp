@@ -256,10 +256,14 @@ int main() {
         sleep_ms(1);
     }
 
-    const bool boot_settings_synced =
-        boot::app_sync_boot_settings(config_manager.current().node_id);
     const bool boot_confirmed = controller_ready
         ? boot::app_confirm_boot_success()
+        : false;
+    // Never copy defaults from a failed configuration load into boot
+    // metadata.  In particular, a failed trial must not change the
+    // bootloader maintenance address to UNASSIGNED_NODE_ID.
+    const bool boot_settings_synced = controller_ready && loaded
+        ? boot::app_sync_boot_settings(config_manager.current().node_id)
         : false;
 
     printf("boot.sync() -> %s, boot.confirm() -> %s\n",

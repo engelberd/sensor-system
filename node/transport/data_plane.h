@@ -84,6 +84,7 @@ public:
         result.queued_packets = static_cast<uint32_t>(queue_.count());
         result.packet_capacity = static_cast<uint32_t>(queue_.capacity());
         result.packet_overwrite_count = queue_.overwrite_count();
+        result.encoding_saturation_count = encoding_saturation_count_;
 
         const PacketT* head = nullptr;
         if (queue_.peek_head(head) && head != nullptr) {
@@ -250,8 +251,20 @@ private:
         burst_destination_ = 0;
     }
 
-    static void encode_i24_be(int32_t value, uint8_t* out) {
-        const uint32_t v = static_cast<uint32_t>(value) & 0x00FFFFFFu;
+    void encode_i24_be(int32_t value, uint8_t* out) {
+        constexpr int32_t kI24Min = -0x00800000;
+        constexpr int32_t kI24Max = 0x007FFFFF;
+        int32_t clamped = value;
+        if (value < kI24Min) {
+            clamped = kI24Min;
+        } else if (value > kI24Max) {
+            clamped = kI24Max;
+        }
+        if (clamped != value && encoding_saturation_count_ != UINT32_MAX) {
+            ++encoding_saturation_count_;
+        }
+
+        const uint32_t v = static_cast<uint32_t>(clamped) & 0x00FFFFFFu;
         out[0] = static_cast<uint8_t>((v >> 16) & 0xFF);
         out[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
         out[2] = static_cast<uint8_t>(v & 0xFF);
@@ -408,4 +421,5 @@ private:
     uint8_t burst_destination_ = 0;
     uint64_t boot_epoch_ = 0;
     bool timing_v2_enabled_ = false;
+    uint32_t encoding_saturation_count_ = 0;
 };

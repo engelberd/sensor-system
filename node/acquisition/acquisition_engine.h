@@ -435,7 +435,9 @@ private:
             return st;
         }
 
-        resampler_.set_profile(kDefaultFilterProfile);
+        resampler_.set_profile(
+            static_cast<DecimationFilterProfile>(config.filter_profile)
+        );
         return SensorStatus::Ok;
     }
 
@@ -913,8 +915,6 @@ private:
     }
 
 private:
-    static constexpr DecimationFilterProfile kDefaultFilterProfile =
-        DecimationFilterProfile::Balanced;
     static constexpr uint32_t kLegacyPollingIntervalMs = 8;
     static constexpr uint32_t kSoftRecoverNoDataThreshold = 32;
     static constexpr uint32_t kSoftRecoverCooldownMs = 1000;

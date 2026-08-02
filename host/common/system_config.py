@@ -18,6 +18,7 @@ class StorageConfig:
     format: str = "hdf5"
     compression: str = "gzip"
     window_seconds: int = 600
+    capture_schema: int = 5
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,11 @@ class NodeConfig:
     offset_x: int | None = None
     offset_y: int | None = None
     offset_z: int | None = None
+    sensor_label: str | None = None
+    sensor_id: str | None = None
+    hardware_id: str | None = None
+    filter_profile: int | None = None
+    decimation_factor: int | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,7 @@ class ChannelConfig:
     idle_sleep_s: float = 0.01
     error_sleep_s: float = 0.10
     timing_mode: str = "legacy"
+    channel_id: int | None = None
 
     @property
     def node_ids(self) -> tuple[int, ...]:
@@ -127,6 +134,20 @@ class HostSystemConfig:
                     f"channel '{name}' timing_mode 'required' requires "
                     "HDF5 storage"
                 )
+            channel_id = int(raw.get("channel_id", index + 1))
+            if not 1 <= channel_id <= 8:
+                raise ValueError(
+                    f"channel '{name}' channel_id must be in range 1..8"
+                )
+            capture_schema = int(
+                storage_data.get("capture_schema", StorageConfig.capture_schema)
+            )
+            if capture_schema not in {1, 5}:
+                raise ValueError("storage.capture_schema must be 1 or 5")
+            if capture_schema == 1 and len(nodes) != 1:
+                raise ValueError(
+                    f"channel '{name}' Capture v1 requires exactly one node"
+                )
             channels.append(
                 ChannelConfig(
                     name=name,
@@ -148,6 +169,7 @@ class HostSystemConfig:
                     idle_sleep_s=float(raw.get("idle_sleep_s", 0.01)),
                     error_sleep_s=float(raw.get("error_sleep_s", 0.10)),
                     timing_mode=timing_mode,
+                    channel_id=channel_id,
                 )
             )
 
@@ -162,6 +184,12 @@ class HostSystemConfig:
                 format=str(storage_data.get("format", StorageConfig.format)),
                 compression=str(storage_data.get("compression", StorageConfig.compression)),
                 window_seconds=int(storage_data.get("window_seconds", StorageConfig.window_seconds)),
+                capture_schema=int(
+                    storage_data.get(
+                        "capture_schema",
+                        StorageConfig.capture_schema,
+                    )
+                ),
             ),
             supervisor=SupervisorConfig(
                 status_file=str(supervisor_data.get("status_file", SupervisorConfig.status_file)),
@@ -284,6 +312,11 @@ class HostSystemConfig:
                 offset_x=int(raw["offset_x"]) if raw.get("offset_x") is not None else None,
                 offset_y=int(raw["offset_y"]) if raw.get("offset_y") is not None else None,
                 offset_z=int(raw["offset_z"]) if raw.get("offset_z") is not None else None,
+                sensor_label=str(raw["sensor_label"]) if raw.get("sensor_label") is not None else None,
+                sensor_id=str(raw["sensor_id"]) if raw.get("sensor_id") is not None else None,
+                hardware_id=str(raw["hardware_id"]) if raw.get("hardware_id") is not None else None,
+                filter_profile=int(raw["filter_profile"]) if raw.get("filter_profile") is not None else None,
+                decimation_factor=int(raw["decimation_factor"]) if raw.get("decimation_factor") is not None else None,
             )
             if node.enabled:
                 nodes.append(node)

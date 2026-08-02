@@ -11,6 +11,7 @@ struct DeviceConfig {
     uint16_t odr_hz = 250;
     uint8_t range_g = 2;
     uint8_t high_pass_corner = 0;
+    uint8_t filter_profile = 1; // DecimationFilterProfile::Balanced
 
     int32_t offset_x = 0;
     int32_t offset_y = 0;

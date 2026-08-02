@@ -3,6 +3,34 @@
 Wersjonowanie projektu stosuje format `MAJOR.MINOR.PATCH`. Numer wydania jest
 wspólny dla narzędzi hosta i firmware'u.
 
+## [0.4.0] - 2026-08-02
+
+### Dodano
+
+- Kanoniczny Capture HDF5 v1 z surowym signed-24 w kontenerze `int32`,
+  dziennikiem commitów, czasem próbek, niepewnością, konfiguracją i jakością.
+- Minimalny Archive HDF5 v1, deterministyczny kompaktor, walidatory oraz
+  manifest SHA-256.
+- Jawne tożsamości kanałów 1–8 i tymczasowe etykiety sensorów A–H.
+- Raportowanie profilu filtra, decymacji, rewizji konfiguracji oraz licznika
+  nasyceń kodowania signed-24.
+
+### Poprawiono
+
+- Deduplikacja obejmuje całą sesję Capture i zamknięte okna, dzięki czemu
+  retransmisja nie tworzy kopii `late`/`unresolved`.
+- Trwała konfiguracja v3 jest migrowana do v4 bez utraty adresu i ustawień.
+- Produkcyjny build domyślnie używa faktycznego profilu `legacy_eval` z
+  timestampingiem DRDY v2, a pakiet aktualizacyjny jawnie zapisuje oba parametry.
+- Aktualizacja A/B pozostaje odzyskiwalna, gdy adres serwisowy ma wartość 0.
+
+### Wdrożenie
+
+- Capture v1 działa w trybie fail-closed i pozostaje za przełącznikiem
+  `storage.capture_schema`; aktywacja następuje po aktualizacji firmware'u.
+- Próba end-to-end na linii D objęła firmware v0.4.0, Capture v1, Archive v1 i
+  walidację SHA-256.
+
 ## [0.3.10] - 2026-07-15
 
 ### Dodano

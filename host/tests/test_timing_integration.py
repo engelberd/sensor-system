@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import unittest
 
 from host.common.clock_models import ClockState, TimeSyncObservation
-from host.host_recorder import RecorderNode, SampleRecord, apply_packet_timing
+from host.host_recorder import apply_packet_timing
+from host.recorder.model import RecorderNode, SampleRecord
 
 
 class TimingPipelineIntegrationTests(unittest.TestCase):
@@ -77,9 +78,9 @@ class TimingPipelineIntegrationTests(unittest.TestCase):
             SampleRecord(
                 node_id=1,
                 sample_seq=packet.first_sample_seq + index,
-                x=0.0,
-                y=0.0,
-                z=0.0,
+                raw_x=0,
+                raw_y=0,
+                raw_z=0,
                 packet_seq=77,
                 device_time_us=first_device_us + index * period_us,
                 boot_epoch=self.BOOT_EPOCH,
@@ -131,10 +132,11 @@ class TimingPipelineIntegrationTests(unittest.TestCase):
             SampleRecord(
                 node_id=1,
                 sample_seq=sample.sample_seq,
-                x=sample.x,
-                y=sample.y,
-                z=sample.z,
+                raw_x=sample.raw_x,
+                raw_y=sample.raw_y,
+                raw_z=sample.raw_z,
                 packet_seq=sample.packet_seq,
+                range_g=sample.range_g,
                 device_time_us=sample.device_time_us,
                 boot_epoch=sample.boot_epoch,
                 timing_segment_id=sample.timing_segment_id,

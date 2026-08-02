@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-import csv
-import json
 import math
 import os
 import socket
@@ -12,7 +10,6 @@ import signal
 import struct
 import sys
 import time
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
@@ -90,10 +87,7 @@ from host.common.runtime_status import (
 )
 from host.common.clock_models import (
     ClockState,
-    NodeHostClockModel,
-    SampleClockModel,
     TimeSyncObservation,
-    UtcCorrelationModel,
 )
 from host.host_configurator import (
     CMD_GET_DIAGNOSTIC_INFO,
@@ -108,84 +102,39 @@ from host.host_configurator import (
 )
 from host.live_web import LiveBuffer, LiveGap, LiveSample, LiveServer
 from host.common.version import PROJECT_VERSION
+from host.recorder.capture_writers import CAPTURE_SCHEMA_VERSION
+from host.recorder.capture_windowing import CaptureV1WindowedWriter
+from host.recorder.contracts import (
+    EventSeverity,
+    QualityEventCode,
+    SensorIdentity,
+)
+from host.recorder.decoder import (
+    SAMPLE_PAYLOAD_OFFSET,
+    decode_i24_be,
+    decode_packet_samples,
+    raw_lsb_to_m_s2,
+)
+from host.recorder.model import (
+    QualityEventRecord,
+    RecorderNode,
+    SampleRecord,
+    TemperatureRecord,
+)
+from host.recorder.ports import BaseWriter
+from host.recorder.windowing import (
+    AcquisitionWindowedWriter,
+    WindowedWriter,
+    make_single_writer as make_window_file_writer,
+)
 
 
-SAMPLE_PAYLOAD_OFFSET = struct.calcsize(BURST_HEADER_FORMAT)
-RECORDER_SCHEMA_VERSION = 5
+RECORDER_SCHEMA_VERSION = CAPTURE_SCHEMA_VERSION
 RECORDER_VERSION = PROJECT_VERSION
 SAMPLE_FLOW_STALL_CONFIRM_S = 2.0
 DEFAULT_WINDOW_SECONDS = 600
-STANDARD_GRAVITY_M_S2 = 9.80665
 GET_VERSION_FORMAT = "<BBBBBB"
 CMD_GET_VERSION = 0x04
-
-
-@dataclass
-class SampleRecord:
-    node_id: int
-    sample_seq: int
-    x: float
-    y: float
-    z: float
-    packet_seq: int
-    device_time_us: Optional[int] = None
-    boot_epoch: int = 0
-    timing_segment_id: int = 0
-    timing_quality_flags: int = 0
-    acquisition_utc_ns: Optional[int] = None
-    timing_uncertainty_ns: Optional[int] = None
-
-
-@dataclass
-class TemperatureRecord:
-    node_id: int
-    sample_seq_anchor: int
-    temp_raw: int
-    temp_celsius: float
-
-
-@dataclass
-class RecorderNode:
-    node_id: int
-    config: ConfigView
-    firmware_version: str | None = None
-    committed_sample_seq: int = 0
-    expected_sample_seq: int = 0
-    last_written_seq: int = 0
-    samples_written: int = 0
-    bursts_ok: int = 0
-    bursts_no_data: int = 0
-    bursts_failed: int = 0
-    gaps_detected: int = 0
-    empty_polls: int = 0
-    last_stats: Optional[NodeStats] = None
-    next_temperature_at: float = 0.0
-    online: bool = False
-    last_temperature_c: Optional[float] = None
-    last_temperature_unix_ns: Optional[int] = None
-    last_temperature_window_start: Optional[datetime] = None
-    next_window_temperature_retry_at: float = 0.0
-    baseline_sensor_loss: int = 0
-    baseline_rx_overflow_count: int = 0
-    baseline_packet_overwrite_count: int = 0
-    instant_samples_per_second_5s: Optional[float] = None
-    rate_stability_percent_5s: Optional[float] = None
-    rate_history: deque[tuple[float, int]] | None = None
-    sample_flow_state: str = "unknown"
-    sample_flow_zero_since: Optional[float] = None
-    next_diagnostic_event_id: int = 1
-    diagnostic_dropped_events: int = 0
-    diagnostic_clock_offset_ms: int | None = None
-    capabilities: object | None = None
-    sample_clock: SampleClockModel = field(default_factory=SampleClockModel)
-    node_host_clock: NodeHostClockModel = field(
-        default_factory=NodeHostClockModel
-    )
-    utc_clock: UtcCorrelationModel = field(
-        default_factory=UtcCorrelationModel
-    )
-    next_time_sync_at: float = 0.0
-    next_sync_id: int = 1
 
 
 class StopFlag:
@@ -202,1005 +151,6 @@ class StopFlag:
         except ValueError:
             self.signal_name = str(signum)
 
-
-class BaseWriter:
-    def add_node(self, node: RecorderNode) -> None:
-        raise NotImplementedError
-
-    def write_samples(self, node_id: int, samples: list[SampleRecord]) -> None:
-        raise NotImplementedError
-
-    def write_temperature(self, node_id: int, records: list[TemperatureRecord]) -> None:
-        raise NotImplementedError
-
-    def write_gap(
-        self,
-        node_id: int,
-        expected_sample_seq: int,
-        received_sample_seq: int,
-        packet_seq: int,
-    ) -> None:
-        raise NotImplementedError
-
-    def flush(self) -> None:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        raise NotImplementedError
-
-    def write_clock_sync(
-        self,
-        node_id: int,
-        observation: TimeSyncObservation,
-        accepted: bool,
-    ) -> None:
-        del node_id, observation, accepted
-
-
-class CsvWriter(BaseWriter):
-    def __init__(self, path: Path, metadata: dict[str, object], append: bool = False) -> None:
-        self.path = path
-        self.append_mode = append
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.metadata = metadata
-        self.node_metadata: list[dict[str, object]] = []
-        self.meta_path = self.path.with_suffix(self.path.suffix + ".meta.json")
-        self.temperature_path = self.path.with_suffix(self.path.suffix + ".temperature.csv")
-        self.gaps_path = self.path.with_suffix(self.path.suffix + ".gaps.csv")
-        self.handle = self.path.open("a" if append else "w", newline="", encoding="utf-8")
-        self.csv = csv.writer(self.handle)
-        self.temperature_handle = self.temperature_path.open("a" if append else "w", newline="", encoding="utf-8")
-        self.temperature_csv = csv.writer(self.temperature_handle)
-        self.gaps_handle = self.gaps_path.open("a" if append else "w", newline="", encoding="utf-8")
-        self.gaps_csv = csv.writer(self.gaps_handle)
-        if not append or self.path.stat().st_size == 0:
-            self.csv.writerow([
-                "node_id",
-                "sample_seq",
-                "x",
-                "y",
-                "z",
-                "packet_seq",
-            ])
-        if not append or self.temperature_path.stat().st_size == 0:
-            self.temperature_csv.writerow([
-                "node_id",
-                "sample_seq_anchor",
-                "temp_raw",
-                "temp_celsius",
-            ])
-        if not append or self.gaps_path.stat().st_size == 0:
-            self.gaps_csv.writerow([
-                "node_id",
-                "expected_sample_seq",
-                "received_sample_seq",
-                "packet_seq",
-            ])
-
-    def add_node(self, node: RecorderNode) -> None:
-        self.node_metadata.append({
-            "node_id": node.node_id,
-            "sensor_odr_hz": node.config.odr_hz,
-            "output_odr_hz": effective_output_odr_hz(node.config.odr_hz),
-            "range_g": node.config.range_g,
-            "accel_unit": "m/s^2",
-            "high_pass_corner": node.config.high_pass_corner,
-            "fifo_watermark": node.config.fifo_watermark,
-            "offset_x": node.config.offset_x,
-            "offset_y": node.config.offset_y,
-            "offset_z": node.config.offset_z,
-            "baseline_sensor_loss": node.baseline_sensor_loss,
-            "baseline_rx_overflow_count": node.baseline_rx_overflow_count,
-            "baseline_packet_overwrite_count": node.baseline_packet_overwrite_count,
-        })
-        self.write_metadata()
-
-    def write_metadata(self) -> None:
-        payload = dict(self.metadata)
-        payload["nodes"] = self.node_metadata
-        self.meta_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-
-    def write_samples(self, node_id: int, samples: list[SampleRecord]) -> None:
-        del node_id
-        for sample in samples:
-            self.csv.writerow([
-                sample.node_id,
-                sample.sample_seq,
-                sample.x,
-                sample.y,
-                sample.z,
-                sample.packet_seq,
-            ])
-
-    def write_temperature(self, node_id: int, records: list[TemperatureRecord]) -> None:
-        del node_id
-        for record in records:
-            self.temperature_csv.writerow([
-                record.node_id,
-                record.sample_seq_anchor,
-                record.temp_raw,
-                record.temp_celsius,
-            ])
-
-    def write_gap(
-        self,
-        node_id: int,
-        expected_sample_seq: int,
-        received_sample_seq: int,
-        packet_seq: int,
-    ) -> None:
-        self.gaps_csv.writerow([
-            node_id,
-            expected_sample_seq,
-            received_sample_seq,
-            packet_seq,
-        ])
-
-    def flush(self) -> None:
-        self.handle.flush()
-        self.temperature_handle.flush()
-        self.gaps_handle.flush()
-        os.fsync(self.handle.fileno())
-        os.fsync(self.temperature_handle.fileno())
-        os.fsync(self.gaps_handle.fileno())
-
-    def close(self) -> None:
-        self.flush()
-        self.handle.close()
-        self.temperature_handle.close()
-        self.gaps_handle.close()
-
-
-class Hdf5Writer(BaseWriter):
-    def __init__(self, path: Path, metadata: dict[str, object], compression: str, append: bool = False) -> None:
-        try:
-            import h5py  # type: ignore
-            import numpy as np  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "HDF5 output requires numpy+h5py. Install them with: "
-                "host/.venv/bin/python -m pip install -r host/requirements-recorder.txt"
-            ) from exc
-
-        self.h5py = h5py
-        self.np = np
-        self.path = path
-        self.append_mode = append
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.file = h5py.File(self.path, "a" if append else "w")
-        except PermissionError as exc:
-            raise RuntimeError(
-                f"cannot write HDF5 output to '{self.path}'. "
-                "Choose a writable output directory."
-            ) from exc
-        except OSError as exc:
-            raise RuntimeError(f"cannot prepare HDF5 output '{self.path}': {exc}") from exc
-        self.nodes_group = self.file.require_group("nodes")
-        self.datasets: dict[int, object] = {}
-        self.temperature_datasets: dict[int, object] = {}
-        self.gap_datasets: dict[int, object] = {}
-        self.anchor_datasets: dict[int, object] = {}
-        self.clock_sync_datasets: dict[int, object] = {}
-        self.seen_sample_keys: dict[int, set[tuple[int, int]]] = {}
-        self.compression = None if compression == "none" else compression
-        ingest_dtype = self.np.dtype([
-            ("node_id", "u1"),
-            ("boot_epoch", "<u8"),
-            ("first_sample_seq", "<u8"),
-            ("last_sample_seq", "<u8"),
-            ("sample_start", "<u8"),
-            ("sample_end", "<u8"),
-            ("anchor_start", "<u8"),
-            ("anchor_end", "<u8"),
-        ])
-        self.ingest_batches = self.file.require_dataset(
-            "ingest_batches",
-            shape=(0,),
-            maxshape=(None,),
-            chunks=(256,),
-            dtype=ingest_dtype,
-            compression=self.compression,
-        )
-
-        self.file.attrs["schema_version"] = RECORDER_SCHEMA_VERSION
-        self.file.attrs["complete"] = False
-        for key, value in metadata.items():
-            self.file.attrs[key] = value
-
-    def add_node(self, node: RecorderNode) -> None:
-        group = self.nodes_group.require_group(str(node.node_id))
-        group.attrs["node_id"] = node.node_id
-        group.attrs["sensor_odr_hz"] = node.config.odr_hz
-        group.attrs["output_odr_hz"] = effective_output_odr_hz(node.config.odr_hz)
-        group.attrs["range_g"] = node.config.range_g
-        group.attrs["accel_unit"] = "m/s^2"
-        group.attrs["high_pass_corner"] = node.config.high_pass_corner
-        group.attrs["fifo_watermark"] = node.config.fifo_watermark
-        group.attrs["offset_x"] = node.config.offset_x
-        group.attrs["offset_y"] = node.config.offset_y
-        group.attrs["offset_z"] = node.config.offset_z
-        group.attrs["baseline_sensor_loss"] = node.baseline_sensor_loss
-        group.attrs["baseline_rx_overflow_count"] = node.baseline_rx_overflow_count
-        group.attrs["baseline_packet_overwrite_count"] = node.baseline_packet_overwrite_count
-
-        sample_dtype = self.np.dtype([
-            ("sample_seq", "<u8"),
-            ("boot_epoch", "<u8"),
-            ("timing_segment_id", "<u4"),
-            ("x", "<f4"),
-            ("y", "<f4"),
-            ("z", "<f4"),
-            ("packet_seq", "<u4"),
-        ])
-        temperature_dtype = self.np.dtype([
-            ("sample_seq_anchor", "<u8"),
-            ("temp_raw", "<u2"),
-            ("temp_celsius", "<f4"),
-        ])
-        gaps_dtype = self.np.dtype([
-            ("expected_sample_seq", "<u8"),
-            ("received_sample_seq", "<u8"),
-            ("packet_seq", "<u4"),
-        ])
-        anchors_dtype = self.np.dtype([
-            ("boot_epoch", "<u8"),
-            ("timing_segment_id", "<u4"),
-            ("packet_seq", "<u4"),
-            ("first_sample_seq", "<u8"),
-            ("sample_count", "<u2"),
-            ("first_device_time_us", "<u8"),
-            ("last_device_time_us", "<u8"),
-            ("first_acquisition_utc_ns", "<u8"),
-            ("last_acquisition_utc_ns", "<u8"),
-            ("timing_quality_flags", "<u2"),
-            ("max_uncertainty_ns", "<u8"),
-        ])
-        clock_sync_dtype = self.np.dtype([
-            ("boot_epoch", "<u8"),
-            ("sync_id", "<u4"),
-            ("t1_host_monotonic_ns", "<u8"),
-            ("t2_node_rx_us", "<u8"),
-            ("t3_node_tx_us", "<u8"),
-            ("t4_host_monotonic_ns", "<u8"),
-            ("network_rtt_ns", "<i8"),
-            ("accepted", "u1"),
-        ])
-        dataset = group.require_dataset(
-            "samples",
-            shape=(0,),
-            maxshape=(None,),
-            chunks=(4096,),
-            dtype=sample_dtype,
-            compression=self.compression,
-        )
-        temperature_dataset = group.require_dataset(
-            "temperature",
-            shape=(0,),
-            maxshape=(None,),
-            chunks=(256,),
-            dtype=temperature_dtype,
-            compression=self.compression,
-        )
-        gaps_dataset = group.require_dataset(
-            "gaps",
-            shape=(0,),
-            maxshape=(None,),
-            chunks=(256,),
-            dtype=gaps_dtype,
-            compression=self.compression,
-        )
-        anchors_dataset = group.require_dataset(
-            "time_anchors",
-            shape=(0,),
-            maxshape=(None,),
-            chunks=(256,),
-            dtype=anchors_dtype,
-            compression=self.compression,
-        )
-        clock_sync_dataset = group.require_dataset(
-            "clock_sync",
-            shape=(0,),
-            maxshape=(None,),
-            chunks=(256,),
-            dtype=clock_sync_dtype,
-            compression=self.compression,
-        )
-        if self.append_mode:
-            sample_end = 0
-            anchor_end = 0
-            for batch in self.ingest_batches:
-                if int(batch["node_id"]) != node.node_id:
-                    continue
-                sample_end = max(sample_end, int(batch["sample_end"]))
-                anchor_end = max(anchor_end, int(batch["anchor_end"]))
-            if dataset.shape[0] > sample_end:
-                dataset.resize((sample_end,))
-            if anchors_dataset.shape[0] > anchor_end:
-                anchors_dataset.resize((anchor_end,))
-        self.datasets[node.node_id] = dataset
-        self.temperature_datasets[node.node_id] = temperature_dataset
-        self.gap_datasets[node.node_id] = gaps_dataset
-        self.anchor_datasets[node.node_id] = anchors_dataset
-        self.clock_sync_datasets[node.node_id] = clock_sync_dataset
-        self.seen_sample_keys[node.node_id] = {
-            (int(record["boot_epoch"]), int(record["sample_seq"]))
-            for record in dataset
-        }
-
-    def write_samples(self, node_id: int, samples: list[SampleRecord]) -> None:
-        if not samples:
-            return
-
-        seen = self.seen_sample_keys[node_id]
-        samples = [
-            sample
-            for sample in samples
-            if (sample.boot_epoch, sample.sample_seq) not in seen
-        ]
-        if not samples:
-            return
-        dataset = self.datasets[node_id]
-        offset = dataset.shape[0]
-        dataset.resize((offset + len(samples),))
-
-        arr = self.np.empty(len(samples), dtype=dataset.dtype)
-        for i, sample in enumerate(samples):
-            arr[i] = (
-                sample.sample_seq,
-                sample.boot_epoch,
-                sample.timing_segment_id,
-                sample.x,
-                sample.y,
-                sample.z,
-                sample.packet_seq,
-            )
-
-        dataset[offset:offset + len(samples)] = arr
-        seen.update(
-            (sample.boot_epoch, sample.sample_seq)
-            for sample in samples
-        )
-
-        anchors = self.anchor_datasets[node_id]
-        anchor_offset = anchors.shape[0]
-        timed_samples = [
-            sample for sample in samples
-            if sample.device_time_us is not None and sample.boot_epoch != 0
-        ]
-        timing_fragments: list[list[SampleRecord]] = []
-        for sample in timed_samples:
-            if not timing_fragments:
-                timing_fragments.append([sample])
-                continue
-            previous = timing_fragments[-1][-1]
-            same_fragment = (
-                sample.boot_epoch == previous.boot_epoch
-                and sample.timing_segment_id == previous.timing_segment_id
-                and sample.packet_seq == previous.packet_seq
-                and sample.timing_quality_flags
-                == previous.timing_quality_flags
-                and sample.sample_seq == previous.sample_seq + 1
-            )
-            if same_fragment:
-                timing_fragments[-1].append(sample)
-            else:
-                timing_fragments.append([sample])
-        if timing_fragments:
-            anchors.resize((anchor_offset + len(timing_fragments),))
-            anchor_records = []
-            for fragment in timing_fragments:
-                first = fragment[0]
-                last = fragment[-1]
-                max_uncertainty_ns = max(
-                    sample.timing_uncertainty_ns or 0
-                    for sample in fragment
-                )
-                anchor_records.append((
-                    first.boot_epoch,
-                    first.timing_segment_id,
-                    first.packet_seq,
-                    first.sample_seq,
-                    len(fragment),
-                    first.device_time_us,
-                    last.device_time_us,
-                    first.acquisition_utc_ns or 0,
-                    last.acquisition_utc_ns or 0,
-                    first.timing_quality_flags,
-                    max_uncertainty_ns,
-                ))
-            anchors[
-                anchor_offset:anchor_offset + len(timing_fragments)
-            ] = self.np.array(
-                anchor_records,
-                dtype=anchors.dtype,
-            )
-
-        # Durably persist datasets before publishing the ingest marker.
-        self.flush()
-        marker_offset = self.ingest_batches.shape[0]
-        self.ingest_batches.resize((marker_offset + 1,))
-        self.ingest_batches[marker_offset:marker_offset + 1] = self.np.array(
-            [(
-                node_id,
-                samples[0].boot_epoch,
-                samples[0].sample_seq,
-                samples[-1].sample_seq,
-                offset,
-                offset + len(samples),
-                anchor_offset,
-                anchors.shape[0],
-            )],
-            dtype=self.ingest_batches.dtype,
-        )
-        self.flush()
-
-    def write_temperature(self, node_id: int, records: list[TemperatureRecord]) -> None:
-        if not records:
-            return
-
-        dataset = self.temperature_datasets[node_id]
-        offset = dataset.shape[0]
-        dataset.resize((offset + len(records),))
-
-        arr = self.np.empty(len(records), dtype=dataset.dtype)
-        for i, record in enumerate(records):
-            arr[i] = (
-                record.sample_seq_anchor,
-                record.temp_raw,
-                record.temp_celsius,
-            )
-
-        dataset[offset:offset + len(records)] = arr
-
-    def write_gap(
-        self,
-        node_id: int,
-        expected_sample_seq: int,
-        received_sample_seq: int,
-        packet_seq: int,
-    ) -> None:
-        dataset = self.gap_datasets[node_id]
-        offset = dataset.shape[0]
-        dataset.resize((offset + 1,))
-        dataset[offset:offset + 1] = self.np.array(
-            [(expected_sample_seq, received_sample_seq, packet_seq)],
-            dtype=dataset.dtype,
-        )
-
-    def flush(self) -> None:
-        self.file.flush()
-        try:
-            handle = self.file.id.get_vfd_handle()
-            if isinstance(handle, int):
-                os.fsync(handle)
-        except (AttributeError, OSError, TypeError):
-            pass
-
-    def write_clock_sync(
-        self,
-        node_id: int,
-        observation: TimeSyncObservation,
-        accepted: bool,
-    ) -> None:
-        dataset = self.clock_sync_datasets[node_id]
-        offset = dataset.shape[0]
-        dataset.resize((offset + 1,))
-        dataset[offset:offset + 1] = self.np.array(
-            [(
-                observation.boot_epoch,
-                observation.sync_id,
-                observation.t1_host_monotonic_ns,
-                observation.t2_node_rx_us,
-                observation.t3_node_tx_us,
-                observation.t4_host_monotonic_ns,
-                observation.network_rtt_ns,
-                1 if accepted else 0,
-            )],
-            dtype=dataset.dtype,
-        )
-
-    def finalize(self) -> None:
-        self.file.attrs["complete"] = True
-        self.file.attrs["finalized_utc"] = (
-            datetime.now(timezone.utc).isoformat()
-        )
-        self.flush()
-
-    def close(self) -> None:
-        self.flush()
-        self.file.close()
-
-
-class WindowedWriter(BaseWriter):
-    def __init__(
-        self,
-        args: argparse.Namespace,
-        metadata: dict[str, object],
-        nodes: list[RecorderNode],
-    ) -> None:
-        self.args = args
-        self.metadata = metadata
-        self.nodes = nodes
-        self.window_timezone = args.window_timezone
-        self.current_window_start: Optional[datetime] = None
-        self.current_window_end: Optional[datetime] = None
-        self.current_path: Optional[Path] = None
-        self.writer: Optional[BaseWriter] = None
-
-    def aligned_window_start(self, when_utc: datetime) -> datetime:
-        when_local = when_utc.astimezone(self.window_timezone)
-        offset = when_local.utcoffset() or timedelta(0)
-        aligned_ts = ((when_utc.timestamp() + offset.total_seconds()) // self.args.window_seconds) * self.args.window_seconds
-        return datetime.fromtimestamp(aligned_ts - offset.total_seconds(), tz=timezone.utc)
-
-    def current_window(self, now_utc: Optional[datetime] = None) -> datetime:
-        resolved_now = now_utc or datetime.now(timezone.utc)
-        if resolved_now.tzinfo is None:
-            resolved_now = resolved_now.replace(tzinfo=timezone.utc)
-        if (
-            self.current_window_start is not None
-            and self.current_window_end is not None
-            and resolved_now < self.current_window_end
-        ):
-            return self.current_window_start
-        return self.aligned_window_start(resolved_now)
-
-    def window_end_for(self, created_at: datetime) -> datetime:
-        return self.aligned_window_start(created_at) + timedelta(seconds=self.args.window_seconds)
-
-    def window_path_for(self, created_at: datetime) -> Path:
-        suffix = ".h5" if self.args.format == "hdf5" else ".csv"
-        created_at_local = created_at.astimezone(self.window_timezone)
-        file_label = created_at_local.strftime("%Y-%m-%d_%H-%M-%S")
-        day_dir = Path(self.args.output_dir) / created_at_local.strftime("%Y-%m-%d")
-        return day_dir / f"{self.args.channel_name}_{file_label}{suffix}"
-
-    def resolve_new_path(self, created_at: datetime) -> Path:
-        candidate = self.window_path_for(created_at)
-        if not candidate.exists():
-            return candidate
-        suffix = candidate.suffix
-        stem = candidate.stem
-        for index in range(2, 1000):
-            next_candidate = candidate.with_name(f"{stem}_{index:02d}{suffix}")
-            if not next_candidate.exists():
-                return next_candidate
-        raise RuntimeError(f"cannot allocate unique output path for '{candidate}'")
-
-    def ensure_writer(self, now_utc: Optional[datetime] = None) -> BaseWriter:
-        resolved_now = now_utc or datetime.now(timezone.utc)
-        if resolved_now.tzinfo is None:
-            resolved_now = resolved_now.replace(tzinfo=timezone.utc)
-        if (
-            self.writer is not None
-            and self.current_window_end is not None
-            and resolved_now < self.current_window_end
-        ):
-            return self.writer
-
-        if self.writer is not None:
-            if isinstance(self.writer, Hdf5Writer):
-                self.writer.finalize()
-            self.writer.close()
-
-        window_start = self.aligned_window_start(resolved_now)
-        window_end = self.window_end_for(window_start)
-        path = self.resolve_new_path(window_start)
-        window_metadata = dict(self.metadata)
-        window_start_local = window_start.astimezone(self.window_timezone)
-        window_end_local = window_end.astimezone(self.window_timezone)
-        window_metadata["window_start_utc"] = window_start.isoformat()
-        window_metadata["window_end_utc"] = window_end.isoformat()
-        window_metadata["window_timezone"] = self.args.window_timezone_name
-        window_metadata["window_start_local"] = window_start_local.isoformat()
-        window_metadata["window_end_local"] = window_end_local.isoformat()
-        window_metadata["file_created_utc"] = datetime.now(timezone.utc).isoformat()
-        self.writer = make_single_writer(self.args, window_metadata, path, append=False)
-        self.current_window_start = window_start
-        self.current_window_end = window_end
-        self.current_path = path
-        for node in self.nodes:
-            self.writer.add_node(node)
-        print(f"[FILE] {path} (new)")
-        return self.writer
-
-    def add_node(self, node: RecorderNode) -> None:
-        del node
-        self.ensure_writer()
-
-    def write_samples(self, node_id: int, samples: list[SampleRecord]) -> None:
-        writer = self.ensure_writer()
-        writer.write_samples(node_id, samples)
-
-    def write_temperature(self, node_id: int, records: list[TemperatureRecord]) -> None:
-        writer = self.ensure_writer()
-        writer.write_temperature(node_id, records)
-
-    def write_gap(
-        self,
-        node_id: int,
-        expected_sample_seq: int,
-        received_sample_seq: int,
-        packet_seq: int,
-    ) -> None:
-        writer = self.ensure_writer()
-        writer.write_gap(
-            node_id,
-            expected_sample_seq,
-            received_sample_seq,
-            packet_seq,
-        )
-
-    def flush(self) -> None:
-        if self.writer is not None:
-            self.writer.flush()
-
-    def close(self) -> None:
-        if self.writer is not None:
-            if isinstance(self.writer, Hdf5Writer):
-                self.writer.finalize()
-            self.writer.close()
-            self.writer = None
-            self.current_window_start = None
-            self.current_window_end = None
-
-    def write_clock_sync(
-        self,
-        node_id: int,
-        observation: TimeSyncObservation,
-        accepted: bool,
-    ) -> None:
-        writer = self.ensure_writer()
-        writer.write_clock_sync(node_id, observation, accepted)
-
-
-class AcquisitionWindowedWriter(WindowedWriter):
-    def __init__(
-        self,
-        args: argparse.Namespace,
-        metadata: dict[str, object],
-        nodes: list[RecorderNode],
-    ) -> None:
-        super().__init__(args, metadata, nodes)
-        self.active_windows: dict[
-            datetime,
-            tuple[Path, Path, Hdf5Writer],
-        ] = {}
-        self.finalized_windows: set[datetime] = set()
-        self.max_open_windows = 3
-        self.pending_clock_sync: dict[
-            int,
-            list[tuple[TimeSyncObservation, bool]],
-        ] = {}
-        self.pending_temperatures: dict[int, list[TemperatureRecord]] = {}
-        self.pending_gaps: list[tuple[int, int, int, int]] = []
-        self.quarantine_writers: dict[
-            str,
-            tuple[Path, Path, Hdf5Writer],
-        ] = {}
-        self.quarantine_session_id = (
-            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            + f"-{os.getpid()}"
-        )
-
-    def add_node(self, node: RecorderNode) -> None:
-        del node
-
-    def _window_metadata(
-        self,
-        window_start: datetime,
-        window_end: datetime,
-    ) -> dict[str, object]:
-        result = dict(self.metadata)
-        result["window_start_utc"] = window_start.isoformat()
-        result["window_end_utc"] = window_end.isoformat()
-        result["nominal_window_start_utc_ns"] = round(
-            window_start.timestamp() * 1_000_000_000
-        )
-        result["nominal_window_end_utc_ns"] = round(
-            window_end.timestamp() * 1_000_000_000
-        )
-        result["window_timezone"] = self.args.window_timezone_name
-        result["window_start_local"] = (
-            window_start.astimezone(self.window_timezone).isoformat()
-        )
-        result["window_end_local"] = (
-            window_end.astimezone(self.window_timezone).isoformat()
-        )
-        result["file_created_utc"] = (
-            datetime.now(timezone.utc).isoformat()
-        )
-        return result
-
-    def _ensure_window(self, window_start: datetime) -> Hdf5Writer:
-        existing = self.active_windows.get(window_start)
-        if existing is not None:
-            return existing[2]
-        if window_start in self.finalized_windows:
-            raise RuntimeError(
-                f"late data targets finalized window {window_start.isoformat()}"
-            )
-
-        window_end = self.window_end_for(window_start)
-        final_path = self.window_path_for(window_start)
-        partial_path = Path(str(final_path) + ".partial")
-        if final_path.exists():
-            raise RuntimeError(
-                f"acquisition window is already finalized: {final_path}"
-            )
-        writer = Hdf5Writer(
-            partial_path,
-            self._window_metadata(window_start, window_end),
-            self.args.compression,
-            append=partial_path.exists(),
-        )
-        for node in self.nodes:
-            writer.add_node(node)
-            for observation, accepted in self.pending_clock_sync.get(
-                node.node_id,
-                [],
-            ):
-                writer.write_clock_sync(
-                    node.node_id,
-                    observation,
-                    accepted,
-                )
-            pending_temperatures = self.pending_temperatures.pop(
-                node.node_id,
-                [],
-            )
-            if pending_temperatures:
-                writer.write_temperature(
-                    node.node_id,
-                    pending_temperatures,
-                )
-        for (
-            gap_node_id,
-            expected_sample_seq,
-            received_sample_seq,
-            packet_seq,
-        ) in self.pending_gaps:
-            writer.write_gap(
-                gap_node_id,
-                expected_sample_seq,
-                received_sample_seq,
-                packet_seq,
-            )
-        self.pending_gaps.clear()
-        self.active_windows[window_start] = (
-            final_path,
-            partial_path,
-            writer,
-        )
-        self.current_window_start = window_start
-        self.current_window_end = window_end
-        self.current_path = final_path
-        self.writer = writer
-        print(f"[FILE] {partial_path} (active)")
-
-        while len(self.active_windows) > self.max_open_windows:
-            oldest = min(self.active_windows)
-            if oldest == window_start:
-                raise RuntimeError("open-window limit would finalize incoming late data")
-            self._finalize_window(oldest)
-        return writer
-
-    def _finalize_window(self, window_start: datetime) -> None:
-        final_path, partial_path, writer = self.active_windows.pop(
-            window_start
-        )
-        self._publish_writer(final_path, partial_path, writer)
-        self.finalized_windows.add(window_start)
-        print(f"[FILE] {final_path} (complete)")
-
-    def _publish_writer(
-        self,
-        final_path: Path,
-        partial_path: Path,
-        writer: Hdf5Writer,
-    ) -> None:
-        writer.finalize()
-        writer.close()
-        os.replace(partial_path, final_path)
-        try:
-            directory_fd = os.open(
-                final_path.parent,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-            )
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError:
-            pass
-
-    def _ensure_quarantine(self, reason: str) -> Hdf5Writer:
-        existing = self.quarantine_writers.get(reason)
-        if existing is not None:
-            return existing[2]
-        created = datetime.now(timezone.utc)
-        directory = (
-            Path(self.args.output_dir)
-            / "quarantine"
-            / created.strftime("%Y-%m-%d")
-        )
-        filename = (
-            f"{self.args.channel_name}_timing-{reason}_"
-            f"{self.quarantine_session_id}.h5"
-        )
-        final_path = directory / filename
-        partial_path = Path(str(final_path) + ".partial")
-        metadata = dict(self.metadata)
-        metadata.update({
-            "timing_quarantine": True,
-            "timing_quarantine_reason": reason,
-            "normal_measurement_window": False,
-            "file_created_utc": created.isoformat(),
-        })
-        writer = Hdf5Writer(
-            partial_path,
-            metadata,
-            self.args.compression,
-            append=partial_path.exists(),
-        )
-        for node in self.nodes:
-            writer.add_node(node)
-            for observation, accepted in self.pending_clock_sync.get(
-                node.node_id,
-                [],
-            ):
-                writer.write_clock_sync(
-                    node.node_id,
-                    observation,
-                    accepted,
-                )
-        self.quarantine_writers[reason] = (
-            final_path,
-            partial_path,
-            writer,
-        )
-        print(f"[QUARANTINE] {partial_path} reason={reason}")
-        return writer
-
-    def _classify_sample(
-        self,
-        sample: SampleRecord,
-    ) -> tuple[Optional[datetime], Optional[str]]:
-        if (
-            sample.acquisition_utc_ns is None
-            or sample.timing_uncertainty_ns is None
-        ):
-            return None, "unsynced"
-        when = datetime.fromtimestamp(
-            sample.acquisition_utc_ns / 1_000_000_000,
-            tz=timezone.utc,
-        )
-        window_start = self.aligned_window_start(when)
-        window_end = self.window_end_for(window_start)
-        start_ns = round(window_start.timestamp() * 1_000_000_000)
-        end_ns = round(window_end.timestamp() * 1_000_000_000)
-        lower = sample.acquisition_utc_ns - sample.timing_uncertainty_ns
-        upper = sample.acquisition_utc_ns + sample.timing_uncertainty_ns
-        if lower < start_ns or upper >= end_ns:
-            return None, "ambiguous"
-        if (
-            window_start in self.finalized_windows
-            or self.window_path_for(window_start).exists()
-        ):
-            return None, "late"
-        return window_start, None
-
-    def write_samples(
-        self,
-        node_id: int,
-        samples: list[SampleRecord],
-    ) -> None:
-        grouped: dict[datetime, list[SampleRecord]] = {}
-        quarantined: dict[str, list[SampleRecord]] = {}
-        for sample in samples:
-            window_start, reason = self._classify_sample(sample)
-            if reason is not None:
-                quarantined.setdefault(reason, []).append(sample)
-            else:
-                assert window_start is not None
-                grouped.setdefault(window_start, []).append(sample)
-        for window_start in sorted(grouped):
-            self._ensure_window(window_start).write_samples(
-                node_id,
-                grouped[window_start],
-            )
-        for reason, reason_samples in sorted(quarantined.items()):
-            self._ensure_quarantine(reason).write_samples(
-                node_id,
-                reason_samples,
-            )
-
-    def _latest_writer(self) -> Hdf5Writer:
-        if not self.active_windows:
-            return self._ensure_window(
-                self.aligned_window_start(datetime.now(timezone.utc))
-            )
-        return self.active_windows[max(self.active_windows)][2]
-
-    def write_temperature(
-        self,
-        node_id: int,
-        records: list[TemperatureRecord],
-    ) -> None:
-        if not self.active_windows:
-            self.pending_temperatures.setdefault(node_id, []).extend(records)
-            return
-        self._latest_writer().write_temperature(node_id, records)
-
-    def write_gap(
-        self,
-        node_id: int,
-        expected_sample_seq: int,
-        received_sample_seq: int,
-        packet_seq: int,
-    ) -> None:
-        if not self.active_windows:
-            self.pending_gaps.append((
-                node_id,
-                expected_sample_seq,
-                received_sample_seq,
-                packet_seq,
-            ))
-            return
-        self._latest_writer().write_gap(
-            node_id,
-            expected_sample_seq,
-            received_sample_seq,
-            packet_seq,
-        )
-
-    def write_clock_sync(
-        self,
-        node_id: int,
-        observation: TimeSyncObservation,
-        accepted: bool,
-    ) -> None:
-        self.pending_clock_sync.setdefault(node_id, []).append(
-            (observation, accepted)
-        )
-        self.pending_clock_sync[node_id] = self.pending_clock_sync[node_id][-64:]
-        if not self.active_windows:
-            pass
-        else:
-            self._latest_writer().write_clock_sync(
-                node_id,
-                observation,
-                accepted,
-            )
-        for _, _, writer in self.quarantine_writers.values():
-            writer.write_clock_sync(node_id, observation, accepted)
-
-    def flush(self) -> None:
-        for _, _, writer in self.active_windows.values():
-            writer.flush()
-        for _, _, writer in self.quarantine_writers.values():
-            writer.flush()
-
-    def close(self) -> None:
-        for window_start in sorted(tuple(self.active_windows)):
-            self._finalize_window(window_start)
-        for reason in sorted(tuple(self.quarantine_writers)):
-            final_path, partial_path, writer = (
-                self.quarantine_writers.pop(reason)
-            )
-            self._publish_writer(final_path, partial_path, writer)
-            print(
-                f"[QUARANTINE] {final_path} "
-                f"reason={reason} (complete)"
-            )
-        self.writer = None
-        self.current_window_start = None
-        self.current_window_end = None
-        self.current_path = None
 
 
 def parse_node_list(value: str) -> list[int]:
@@ -1224,71 +174,6 @@ def resolve_window_timezone(value: str):
         raise ValueError(
             f"unknown window timezone '{value}'; use 'local', 'UTC', or an IANA name like Europe/Warsaw"
         ) from exc
-
-
-def decode_i24_be(data: bytes) -> int:
-    value = (data[0] << 16) | (data[1] << 8) | data[2]
-    if value & 0x800000:
-        value -= 0x1000000
-    return value
-
-
-def raw_lsb_to_m_s2(raw_value: int, range_g: int) -> float:
-    scale_g_per_lsb = 3.9e-6
-    if range_g == 4:
-        scale_g_per_lsb = 7.8e-6
-    elif range_g == 8:
-        scale_g_per_lsb = 15.6e-6
-    return raw_value * scale_g_per_lsb * STANDARD_GRAVITY_M_S2
-
-
-def decode_packet_samples(
-    node_id: int,
-    packet_payload: bytes,
-    first_sample_seq: int,
-    sample_count: int,
-    packet_seq: int,
-    range_g: int,
-    sample_payload_offset: int = SAMPLE_PAYLOAD_OFFSET,
-    boot_epoch: int = 0,
-    timing_segment_id: int = 0,
-    timing_quality_flags: int = 0,
-    first_device_time_us: int = 0,
-    last_device_time_us: int = 0,
-) -> list[SampleRecord]:
-    expected_size = sample_payload_offset + sample_count * 9
-    if len(packet_payload) < expected_size:
-        raise ValueError("burst packet payload is shorter than declared sample_count")
-
-    records: list[SampleRecord] = []
-    base = sample_payload_offset
-    for i in range(sample_count):
-        offset = base + i * 9
-        device_time_us: Optional[int] = None
-        if boot_epoch != 0:
-            if sample_count == 1:
-                device_time_us = first_device_time_us
-            else:
-                device_time_us = (
-                    first_device_time_us
-                    + ((last_device_time_us - first_device_time_us) * i)
-                    // (sample_count - 1)
-                )
-        records.append(
-            SampleRecord(
-                node_id=node_id,
-                sample_seq=first_sample_seq + i,
-                x=raw_lsb_to_m_s2(decode_i24_be(packet_payload[offset:offset + 3]), range_g),
-                y=raw_lsb_to_m_s2(decode_i24_be(packet_payload[offset + 3:offset + 6]), range_g),
-                z=raw_lsb_to_m_s2(decode_i24_be(packet_payload[offset + 6:offset + 9]), range_g),
-                packet_seq=packet_seq,
-                device_time_us=device_time_us,
-                boot_epoch=boot_epoch,
-                timing_segment_id=timing_segment_id,
-                timing_quality_flags=timing_quality_flags,
-            )
-        )
-    return records
 
 
 def send_and_parse_config(client: ProtocolClient, node_id: int, timeout_s: float) -> ConfigView:
@@ -1526,16 +411,28 @@ def make_single_writer(
     output: Path,
     append: bool = False,
 ) -> BaseWriter:
-    if output.exists() and not append and not args.overwrite:
-        raise RuntimeError(f"output file already exists: {output}; pass --overwrite to replace it")
-    if args.format == "hdf5":
-        return Hdf5Writer(output, metadata, args.compression, append=append)
-    if args.format == "csv":
-        return CsvWriter(output, metadata, append=append)
-    raise ValueError(f"unsupported format: {args.format}")
+    return make_window_file_writer(
+        args,
+        metadata,
+        output,
+        append=append,
+    )
 
 
 def make_writer(args: argparse.Namespace, metadata: dict[str, object], nodes: list[RecorderNode]) -> BaseWriter:
+    if getattr(args, "capture_schema", 5) == 1:
+        if not args.output_dir or args.format != "hdf5":
+            raise RuntimeError("Capture v1 requires HDF5 with --output-dir")
+        if args.timing_mode != "required":
+            raise RuntimeError("Capture v1 requires timing mode 'required'")
+        identity = SensorIdentity(
+            channel_id=args.channel_id,
+            sensor_label=args.sensor_label,
+            node_address=nodes[0].node_id,
+            sensor_id=args.sensor_id or None,
+            hardware_id=args.hardware_id or None,
+        )
+        return CaptureV1WindowedWriter(args, metadata, nodes, identity)
     if args.output_dir:
         if getattr(args, "timing_mode", "legacy") == "required":
             if args.format != "hdf5":
@@ -1701,22 +598,23 @@ def emit_stats_changes(
     previous: NodeStats | None,
     event_writer: JsonlEventWriter,
     archive_writer: JsonlEventWriter,
+    measurement_writer: BaseWriter | None = None,
 ) -> None:
     current = node.last_stats
     if previous is None or current is None:
         return
     counters = (
-        ("dropped_samples", "sample_loss", "critical", "Utracono próbki pomiarowe."),
-        ("fifo_overrun_events", "fifo_overrun", "critical", "Wykryto przepełnienie FIFO."),
-        ("fifo_discarded_samples", "fifo_samples_discarded", "error", "Odrzucono niepełne próbki FIFO."),
-        ("fifo_uncertain_loss_events", "uncertain_sample_loss", "critical", "Wykryto możliwą stratę o nieznanym rozmiarze."),
-        ("sensor_errors", "sensor_read_error", "error", "Wystąpił błąd odczytu czujnika."),
-        ("soft_recover_count", "acquisition_recovery", "warning", "Firmware wznowił akwizycję."),
-        ("drdy_timestamp_ring_overflow", "drdy_ring_overflow", "critical", "Przepełnił się ring timestampów DRDY."),
-        ("timing_binding_mismatch", "timing_binding_mismatch", "critical", "Utracono jednoznaczne powiązanie DRDY z FIFO."),
-        ("timing_binding_invalidations", "timing_segment_invalidated", "error", "Segment czasu próbek został unieważniony."),
+        ("dropped_samples", "sample_loss", "critical", "Utracono próbki pomiarowe.", QualityEventCode.SENSOR_FIFO_LOSS),
+        ("fifo_overrun_events", "fifo_overrun", "critical", "Wykryto przepełnienie FIFO.", QualityEventCode.SENSOR_FIFO_LOSS),
+        ("fifo_discarded_samples", "fifo_samples_discarded", "error", "Odrzucono niepełne próbki FIFO.", QualityEventCode.SENSOR_FIFO_LOSS),
+        ("fifo_uncertain_loss_events", "uncertain_sample_loss", "critical", "Wykryto możliwą stratę o nieznanym rozmiarze.", QualityEventCode.SENSOR_FIFO_LOSS),
+        ("sensor_errors", "sensor_read_error", "error", "Wystąpił błąd odczytu czujnika.", QualityEventCode.UNKNOWN),
+        ("soft_recover_count", "acquisition_recovery", "warning", "Firmware wznowił akwizycję.", QualityEventCode.SENSOR_RECOVERY),
+        ("drdy_timestamp_ring_overflow", "drdy_ring_overflow", "critical", "Przepełnił się ring timestampów DRDY.", QualityEventCode.TIMING_INVALIDATION),
+        ("timing_binding_mismatch", "timing_binding_mismatch", "critical", "Utracono jednoznaczne powiązanie DRDY z FIFO.", QualityEventCode.TIMING_INVALIDATION),
+        ("timing_binding_invalidations", "timing_segment_invalidated", "error", "Segment czasu próbek został unieważniony.", QualityEventCode.TIMING_INVALIDATION),
     )
-    for field, event, severity, message in counters:
+    for field, event, severity, message, quality_code in counters:
         before = int(getattr(previous, field, 0))
         after = int(getattr(current, field, 0))
         if after <= before:
@@ -1731,6 +629,25 @@ def emit_stats_changes(
         }
         event_writer.emit(event, severity=severity, node_id=node.node_id, fields=fields)
         archive_writer.emit(event, severity=severity, node_id=node.node_id, fields=fields)
+        if measurement_writer is not None:
+            severity_code = {
+                "warning": EventSeverity.WARNING,
+                "error": EventSeverity.ERROR,
+                "critical": EventSeverity.CRITICAL,
+            }.get(severity, EventSeverity.INFO)
+            measurement_writer.write_quality_event(
+                node.node_id,
+                QualityEventRecord(
+                    boot_epoch=int(node.node_host_clock.boot_epoch or 0),
+                    sample_seq_anchor=current.last_sample_seq,
+                    observed_utc_ns=time.time_ns(),
+                    event_code=int(quality_code),
+                    severity=int(severity_code),
+                    count=after - before,
+                    value_a=before,
+                    value_b=after,
+                ),
+            )
 
 
 def node_total_sensor_loss(node: RecorderNode) -> int:
@@ -1785,6 +702,8 @@ def refresh_temperature(
                 sample_seq_anchor=resolved_sample_seq_anchor,
                 temp_raw=temperature.raw,
                 temp_celsius=temperature.celsius,
+                boot_epoch=int(node.node_host_clock.boot_epoch or 0),
+                observed_utc_ns=rx_unix_ns,
             )
         ],
     )
@@ -1823,7 +742,7 @@ def maybe_refresh_window_start_temperature(
     now_monotonic: float,
     now_utc: Optional[datetime] = None,
 ) -> None:
-    if not isinstance(writer, WindowedWriter):
+    if not isinstance(writer, (WindowedWriter, CaptureV1WindowedWriter)):
         return
 
     window_start = writer.current_window(now_utc)
@@ -1867,7 +786,7 @@ def maybe_refresh_window_start_temperature(
 
 
 def active_output_path(writer: BaseWriter, args: argparse.Namespace) -> Optional[str]:
-    if isinstance(writer, WindowedWriter):
+    if isinstance(writer, (WindowedWriter, CaptureV1WindowedWriter)):
         return str(writer.current_path) if writer.current_path is not None else None
     if args.output:
         return str(Path(args.output))
@@ -2089,6 +1008,7 @@ def record_one_burst(
                 expected_sample_seq=expected_seq,
                 received_sample_seq=packet.first_sample_seq,
                 packet_seq=packet.packet_seq,
+                boot_epoch=packet.boot_epoch,
             )
             if live is not None:
                 live.publish_gap(
@@ -2124,6 +1044,10 @@ def record_one_burst(
             timing_quality_flags=packet.timestamp_quality_flags,
             first_device_time_us=packet.first_device_time_us,
             last_device_time_us=packet.last_device_time_us,
+            timing_format_version=packet.timing_format_version,
+            timestamp_source=packet.timestamp_source,
+            sample_period_q16_us=packet.sample_period_q16_us,
+            max_fit_residual_us=packet.max_fit_residual_us,
         )
         apply_packet_timing(
             node,
@@ -2233,6 +1157,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default="/dev/sensor-system-rs485")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--channel-name", default="default")
+    parser.add_argument("--channel-id", type=int, default=1)
+    parser.add_argument("--sensor-label", default="A")
+    parser.add_argument("--sensor-id", default="")
+    parser.add_argument("--hardware-id", default="")
+    parser.add_argument("--capture-schema", type=int, choices=[1, 5], default=5)
     parser.add_argument("--nodes", type=parse_node_list, default=[1], help="Comma separated node ids, e.g. 1,2")
     parser.add_argument("--output", help="Single output file path, e.g. run.h5 or run.csv")
     parser.add_argument("--output-dir", help="Root directory for rotated output files")
@@ -2507,7 +1436,7 @@ def main() -> int:
                             if now >= node.next_temperature_at:
                                 try:
                                     sample_seq_anchor = refresh_temperature(client, writer, node, args.timeout)
-                                    if isinstance(writer, WindowedWriter):
+                                    if isinstance(writer, (WindowedWriter, CaptureV1WindowedWriter)):
                                         node.last_temperature_window_start = writer.current_window()
                                         node.next_window_temperature_retry_at = 0.0
                                     emit_temperature_sample_event(
@@ -2533,6 +1462,7 @@ def main() -> int:
                                 previous_stats,
                                 event_writer,
                                 diagnostic_archive,
+                                writer,
                             )
                             try:
                                 archive_node_diagnostics(

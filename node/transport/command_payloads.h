@@ -155,6 +155,10 @@ struct GetConfigResponsePayload {
     uint16_t act_threshold;
     uint8_t act_count;
     uint8_t high_pass_corner;
+    uint8_t filter_profile;
+    uint8_t decimation_factor;
+    uint32_t config_revision;
+    uint64_t config_effective_sample_seq;
 };
 
 struct ReadLatestCommandPayload {
@@ -228,6 +232,7 @@ struct GetBufferStateResponsePayload {
     uint32_t queued_packets;
     uint32_t packet_capacity;
     uint32_t packet_overwrite_count;
+    uint32_t encoding_saturation_count;
 };
 
 struct GetStatsResponsePayload {

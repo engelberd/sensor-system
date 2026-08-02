@@ -9,12 +9,12 @@ project(sensor_system_node C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-set(SENSOR_SYSTEM_BOARD_PROFILE "custom_v2" CACHE STRING
+set(SENSOR_SYSTEM_BOARD_PROFILE "legacy_eval" CACHE STRING
     "Node board profile: custom_v2 or legacy_eval")
 set_property(CACHE SENSOR_SYSTEM_BOARD_PROFILE PROPERTY STRINGS
     custom_v2 legacy_eval)
 option(SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2
-    "Enable experimental DRDY timestamping v2" OFF)
+    "Enable DRDY timestamping v2" ON)
 
 if(SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "custom_v2")
     set(SENSOR_SYSTEM_BOARD_PROFILE_VALUE 1)
@@ -179,6 +179,8 @@ add_custom_command(
         --slot-a-bin $<TARGET_FILE_DIR:sensor_system_node_slot_a>/sensor-system-node-slot-a.bin
         --slot-b-bin $<TARGET_FILE_DIR:sensor_system_node_slot_b>/sensor-system-node-slot-b.bin
         --version-header ${PROJECT_SOURCE_DIR}/common/protocol_ids.h
+        --board-profile ${SENSOR_SYSTEM_BOARD_PROFILE}
+        --timestamping-v2 ${SENSOR_SYSTEM_TIMESTAMPING_V2_VALUE}
         --output ${CMAKE_CURRENT_BINARY_DIR}/sensor-system-node-update-package.json
     DEPENDS
         sensor_system_node_slot_a
@@ -204,6 +206,8 @@ add_custom_target(sensor_system_node_factory_image ALL
         --metadata-secondary-offset 0x00021000
         --node-id 0
         --version-header ${PROJECT_SOURCE_DIR}/common/protocol_ids.h
+        --board-profile ${SENSOR_SYSTEM_BOARD_PROFILE}
+        --timestamping-v2 ${SENSOR_SYSTEM_TIMESTAMPING_V2_VALUE}
         --output ${CMAKE_CURRENT_BINARY_DIR}/sensor-system-node-factory.bin
     COMMAND
         ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/sensor-system-node-factory-image.stamp

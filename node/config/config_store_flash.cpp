@@ -11,6 +11,7 @@
 namespace {
 constexpr uint16_t kLegacyPersistentConfigVersionV1 = 1;
 constexpr uint16_t kLegacyPersistentConfigVersionV2 = 2;
+constexpr uint16_t kLegacyPersistentConfigVersionV3 = 3;
 
 #pragma pack(push, 1)
 struct LegacyDeviceConfigV1 {
@@ -55,6 +56,35 @@ struct LegacyPersistentConfigV2 {
     LegacyDeviceConfigV2 device{};
     uint32_t crc32 = 0;
 };
+
+struct LegacyDeviceConfigV3 {
+    uint8_t node_id = UNASSIGNED_NODE_ID;
+    uint8_t reserved_after_node[3]{};
+    uint32_t baudrate = 115200;
+    uint16_t odr_hz = 250;
+    uint8_t range_g = 2;
+    uint8_t high_pass_corner = 0;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    int32_t offset_z = 0;
+    uint16_t act_threshold = 0;
+    uint8_t act_count = 1;
+    uint8_t fifo_watermark = 30;
+};
+
+struct LegacyPersistentConfigV3 {
+    uint32_t magic = PERSISTENT_CONFIG_MAGIC;
+    uint16_t version = kLegacyPersistentConfigVersionV3;
+    uint16_t reserved0 = 0;
+    uint32_t generation = 0;
+    LegacyDeviceConfigV3 device{};
+    uint32_t crc32 = 0;
+};
+
+static_assert(sizeof(LegacyDeviceConfigV3) == 28,
+              "v3 migration layout must match deployed DeviceConfig");
+static_assert(sizeof(LegacyPersistentConfigV3) == 44,
+              "v3 migration layout must match deployed PersistentConfig");
 #pragma pack(pop)
 
 struct FlashWriteContext {
@@ -105,6 +135,19 @@ bool is_valid_legacy_copy(const LegacyPersistentConfigV2& config) {
     return stored_crc == config_crc32(&copy, sizeof(LegacyPersistentConfigV2));
 }
 
+bool is_valid_legacy_copy(const LegacyPersistentConfigV3& config) {
+    if (config.magic != PERSISTENT_CONFIG_MAGIC) {
+        return false;
+    }
+    if (config.version != kLegacyPersistentConfigVersionV3) {
+        return false;
+    }
+    LegacyPersistentConfigV3 copy = config;
+    const uint32_t stored_crc = copy.crc32;
+    copy.crc32 = 0;
+    return stored_crc == config_crc32(&copy, sizeof(LegacyPersistentConfigV3));
+}
+
 PersistentConfig migrate_legacy_copy(const LegacyPersistentConfigV1& legacy) {
     PersistentConfig migrated{};
     migrated.generation = legacy.generation;
@@ -142,6 +185,26 @@ PersistentConfig migrate_legacy_copy(const LegacyPersistentConfigV2& legacy) {
     migrated.crc32 = config_crc32(&migrated, sizeof(PersistentConfig));
     return migrated;
 }
+
+PersistentConfig migrate_legacy_copy(const LegacyPersistentConfigV3& legacy) {
+    PersistentConfig migrated{};
+    migrated.generation = legacy.generation;
+    migrated.device.node_id = legacy.device.node_id;
+    migrated.device.baudrate = legacy.device.baudrate;
+    migrated.device.odr_hz = legacy.device.odr_hz;
+    migrated.device.range_g = legacy.device.range_g;
+    migrated.device.high_pass_corner = legacy.device.high_pass_corner;
+    migrated.device.filter_profile = 1;
+    migrated.device.offset_x = legacy.device.offset_x;
+    migrated.device.offset_y = legacy.device.offset_y;
+    migrated.device.offset_z = legacy.device.offset_z;
+    migrated.device.act_threshold = legacy.device.act_threshold;
+    migrated.device.act_count = legacy.device.act_count;
+    migrated.device.fifo_watermark = legacy.device.fifo_watermark;
+    migrated.crc32 = 0;
+    migrated.crc32 = config_crc32(&migrated, sizeof(PersistentConfig));
+    return migrated;
+}
 }
 
 const PersistentConfig* FlashConfigStore::flash_ptr(uint32_t flash_offset) {
@@ -168,6 +231,13 @@ bool FlashConfigStore::load_copy(uint32_t flash_offset, PersistentConfig& config
     const PersistentConfig* current = flash_ptr(flash_offset);
     if (is_valid_copy(*current)) {
         config = *current;
+        return true;
+    }
+
+    const auto* legacy_v3 =
+        reinterpret_cast<const LegacyPersistentConfigV3*>(XIP_BASE + flash_offset);
+    if (is_valid_legacy_copy(*legacy_v3)) {
+        config = migrate_legacy_copy(*legacy_v3);
         return true;
     }
 

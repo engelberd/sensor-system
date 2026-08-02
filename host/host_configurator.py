@@ -88,7 +88,8 @@ READ_DIAGNOSTIC_EVENTS_HEADER_FORMAT = "<BBBBII"
 READ_DIAGNOSTIC_EVENT_FORMAT = "<IIHBBQii"
 
 # Actual packed layouts from firmware.
-GET_CONFIG_FORMAT = "<BBBIHBiiiBHBB"
+GET_CONFIG_FORMAT_V1 = "<BBBIHBiiiBHBB"
+GET_CONFIG_FORMAT = "<BBBIHBiiiBHBBBBIQ"
 GET_STATUS_FORMAT = "<BBBBHBI I I".replace(" ", "")
 
 SUPPORTED_ODR_HZ = (
@@ -214,6 +215,10 @@ class ConfigView:
     act_threshold: int
     act_count: int
     high_pass_corner: int
+    filter_profile: int = 255
+    decimation_factor: int = OUTPUT_DECIMATION_FACTOR
+    config_revision: int = 0
+    config_effective_sample_seq: int = 0
 
 
 @dataclass
@@ -422,6 +427,8 @@ def sync_system_config_from_device_config(
     matched_entry["sensor_odr_hz"] = updated.odr_hz
     matched_entry["range_g"] = updated.range_g
     matched_entry["high_pass_corner"] = updated.high_pass_corner
+    matched_entry["filter_profile"] = updated.filter_profile
+    matched_entry["decimation_factor"] = updated.decimation_factor
     matched_entry["fifo_watermark"] = updated.fifo_watermark
     matched_entry["offset_x"] = updated.offset_x
     matched_entry["offset_y"] = updated.offset_y
@@ -565,7 +572,15 @@ class ProtocolClient:
 
 
 def parse_config_view(payload: bytes) -> ConfigView:
-    values = struct.unpack(GET_CONFIG_FORMAT, payload[: struct.calcsize(GET_CONFIG_FORMAT)])
+    config_format = (
+        GET_CONFIG_FORMAT
+        if len(payload) >= struct.calcsize(GET_CONFIG_FORMAT)
+        else GET_CONFIG_FORMAT_V1
+    )
+    values = struct.unpack(
+        config_format,
+        payload[: struct.calcsize(config_format)],
+    )
     return ConfigView(
         node_id=values[2],
         baudrate=values[3],
@@ -578,6 +593,12 @@ def parse_config_view(payload: bytes) -> ConfigView:
         act_threshold=values[10],
         act_count=values[11],
         high_pass_corner=values[12],
+        filter_profile=values[13] if len(values) > 13 else 255,
+        decimation_factor=(
+            values[14] if len(values) > 14 else OUTPUT_DECIMATION_FACTOR
+        ),
+        config_revision=values[15] if len(values) > 15 else 0,
+        config_effective_sample_seq=values[16] if len(values) > 16 else 0,
     )
 
 
@@ -1188,6 +1209,13 @@ def format_high_pass_corner(high_pass_corner: int) -> str:
     return "disabled" if high_pass_corner == 0 else str(high_pass_corner)
 
 
+def format_filter_profile(filter_profile: int) -> str:
+    return {0: "light", 1: "balanced", 2: "aggressive"}.get(
+        filter_profile,
+        f"unknown({filter_profile})",
+    )
+
+
 def print_config(config: ConfigView) -> None:
     print("Config:")
     print(f"  node_id        : {config.node_id}")
@@ -1197,6 +1225,10 @@ def print_config(config: ConfigView) -> None:
     print(f"  range_g        : {config.range_g}")
     print(f"  high_pass      : {format_high_pass_corner(config.high_pass_corner)}")
     print(f"  high_pass_code : {config.high_pass_corner}")
+    print(f"  filter_profile : {format_filter_profile(config.filter_profile)}")
+    print(f"  decimation     : x{config.decimation_factor}")
+    print(f"  config_revision: {config.config_revision}")
+    print(f"  effective_seq  : {config.config_effective_sample_seq}")
     print(f"  offset_x       : {config.offset_x}")
     print(f"  offset_y       : {config.offset_y}")
     print(f"  offset_z       : {config.offset_z}")

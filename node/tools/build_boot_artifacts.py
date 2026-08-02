@@ -114,6 +114,8 @@ def cmd_update_package(args: argparse.Namespace) -> int:
         "schema_version": 1,
         "format": "sensor_system_node_update_package",
         "version": version,
+        "board_profile": args.board_profile,
+        "timestamping_v2": bool(args.timestamping_v2),
         "slot_a": {
             "slot_id": SLOT_A,
             "path": slot_a_bin.name,
@@ -168,6 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
     update_package.add_argument("--slot-a-bin", required=True)
     update_package.add_argument("--slot-b-bin", required=True)
     update_package.add_argument("--version-header", required=True)
+    update_package.add_argument("--board-profile", required=True)
+    update_package.add_argument("--timestamping-v2", type=int, choices=(0, 1), required=True)
     update_package.add_argument("--output", required=True)
     update_package.set_defaults(func=cmd_update_package)
 
@@ -179,6 +183,8 @@ def build_parser() -> argparse.ArgumentParser:
     factory_image.add_argument("--metadata-secondary-offset", type=lambda raw: int(raw, 0), required=True)
     factory_image.add_argument("--node-id", type=int, required=True)
     factory_image.add_argument("--version-header", required=True)
+    factory_image.add_argument("--board-profile", required=True)
+    factory_image.add_argument("--timestamping-v2", type=int, choices=(0, 1), required=True)
     factory_image.add_argument("--output", required=True)
     factory_image.set_defaults(func=cmd_factory_image)
 

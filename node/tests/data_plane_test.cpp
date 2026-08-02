@@ -107,6 +107,40 @@ void test_burst_payload_contains_header_and_raw_xyz24_samples() {
     assert(!data_plane.burst_active());
 }
 
+void test_out_of_range_samples_are_saturated_and_counted() {
+    TestDataPlane data_plane{};
+    StoredSample samples[2]{};
+    samples[0].sample_seq = 20;
+    samples[0].x = 0x00800000;
+    samples[0].y = -0x00800001;
+    samples[0].z = 123;
+    samples[1].sample_seq = 21;
+    samples[1].x = 0x007FFFFF;
+    samples[1].y = -0x00800000;
+    samples[1].z = -123;
+    data_plane.on_samples(samples, 2);
+
+    const DataPlaneState state = data_plane.state();
+    assert(state.encoding_saturation_count == 2);
+
+    assert(data_plane.start_burst(20, 1, 7) == StatusCode::Ok);
+    uint8_t payload[TestDataPlane::MAX_PACKET_PAYLOAD]{};
+    size_t payload_size = 0;
+    assert(data_plane.try_build_current_packet_payload(
+        payload,
+        sizeof(payload),
+        payload_size
+    ));
+
+    const uint8_t* sample_bytes = payload + sizeof(BurstDataPayloadHeader);
+    assert_i24_be(sample_bytes + 0, 0x007FFFFF);
+    assert_i24_be(sample_bytes + 3, -0x00800000);
+    assert_i24_be(sample_bytes + 6, 123);
+    assert_i24_be(sample_bytes + 9, 0x007FFFFF);
+    assert_i24_be(sample_bytes + 12, -0x00800000);
+    assert_i24_be(sample_bytes + 15, -123);
+}
+
 void test_commit_trims_packets_and_restarts_reads_after_commit() {
     TestDataPlane data_plane{};
     feed_samples(data_plane, 0, 4);
@@ -227,6 +261,7 @@ void test_timed_packet_contains_stable_v2_extension() {
 int main() {
     test_packets_are_created_after_staging_is_full();
     test_burst_payload_contains_header_and_raw_xyz24_samples();
+    test_out_of_range_samples_are_saturated_and_counted();
     test_commit_trims_packets_and_restarts_reads_after_commit();
     test_commit_finishes_active_burst_when_next_packet_is_trimmed();
     test_timed_packet_contains_stable_v2_extension();

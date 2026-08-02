@@ -12,18 +12,17 @@ from unittest.mock import patch
 
 from host.common.system_config import HostSystemConfig
 from host.host_recorder import (
-    RecorderNode,
-    SampleRecord,
     AcquisitionWindowedWriter,
-    Hdf5Writer,
     WindowedWriter,
     emit_sample_flow_changes,
     emit_stats_changes,
-    raw_lsb_to_m_s2,
     maybe_refresh_window_start_temperature,
     resolve_window_timezone,
     update_rate_metrics,
 )
+from host.recorder.capture_writers import Hdf5Writer
+from host.recorder.decoder import raw_lsb_to_m_s2
+from host.recorder.model import RecorderNode, SampleRecord
 from host.host_lab import (
     BURST_HEADER_FORMAT,
     BURST_TIMING_V2_FORMAT,
@@ -275,7 +274,7 @@ class AcquisitionWindowWriterTests(unittest.TestCase):
             )
             samples = [
                 SampleRecord(
-                    1, 10, 1.0, 2.0, 3.0, 4,
+                    1, 10, 1, 2, 3, 4,
                     device_time_us=1000,
                     boot_epoch=7,
                     timing_segment_id=2,
@@ -284,7 +283,7 @@ class AcquisitionWindowWriterTests(unittest.TestCase):
                     timing_uncertainty_ns=100,
                 ),
                 SampleRecord(
-                    1, 11, 1.0, 2.0, 3.0, 4,
+                    1, 11, 1, 2, 3, 4,
                     device_time_us=9000,
                     boot_epoch=7,
                     timing_segment_id=2,
@@ -328,7 +327,7 @@ class AcquisitionWindowWriterTests(unittest.TestCase):
             writer = Hdf5Writer(path, {}, "none")
             writer.add_node(node)
             sample = SampleRecord(
-                1, 10, 1.0, 2.0, 3.0, 4,
+                1, 10, 1, 2, 3, 4,
                 boot_epoch=7,
                 timing_segment_id=2,
             )
@@ -366,7 +365,7 @@ class AcquisitionWindowWriterTests(unittest.TestCase):
             writer.add_node(node)
             samples = [
                 SampleRecord(
-                    1, 10 + index, 1.0, 2.0, 3.0,
+                    1, 10 + index, 1, 2, 3,
                     4 if index < 2 else 5,
                     device_time_us=1000 + index * 8000,
                     boot_epoch=7,
@@ -432,14 +431,14 @@ class AcquisitionWindowWriterTests(unittest.TestCase):
             )
             writer.write_samples(1, [
                 SampleRecord(
-                    1, 10, 1.0, 2.0, 3.0, 4,
+                    1, 10, 1, 2, 3, 4,
                     device_time_us=1000,
                     boot_epoch=7,
                     timing_segment_id=2,
                     timing_quality_flags=1,
                 ),
                 SampleRecord(
-                    1, 11, 1.0, 2.0, 3.0, 4,
+                    1, 11, 1, 2, 3, 4,
                     device_time_us=9000,
                     boot_epoch=7,
                     timing_segment_id=2,

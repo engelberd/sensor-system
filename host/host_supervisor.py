@@ -180,6 +180,8 @@ def build_worker_command(
         str(recorder_script),
         "--channel-name",
         channel.name,
+        "--channel-id",
+        str(channel.channel_id or 1),
         "--port",
         channel.port,
         "--baud",
@@ -192,6 +194,17 @@ def build_worker_command(
         system_config.storage.format,
         "--compression",
         system_config.storage.compression,
+        "--capture-schema",
+        str(system_config.storage.capture_schema),
+        "--sensor-label",
+        (
+            channel.nodes[0].sensor_label
+            or chr(ord("A") + (channel.channel_id or 1) - 1)
+        ),
+        "--sensor-id",
+        channel.nodes[0].sensor_id or "",
+        "--hardware-id",
+        channel.nodes[0].hardware_id or "",
         "--window-seconds",
         str(system_config.storage.window_seconds),
         "--window-timezone",
