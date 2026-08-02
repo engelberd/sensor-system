@@ -9,6 +9,8 @@
   DRDY 14, INT1 15 and DE on GPIO2.
 - Node address, baudrate, ODR, range, filters and offsets are runtime configuration, not board-profile constants.
 - Never commit `host/system_config.json`, active systemd units, recordings, runtime files or raw diagnostic dumps.
+- Keep the Pico SDK and host-specific kernel drivers as external dependencies;
+  do not vendor their source trees into this repository.
 - Product-wide deployment defaults belong in `host/configs/common.json`.
 - Stable facts for one installation belong in a tracked
   `host/configs/systems/<system>.json`; each ignored `host/system_config.json`

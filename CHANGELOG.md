@@ -6,6 +6,11 @@
   system profiles and ignored per-host overlays.
 - Added a versioned `var/` directory skeleton and documented the canonical
   monorepo layout for consistent clones and Codex sessions.
+- Removed the locally required CH9344 vendor driver sources from the product
+  repository; the Sanok profile now records the driver as an external host
+  dependency.
+- Removed the broken `pico-sdk` gitlink; the SDK remains an ignored external
+  dependency selected through `PICO_SDK_PATH`.
 
 Wersjonowanie projektu stosuje format `MAJOR.MINOR.PATCH`. Numer wydania jest
 wspólny dla narzędzi hosta i firmware'u.

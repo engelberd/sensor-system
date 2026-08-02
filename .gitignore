@@ -21,6 +21,8 @@ logs/
 !/var/log/.gitkeep
 !/var/tmp/
 !/var/tmp/.gitkeep
+/LINUX/
+/pico-sdk/
 diagnostics/*
 !diagnostics/README-diagnostics.md
 .DS_Store

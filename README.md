@@ -84,6 +84,9 @@ python3 -m venv host/.venv
 host/.venv/bin/python -m pip install -r host/requirements-recorder.txt
 ```
 
+The local `pico-sdk/` checkout is intentionally ignored and is not a submodule.
+Each build host may keep the SDK elsewhere and point `PICO_SDK_PATH` to it.
+
 On macOS with Homebrew, the typical firmware toolchain is:
 
 ```bash
