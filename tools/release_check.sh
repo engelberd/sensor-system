@@ -52,6 +52,16 @@ if [[ -n "${tracked_diagnostics}" ]]; then
     exit 2
 fi
 
+flash_safe_sources=(
+    node/boot_shared/boot_shared_metadata_io.cpp
+    node/config/config_store_flash.cpp
+    node/diagnostics/persistent_diagnostic_store.cpp
+)
+if rg -n 'multicore_lockout_(start|end)' "${flash_safe_sources[@]}"; then
+    echo "[ERROR] Nie nakładaj ręcznego multicore lockout na flash_safe_execute()." >&2
+    exit 2
+fi
+
 echo "[1/5] Testy hosta"
 host/.venv/bin/python -m unittest discover -s host/tests
 
@@ -74,7 +84,7 @@ package = json.loads(
         encoding="utf-8"
     )
 )
-expected = {"legacy_eval": 1, "custom_v2": 2}
+expected = {"board_v1": 1, "board_v2": 2}
 profile = package.get("board_profile")
 revision = package.get("board_revision")
 if profile not in expected or revision != expected[profile]:

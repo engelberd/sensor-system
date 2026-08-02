@@ -6,7 +6,7 @@ Zakres: jeden ADXL355, `/dev/ttyCH9344USB3`, node `1`
 
 ## Konfiguracja i obraz
 
-- profil sprzętowy: `legacy_eval`;
+- profil sprzętowy: historycznie `legacy_eval`, obecnie `board_v2`;
 - piny: DRDY GPIO11, INT1 GPIO10, SPI1 GPIO12–15;
 - sensor ODR: 250 Hz;
 - output ODR po FIR x2: 125 Hz;

@@ -816,6 +816,7 @@ def write_runtime_status(
                 node_id=node.node_id,
                 name=None,
                 firmware_version=node.firmware_version,
+                board_revision=node.config.board_revision,
                 online=node.online,
                 sensor_odr_hz=node.config.odr_hz,
                 output_odr_hz=effective_output_odr_hz(node.config.odr_hz),

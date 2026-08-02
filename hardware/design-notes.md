@@ -32,7 +32,11 @@ TPS2121 OUT -> 5V_SYS
 Preferred TPS2121 behavior: 12 V/buck source has priority when both field power
 and USB are connected. USB remains useful for data/debug.
 
-## Firmware-friendly pin plan
+## Unreleased custom-board pin plan
+
+This plan belongs to the in-progress custom KiCad design. It is not the pin map
+of the installed V2 boards; see `node/config/board_profile.h` for released
+firmware profiles.
 
 ADXL355 SPI:
 

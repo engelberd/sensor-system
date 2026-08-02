@@ -25,7 +25,7 @@ Usage:
 Commands:
   ping       Run host ping tool
   config     Run configurator
-  channel    Run channel-level host/runtime control
+  channel    Start, stop, or restart one recorder channel
   lab        Run lab/diagnostic tool
   recorder   Run production recorder
   archive    Compact sealed Capture v1 files into Archive v1
@@ -42,6 +42,8 @@ Examples:
   ./hostctl ping --port /dev/sensor-system-rs485
   ./hostctl config --port /dev/sensor-system-rs485 get-config
   ./hostctl channel restart-remote --channel line-h
+  ./hostctl channel stop --channel line-g
+  ./hostctl channel start --channel line-g
   ./hostctl config --port /dev/sensor-system-rs485 commission-scan
   ./hostctl config --port /dev/sensor-system-rs485 commission-assign --hardware-id 0123456789ABCDEF --node-id 7
   ./hostctl recorder --port /dev/sensor-system-rs485 --nodes 1 --output-dir runs/sensor-system --format hdf5 --window-seconds 600

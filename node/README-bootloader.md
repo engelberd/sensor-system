@@ -138,12 +138,12 @@ Do not infer the wiring from a host name or node ID.
 | VDDIO / ADXL 3V3       |           1 | 3V3               | Orange     |
 | VDD / ADXL 3V3         |           3 | 3V3               | Orange     |
 | GND                    |           5 | GND               | Black      |
-| SCLK/Vssio             |          10 | V1: GPIO14, V2: GPIO10 | Yellow |
-| MOSI/SDA               |          12 | V1: GPIO15, V2: GPIO11 | Green  |
+| SCLK/Vssio             |          10 | V1: GPIO10, V2: GPIO14 | Yellow |
+| MOSI/SDA               |          12 | V1: GPIO11, V2: GPIO15 | Green  |
 | MISO/SDA               |          11 | GPIO12 / SPI1 RX  | Blue       |
 | CS/SCL                 |           8 | GPIO13            | White      |
-| DRDY                   |           6 | V1: GPIO11, V2: GPIO14 | Purple |
-| INT1                   |           2 | V1: GPIO10, V2: GPIO15 | Gray   |
+| DRDY                   |           6 | V1: GPIO14, V2: GPIO11 | Purple |
+| INT1                   |           2 | V1: GPIO15, V2: GPIO10 | Gray   |
 | INT2                   |           4 | Not connected     | -          |
 
 Do not drive the ADXL355 `V1P8ANA`, `V1P8DIG`, or `Vddio` output pins from the
@@ -154,8 +154,8 @@ needed in the release harness. Keep the Pico, ADXL355 board, and RS485 HAT
 grounds common. Connect the RS485 A/B pair according to the HAT markings and
 keep polarity consistent across the bus.
 
-Both revisions use GPIO0/GPIO1 for RS485 TX/RX. V2 additionally uses GPIO2 for
-driver enable; V1 has no firmware-controlled DE pin.
+Both revisions use GPIO0/GPIO1 for RS485 TX/RX. V1 additionally uses GPIO2 for
+driver enable; the installed V2 interface has no firmware-controlled DE pin.
 
 ## Remote Update Over RS485
 

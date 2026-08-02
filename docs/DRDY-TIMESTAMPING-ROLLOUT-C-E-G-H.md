@@ -10,7 +10,8 @@ System: testowy, rejestracja bez określonego czasu zakończenia
 - C, E, G i H zaktualizowano z v0.3.9 do v0.3.10 z timestampingiem v2.
 - F jest fizycznie odłączona i została wyłączona w lokalnej konfiguracji hosta.
 
-Wszystkie aktualizowane nody używają profilu `legacy_eval`:
+Wszystkie aktualizowane nody używały historycznej nazwy `legacy_eval`, która
+od wersji 0.4.1 jest aliasem profilu `board_v2`:
 
 - DRDY: GPIO11;
 - INT1: GPIO10;
@@ -22,7 +23,7 @@ Konfiguracja kompilacji:
 
 ```text
 CMAKE_BUILD_TYPE=Release
-SENSOR_SYSTEM_BOARD_PROFILE=legacy_eval
+SENSOR_SYSTEM_BOARD_PROFILE=board_v2
 SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2=ON
 ```
 

@@ -2,11 +2,11 @@
 
 #include <cstdint>
 
-#define SENSOR_BOARD_PROFILE_CUSTOM_V2 1
-#define SENSOR_BOARD_PROFILE_LEGACY_EVAL 2
+#define SENSOR_BOARD_REVISION_V2 1
+#define SENSOR_BOARD_REVISION_V1 2
 
 #ifndef SENSOR_SYSTEM_BOARD_PROFILE
-#define SENSOR_SYSTEM_BOARD_PROFILE SENSOR_BOARD_PROFILE_CUSTOM_V2
+#define SENSOR_SYSTEM_BOARD_PROFILE SENSOR_BOARD_REVISION_V2
 #endif
 
 #ifndef SENSOR_TIMESTAMPING_V2_ENABLED
@@ -15,19 +15,9 @@
 
 namespace BoardProfile {
 
-#if SENSOR_SYSTEM_BOARD_PROFILE == SENSOR_BOARD_PROFILE_CUSTOM_V2
-static constexpr const char* kName = "custom_v2";
+#if SENSOR_SYSTEM_BOARD_PROFILE == SENSOR_BOARD_REVISION_V2
+static constexpr const char* kName = "board_v2";
 static constexpr uint8_t kRevision = 2;
-static constexpr uint8_t kSpiMiso = 12;
-static constexpr uint8_t kSpiCs = 13;
-static constexpr uint8_t kSpiSck = 10;
-static constexpr uint8_t kSpiMosi = 11;
-static constexpr int8_t kDrdy = 14;
-static constexpr int8_t kInt1 = 15;
-static constexpr int8_t kRs485De = 2;
-#elif SENSOR_SYSTEM_BOARD_PROFILE == SENSOR_BOARD_PROFILE_LEGACY_EVAL
-static constexpr const char* kName = "legacy_eval";
-static constexpr uint8_t kRevision = 1;
 static constexpr uint8_t kSpiMiso = 12;
 static constexpr uint8_t kSpiCs = 13;
 static constexpr uint8_t kSpiSck = 14;
@@ -35,6 +25,16 @@ static constexpr uint8_t kSpiMosi = 15;
 static constexpr int8_t kDrdy = 11;
 static constexpr int8_t kInt1 = 10;
 static constexpr int8_t kRs485De = -1;
+#elif SENSOR_SYSTEM_BOARD_PROFILE == SENSOR_BOARD_REVISION_V1
+static constexpr const char* kName = "board_v1";
+static constexpr uint8_t kRevision = 1;
+static constexpr uint8_t kSpiMiso = 12;
+static constexpr uint8_t kSpiCs = 13;
+static constexpr uint8_t kSpiSck = 10;
+static constexpr uint8_t kSpiMosi = 11;
+static constexpr int8_t kDrdy = 14;
+static constexpr int8_t kInt1 = 15;
+static constexpr int8_t kRs485De = 2;
 #else
 #error "Unknown SENSOR_SYSTEM_BOARD_PROFILE"
 #endif

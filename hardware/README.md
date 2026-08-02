@@ -6,6 +6,13 @@ Current KiCad project:
 
 - `KiCad - node V2/RP2350.kicad_pro`
 
+The directory name is historical. This is an unreleased custom-board design,
+not the definition of the V2 boards installed in Sanok. Installed V2 wiring is
+defined by `node/config/board_profile.h`: SCK 14, MOSI 15, MISO 12, CS 13,
+DRDY 11, INT1 10 and no firmware-controlled DE pin. Do not change the firmware
+revision map from the in-progress KiCad project without a physical bring-up and
+an explicit new board revision.
+
 ## Repository layout
 
 This project should stay as one GitHub repository for now:

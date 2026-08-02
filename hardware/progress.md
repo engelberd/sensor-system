@@ -12,6 +12,9 @@ Bring up the first RP2350A + ADXL355 node PCB with USB-C development access,
 
 Status: `schematic/layout in progress`
 
+The historical `KiCad - node V2` directory is an unreleased custom design and
+must not be confused with the installed V2 board revision used by firmware.
+
 | Area | Status | Notes |
 |---|---:|---|
 | Architecture | in progress | Power tree, sensor, RS485, USB-C direction documented. |

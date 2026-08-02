@@ -4,7 +4,9 @@
 
 - Keep one product line on `main`; do not create per-host or per-board branches.
 - Hardware-dependent pins belong in `node/config/board_profile.h` and are selected at build time.
-- `board_revision` is immutable hardware identity: `1` is `legacy_eval`, `2` is `custom_v2`.
+- `board_revision` is immutable hardware identity: `2` is the installed wiring
+  (SCK 14, MOSI 15, DRDY 11, INT1 10, no DE GPIO); `1` uses SCK 10, MOSI 11,
+  DRDY 14, INT1 15 and DE on GPIO2.
 - Node address, baudrate, ODR, range, filters and offsets are runtime configuration, not board-profile constants.
 - Never commit `host/system_config.json`, active systemd units, recordings, runtime files or raw diagnostic dumps.
 

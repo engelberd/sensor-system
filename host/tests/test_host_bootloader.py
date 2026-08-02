@@ -372,6 +372,31 @@ class HostBootloaderTests(unittest.TestCase):
 
             self.assertIsNone(conflict)
 
+    def test_stopped_supervisor_channel_overrides_fresh_worker_status(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            system_config = self._write_system_config(root)
+            (root / "supervisor-status.json").write_text(
+                json.dumps({"channels": [{"name": "line-e", "running": False}]}),
+                encoding="utf-8",
+            )
+            channels_dir = root / "channels"
+            channels_dir.mkdir(parents=True, exist_ok=True)
+            (channels_dir / "line-e.status.json").write_text(
+                json.dumps(
+                    {
+                        "channel_name": "line-e",
+                        "port": "/dev/ttyTEST0",
+                        "updated_utc": datetime.now(timezone.utc).isoformat(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            conflict = hb.detect_runtime_conflict("/dev/ttyTEST0", system_config)
+
+            self.assertIsNone(conflict)
+
     def test_detect_runtime_conflict_when_fresh_channel_status_exists(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

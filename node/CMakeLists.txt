@@ -9,17 +9,21 @@ project(sensor_system_node C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-set(SENSOR_SYSTEM_BOARD_PROFILE "custom_v2" CACHE STRING
-    "Node board profile: custom_v2 or legacy_eval")
+set(SENSOR_SYSTEM_BOARD_PROFILE "board_v2" CACHE STRING
+    "Node board profile: board_v2 or board_v1")
 set_property(CACHE SENSOR_SYSTEM_BOARD_PROFILE PROPERTY STRINGS
-    custom_v2 legacy_eval)
+    board_v2 board_v1 custom_v2 legacy_eval)
 option(SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2
     "Enable DRDY timestamping v2" ON)
 
-if(SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "custom_v2")
+if(SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "board_v2" OR
+   SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "legacy_eval")
     set(SENSOR_SYSTEM_BOARD_PROFILE_VALUE 1)
-elseif(SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "legacy_eval")
+    set(SENSOR_SYSTEM_BOARD_PROFILE_NAME "board_v2")
+elseif(SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "board_v1" OR
+       SENSOR_SYSTEM_BOARD_PROFILE STREQUAL "custom_v2")
     set(SENSOR_SYSTEM_BOARD_PROFILE_VALUE 2)
+    set(SENSOR_SYSTEM_BOARD_PROFILE_NAME "board_v1")
 else()
     message(FATAL_ERROR
         "Unknown SENSOR_SYSTEM_BOARD_PROFILE='${SENSOR_SYSTEM_BOARD_PROFILE}'")
@@ -179,7 +183,7 @@ add_custom_command(
         --slot-a-bin $<TARGET_FILE_DIR:sensor_system_node_slot_a>/sensor-system-node-slot-a.bin
         --slot-b-bin $<TARGET_FILE_DIR:sensor_system_node_slot_b>/sensor-system-node-slot-b.bin
         --version-header ${PROJECT_SOURCE_DIR}/common/protocol_ids.h
-        --board-profile ${SENSOR_SYSTEM_BOARD_PROFILE}
+        --board-profile ${SENSOR_SYSTEM_BOARD_PROFILE_NAME}
         --timestamping-v2 ${SENSOR_SYSTEM_TIMESTAMPING_V2_VALUE}
         --output ${CMAKE_CURRENT_BINARY_DIR}/sensor-system-node-update-package.json
     DEPENDS
@@ -206,7 +210,7 @@ add_custom_target(sensor_system_node_factory_image ALL
         --metadata-secondary-offset 0x00021000
         --node-id 0
         --version-header ${PROJECT_SOURCE_DIR}/common/protocol_ids.h
-        --board-profile ${SENSOR_SYSTEM_BOARD_PROFILE}
+        --board-profile ${SENSOR_SYSTEM_BOARD_PROFILE_NAME}
         --timestamping-v2 ${SENSOR_SYSTEM_TIMESTAMPING_V2_VALUE}
         --output ${CMAKE_CURRENT_BINARY_DIR}/sensor-system-node-factory.bin
     COMMAND

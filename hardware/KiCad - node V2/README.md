@@ -192,7 +192,11 @@ Recommendation:
 - Keep the ferrite footprint, but make it replaceable by 0R in case the filter
   resonates with ceramic capacitors or is unnecessary.
 
-## RP2350 and firmware-friendly pin plan
+## Unreleased custom-board pin plan
+
+Despite the historical directory name, this in-progress schematic is not the
+source of truth for the V2 boards installed in Sanok. The installed V2 pin map
+is maintained in `node/config/board_profile.h`.
 
 Keep the first custom board close to the current firmware pinout.
 

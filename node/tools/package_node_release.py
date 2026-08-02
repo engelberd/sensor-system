@@ -165,7 +165,7 @@ def main() -> int:
         raise RuntimeError(f"missing build artifact: {update_package_src}")
     update_package = json.loads(update_package_src.read_text(encoding="utf-8"))
     board_profile = str(update_package.get("board_profile", "unknown"))
-    if board_profile not in {"legacy_eval", "custom_v2"}:
+    if board_profile not in {"board_v1", "board_v2"}:
         raise RuntimeError(f"unsupported release board profile: {board_profile}")
     expected_version = version_int(version)
     if int(update_package.get("version", -1)) != expected_version:
@@ -195,7 +195,7 @@ def main() -> int:
         },
         "host_release_included": False,
         "board_profile": board_profile,
-        "board_revision": {"legacy_eval": 1, "custom_v2": 2}[board_profile],
+        "board_revision": {"board_v1": 1, "board_v2": 2}[board_profile],
         "files": [
             {
                 "name": path.name,

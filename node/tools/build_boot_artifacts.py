@@ -14,7 +14,12 @@ BOOT_METADATA_VERSION = 2
 SLOT_NONE = 0
 SLOT_A = 1
 SLOT_B = 2
-BOARD_PROFILE_REVISIONS = {"legacy_eval": 1, "custom_v2": 2}
+BOARD_PROFILE_REVISIONS = {
+    "board_v1": 1,
+    "board_v2": 2,
+    "custom_v2": 1,
+    "legacy_eval": 2,
+}
 
 
 def crc32(data: bytes) -> int:

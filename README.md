@@ -30,10 +30,11 @@ Local runtime output has one predictable layout:
 These directories are not versioned. Use `./hostctl paths` to display the
 effective paths for the active host configuration.
 
-Every installed node has an immutable hardware revision. Revision `1` is the
-legacy evaluation wiring and revision `2` is the custom V2 board. The current
-Sanok installation uses revision `2`; node IDs and sensor settings remain
-runtime configuration independent of that revision.
+Every installed node has an immutable hardware revision. Revision `2` is the
+currently installed wiring (SCK 14, MOSI 15, DRDY 11, INT1 10, no DE GPIO),
+while revision `1` uses SCK 10, MOSI 11, DRDY 14, INT1 15 and DE on GPIO2.
+Node IDs and sensor settings remain runtime configuration independent of that
+revision.
 
 ## Repository Notes
 

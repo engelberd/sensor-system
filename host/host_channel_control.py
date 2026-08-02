@@ -179,6 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--system-config", default=DEFAULT_SYSTEM_CONFIG_PATH)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    for action in ("stop", "start"):
+        control = sub.add_parser(
+            action,
+            help=f"{action.capitalize()} one recorder worker through the running supervisor",
+        )
+        control.add_argument("--channel", required=True)
+        control.add_argument("--worker-timeout", type=float, default=10.0)
+
     restart_remote = sub.add_parser(
         "restart-remote",
         help="Restart the remote node over RS485 and request recorder worker restart for the channel",
@@ -205,6 +213,28 @@ def main() -> int:
     args = build_parser().parse_args()
     system_config_path = _resolve_system_config(args.system_config)
     data = _load_system_config(system_config_path)
+
+    if args.command in {"stop", "start"}:
+        _find_channel(data, args.channel)
+        status_path = _supervisor_status_path(data, system_config_path)
+        runtime_dir = _runtime_dir(data, system_config_path)
+        command_file = _write_channel_command(runtime_dir, args.channel, args.command)
+        print(f"[OK] recorder {args.command} requested for channel={args.channel} via {command_file}")
+        expected_running = args.command == "start"
+        if not _wait_for_channel_running(
+            status_path,
+            args.channel,
+            expected_running,
+            args.worker_timeout,
+        ):
+            expected_label = "running" if expected_running else "stopped"
+            raise RuntimeError(
+                f"channel '{args.channel}' did not become {expected_label} "
+                f"within {args.worker_timeout:.1f}s"
+            )
+        state_label = "running" if expected_running else "stopped"
+        print(f"[OK] recorder worker for channel={args.channel} is {state_label}")
+        return 0
 
     if args.command == "restart-remote":
         channel = _find_channel(data, args.channel)

@@ -6,7 +6,6 @@
 #include "hardware/address_mapped.h"
 #include "hardware/flash.h"
 #include "pico/flash.h"
-#include "pico/multicore.h"
 
 namespace {
 
@@ -102,16 +101,12 @@ bool PersistentDiagnosticStore::write_copy(uint32_t flash_offset, const Persiste
         .length = FLASH_PAGE_BYTES
     };
 
-    multicore_lockout_start_blocking();
-
     const int erase_rc = flash_safe_execute(flash_erase_callback, &erase_ctx, UINT32_MAX);
     if (erase_rc != PICO_OK) {
-        multicore_lockout_end_blocking();
         return false;
     }
 
     const int prog_rc = flash_safe_execute(flash_program_callback, &prog_ctx, UINT32_MAX);
-    multicore_lockout_end_blocking();
 
     if (prog_rc != PICO_OK) {
         return false;
@@ -128,9 +123,7 @@ bool PersistentDiagnosticStore::erase_copy(uint32_t flash_offset) {
         .length = FLASH_SECTOR_BYTES
     };
 
-    multicore_lockout_start_blocking();
     const int erase_rc = flash_safe_execute(flash_erase_callback, &erase_ctx, UINT32_MAX);
-    multicore_lockout_end_blocking();
 
     if (erase_rc != PICO_OK) {
         return false;

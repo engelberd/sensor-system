@@ -96,7 +96,12 @@ DEFAULT_SYSTEM_CONFIG_PATH = Path(__file__).resolve().parent / "system_config.js
 RUNTIME_STATUS_STALE_AFTER_S = 10.0
 GET_CONFIG_FORMAT_V2 = "<BBBIHBiiiBHBBBBIQ"
 GET_CONFIG_FORMAT_V3 = GET_CONFIG_FORMAT_V2 + "B"
-BOARD_PROFILE_REVISIONS = {"legacy_eval": 1, "custom_v2": 2}
+BOARD_PROFILE_REVISIONS = {
+    "board_v1": 1,
+    "board_v2": 2,
+    "custom_v2": 1,
+    "legacy_eval": 2,
+}
 
 
 def crc16_ccitt(data: bytes) -> int:
@@ -161,7 +166,7 @@ def resolve_system_config_path(raw_path: str) -> Path:
     return config_path
 
 
-def _supervisor_channel_running(status_payload: dict, channel_name: str) -> bool:
+def _supervisor_channel_running(status_payload: dict, channel_name: str) -> Optional[bool]:
     channels = status_payload.get("channels")
     if not isinstance(channels, list):
         return False
@@ -172,7 +177,15 @@ def _supervisor_channel_running(status_payload: dict, channel_name: str) -> bool
         if str(channel.get("name")) != channel_name:
             continue
         return bool(channel.get("running", False))
-    return False
+    return None
+
+
+def _runtime_file_is_fresh(path: Path) -> bool:
+    try:
+        age_s = time.time() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age_s <= RUNTIME_STATUS_STALE_AFTER_S
 
 
 def _runtime_status_is_fresh(status_payload: dict) -> bool:
@@ -203,17 +216,24 @@ def detect_runtime_conflict(port: str, system_config_path: Path) -> Optional[str
     if not matching_channels:
         return None
 
-    supervisor_status = load_json_file(Path(system_config.supervisor.status_file))
-    if supervisor_status is not None:
+    supervisor_status_path = Path(system_config.supervisor.status_file)
+    supervisor_status = load_json_file(supervisor_status_path)
+    supervisor_stopped: set[str] = set()
+    if supervisor_status is not None and _runtime_file_is_fresh(supervisor_status_path):
         for channel in matching_channels:
-            if _supervisor_channel_running(supervisor_status, channel.name):
+            supervisor_running = _supervisor_channel_running(supervisor_status, channel.name)
+            if supervisor_running is True:
                 return (
                     f"channel '{channel.name}' is recording on port {port}; "
                     "stop the supervisor/recorder before bootloader actions"
                 )
+            if supervisor_running is False:
+                supervisor_stopped.add(channel.name)
 
     runtime_dir = Path(system_config.supervisor.channel_runtime_dir)
     for channel in matching_channels:
+        if channel.name in supervisor_stopped:
+            continue
         channel_status = load_json_file(runtime_dir / f"{channel.name}.status.json")
         if channel_status is None:
             continue

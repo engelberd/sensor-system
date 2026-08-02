@@ -40,6 +40,7 @@ class RuntimeStatusNode:
     instant_samples_per_second_5s: float | None = None
     rate_stability_percent_5s: float | None = None
     sample_flow_state: str = "unknown"
+    board_revision: int | None = None
 
 
 @dataclass

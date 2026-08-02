@@ -7,7 +7,6 @@
 #include "hardware/flash.h"
 #include "pico/stdlib.h"
 #include "pico/flash.h"
-#include "pico/multicore.h"
 
 namespace boot {
 namespace {
@@ -76,16 +75,12 @@ bool write_one_metadata_copy(uint32_t flash_offset, const BootMetadata& metadata
         .length = FLASH_PAGE_SIZE
     };
 
-    multicore_lockout_start_blocking();
-
     const int erase_rc = flash_safe_execute(flash_erase_callback, &erase_ctx, UINT32_MAX);
     if (erase_rc != PICO_OK) {
-        multicore_lockout_end_blocking();
         return false;
     }
 
     const int prog_rc = flash_safe_execute(flash_program_callback, &prog_ctx, UINT32_MAX);
-    multicore_lockout_end_blocking();
 
     if (prog_rc != PICO_OK) {
         return false;

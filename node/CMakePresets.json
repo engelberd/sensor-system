@@ -7,7 +7,7 @@
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "SENSOR_SYSTEM_BOARD_PROFILE": "custom_v2",
+        "SENSOR_SYSTEM_BOARD_PROFILE": "board_v2",
         "SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2": "ON"
       }
     },
@@ -17,7 +17,7 @@
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build.v1",
       "cacheVariables": {
-        "SENSOR_SYSTEM_BOARD_PROFILE": "legacy_eval",
+        "SENSOR_SYSTEM_BOARD_PROFILE": "board_v1",
         "SENSOR_SYSTEM_ENABLE_TIMESTAMPING_V2": "ON"
       }
     }

@@ -471,6 +471,11 @@ def to_runtime_nodes(raw_nodes: list[dict[str, Any]], channel: ChannelConfig) ->
                 node_id=node_id,
                 name=node_names.get(node_id),
                 firmware_version=raw.get("firmware_version"),
+                board_revision=(
+                    int(raw["board_revision"])
+                    if raw.get("board_revision") is not None
+                    else None
+                ),
                 online=bool(raw.get("online", False)),
                 sensor_odr_hz=int(raw.get("sensor_odr_hz", 0)),
                 output_odr_hz=float(raw.get("output_odr_hz", 0.0)),

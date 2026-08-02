@@ -7,6 +7,34 @@ from host.host_channel_control import _wait_for_node_ready, build_parser, main
 
 
 class ChannelControlBootWaitTests(unittest.TestCase):
+    def test_direct_stop_waits_for_worker_confirmation(self) -> None:
+        config = {
+            "supervisor": {
+                "status_file": "/tmp/supervisor.json",
+                "channel_runtime_dir": "/tmp/channels",
+            },
+            "channels": [
+                {"name": "line-g", "port": "/dev/ttyUSB6", "baud": 115200}
+            ],
+        }
+
+        with (
+            patch("host.host_channel_control.build_parser") as parser,
+            patch("host.host_channel_control._resolve_system_config"),
+            patch("host.host_channel_control._load_system_config", return_value=config),
+            patch("host.host_channel_control._supervisor_status_path") as status_path,
+            patch("host.host_channel_control._runtime_dir") as runtime_dir,
+            patch("host.host_channel_control._write_channel_command") as write_command,
+            patch("host.host_channel_control._wait_for_channel_running", return_value=True) as wait,
+        ):
+            parser.return_value.parse_args.return_value = build_parser().parse_args(
+                ["stop", "--channel", "line-g"]
+            )
+            self.assertEqual(main(), 0)
+
+        write_command.assert_called_once_with(runtime_dir.return_value, "line-g", "stop")
+        wait.assert_called_once_with(status_path.return_value, "line-g", False, 10.0)
+
     def test_restart_defaults_cover_bootloader_and_application_delays(self) -> None:
         args = build_parser().parse_args(["restart-remote", "--channel", "line-b"])
 
