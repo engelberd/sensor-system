@@ -42,9 +42,10 @@ will own RS485 communication plus future remote updates.
   as a stable symlink (example in `host/udev/99-sensor-system-rs485.rules.example`).
 - **Auto-start on boot**: run either the single-channel recorder or the
   multi-channel supervisor under `systemd` with restart-on-failure. The repo
-  includes example units for both:
-  `host/systemd/sensor-system-recorder.service.example` and
-  `host/systemd/sensor-system-supervisor.service.example`.
+  includes product-named example units:
+  `host/systemd/sensor-system-recorder.service.example`,
+  `host/systemd/sensor-system-supervisor.service.example`, and
+  `host/systemd/sensor-system-dashboard.service.example`.
 - **Operator page always available**: for supervisor-based deployments, also run
   `host/systemd/sensor-system-operator-panel.service.example` under `systemd`. The panel
   is safe to keep online continuously because it only reads runtime files until an
@@ -82,12 +83,14 @@ host, the minimum local setup is:
    - edit paths/args
    - `sudo systemctl daemon-reload`
    - `sudo systemctl enable --now sensor-system-recorder.service`
-   - for multi-channel deployments, prefer `host/systemd/sensor-system-supervisor.service.example`
+   - for multi-channel deployments, install both
+     `host/systemd/sensor-system-supervisor.service.example` and
+     `host/systemd/sensor-system-dashboard.service.example`
 5. For multi-channel deployments, install the always-on operator panel too:
    - copy `host/systemd/sensor-system-operator-panel.service.example` to `/etc/systemd/system/sensor-system-operator-panel.service`
    - edit paths/args if needed
    - `sudo systemctl daemon-reload`
-   - `sudo systemctl enable --now sensor-system-supervisor.service sensor-system-operator-panel.service`
+   - `sudo systemctl enable --now sensor-system-supervisor.service sensor-system-dashboard.service`
 
 ## 4) Suggested pre-flight tests before final install
 

@@ -1,0 +1,39 @@
+[Unit]
+Description=Sensor System host dashboard
+After=network-online.target sensor-system-supervisor.service
+Wants=network-online.target
+PartOf=sensor-system-supervisor.service
+
+[Service]
+Type=simple
+
+# Adjust this to where you deploy the repo (or a copy of it).
+WorkingDirectory=/opt/sensor-system
+
+# Optional environment file for overriding dashboard settings without editing the unit.
+# Create e.g. /etc/sensor-system-dashboard.env and set:
+#   SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
+#   SENSOR_SYSTEM_DASHBOARD_HOST=0.0.0.0
+#   SENSOR_SYSTEM_DASHBOARD_PORT=8090
+Environment=SENSOR_SYSTEM_CONFIG=/opt/sensor-system/host/system_config.json
+Environment=SENSOR_SYSTEM_DASHBOARD_HOST=127.0.0.1
+Environment=SENSOR_SYSTEM_DASHBOARD_PORT=8090
+EnvironmentFile=-/etc/sensor-system-dashboard.env
+
+Environment=PYTHONUNBUFFERED=1
+UMask=0027
+
+ExecStart=/opt/sensor-system/host/.venv/bin/python /opt/sensor-system/host/host_dashboard.py \
+  --config ${SENSOR_SYSTEM_CONFIG} \
+  --host ${SENSOR_SYSTEM_DASHBOARD_HOST} \
+  --port ${SENSOR_SYSTEM_DASHBOARD_PORT}
+
+Restart=always
+RestartSec=5
+
+KillSignal=SIGINT
+TimeoutStopSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
