@@ -6,7 +6,7 @@ This repository contains the full Sensor System project:
 - `node/` for the Pico firmware and bootloader artifacts
 - `host/` for recorder, configurator, supervisor, dashboards, and deployment files
 
-Current product version: **0.3.10**.
+Current product version: **0.4.1**.
 
 For day-to-day use, see the Polish
 [operator guide](docs/INSTRUKCJA-OPERATORA.md). For a new host computer, run:
@@ -15,9 +15,18 @@ For day-to-day use, see the Polish
 ./host/tools/setup_host.sh
 ```
 
-Then adapt the generated `host/system_config.json`. Release validation and
-publication are described in [RELEASING.md](RELEASING.md), and notable changes
-are listed in [CHANGELOG.md](CHANGELOG.md).
+The generated, ignored `host/system_config.json` extends the tracked
+`host/configs/host_system.base.json`. Keep shared channel and sensor defaults in
+the base file; keep the host name, device ports, storage overrides and disabled
+channels in the local overlay. Validate an installation with:
+
+```bash
+./hostctl doctor --config host/system_config.json
+```
+
+Release validation and publication are described in
+[RELEASING.md](RELEASING.md), and notable changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 Local runtime output has one predictable layout:
 

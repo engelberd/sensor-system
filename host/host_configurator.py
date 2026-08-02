@@ -12,6 +12,8 @@ from typing import Optional
 
 import serial
 
+from host.common.system_config import load_config_data
+
 
 FRAME_MAGIC = 0xAA55
 FRAME_PROTOCOL_VERSION = 2
@@ -370,28 +372,45 @@ def sync_system_config_from_device_config(
         raise RuntimeError(f"system config '{system_config_path}' does not exist")
 
     data = json.loads(system_config_path.read_text(encoding="utf-8"))
-    channels = data.get("channels")
-    if not isinstance(channels, list) or not channels:
+    resolved_data = load_config_data(system_config_path)
+    resolved_channels = resolved_data.get("channels")
+    if not isinstance(resolved_channels, list) or not resolved_channels:
         raise RuntimeError(f"system config '{system_config_path}' does not define any channels")
 
     channel_matches = [
         channel
-        for channel in channels
+        for channel in resolved_channels
         if isinstance(channel, dict) and str(channel.get("port")) == port
     ]
     if not channel_matches:
-        if len(channels) == 1 and isinstance(channels[0], dict):
-            channel = channels[0]
+        if len(resolved_channels) == 1 and isinstance(resolved_channels[0], dict):
+            resolved_channel = resolved_channels[0]
         else:
             raise RuntimeError(f"no channel in '{system_config_path}' matches port '{port}'")
     elif len(channel_matches) == 1:
-        channel = channel_matches[0]
+        resolved_channel = channel_matches[0]
     else:
         raise RuntimeError(f"multiple channels in '{system_config_path}' match port '{port}'")
 
-    raw_nodes = channel.get("nodes")
-    if not isinstance(raw_nodes, list) or not raw_nodes:
-        raise RuntimeError(f"channel '{channel.get('name', '?')}' does not define any nodes")
+    channel_name = str(resolved_channel.get("name", "channel"))
+    channels = data.setdefault("channels", [])
+    if not isinstance(channels, list):
+        raise RuntimeError(f"system config '{system_config_path}' has invalid local channels")
+    channel = next(
+        (
+            item
+            for item in channels
+            if isinstance(item, dict) and str(item.get("name")) == channel_name
+        ),
+        None,
+    )
+    if channel is None:
+        channel = {"name": channel_name}
+        channels.append(channel)
+
+    raw_nodes = channel.setdefault("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raise RuntimeError(f"channel '{channel_name}' has invalid local nodes")
 
     matched_index: int | None = None
     matched_entry: dict | None = None
@@ -417,12 +436,22 @@ def sync_system_config_from_device_config(
                 break
 
     if matched_index is None or matched_entry is None:
-        if len(raw_nodes) == 1:
+        resolved_nodes = resolved_channel.get("nodes", [])
+        resolved_ids = {
+            int(entry.get("id", entry.get("node_id", -1)))
+            for raw_node in resolved_nodes
+            if (entry := _normalize_channel_node_entry(raw_node)) is not None
+        }
+        if previous_node_id in resolved_ids or updated.node_id in resolved_ids:
+            matched_index = len(raw_nodes)
+            matched_entry = {"id": previous_node_id}
+            raw_nodes.append(matched_entry)
+        elif len(raw_nodes) == 1:
             matched_index = 0
             matched_entry = _normalize_channel_node_entry(raw_nodes[0]) or {}
         else:
             raise RuntimeError(
-                f"no node in channel '{channel.get('name', '?')}' matches ids {previous_node_id} or {updated.node_id}"
+                f"no node in channel '{channel_name}' matches ids {previous_node_id} or {updated.node_id}"
             )
 
     matched_entry["id"] = updated.node_id
@@ -446,7 +475,7 @@ def sync_system_config_from_device_config(
     system_config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return SystemConfigSyncResult(
         path=system_config_path,
-        channel_name=str(channel.get("name", "channel")),
+        channel_name=channel_name,
         node_id=updated.node_id,
     )
 

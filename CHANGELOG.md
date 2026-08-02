@@ -29,6 +29,10 @@ wspólny dla narzędzi hosta i firmware'u.
   zatrzymać trial boot na zapisie metadanych i wywołać rollback watchdogiem.
 - Sterowanie pojedynczym workerem jest dostępne przez `hostctl channel
   stop/start`, a bootloader respektuje potwierdzony stan zatrzymania supervisora.
+- Konfiguracja hosta obsługuje śledzony base i ignorowany lokalny overlay,
+  scalając kanały po nazwie i nody po adresie.
+- Dodano odczytową komendę `hostctl doctor` sprawdzającą konfigurację, porty,
+  sterownik, storage, supervisor, firmware, rewizję płytki i przepływ danych.
 
 ## [0.4.0] - 2026-08-02
 

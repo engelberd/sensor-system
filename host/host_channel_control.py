@@ -13,12 +13,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from host.common.system_config import load_config_data
 from host.host_configurator import (
     CMD_GET_CONFIG,
     CMD_RESTART,
     HostConfig,
     ProtocolClient,
-    load_json_config,
     send_and_wait,
 )
 
@@ -36,7 +36,7 @@ def _resolve_system_config(path: str) -> Path:
 
 
 def _load_system_config(path: Path) -> dict[str, Any]:
-    data = load_json_config(path)
+    data = load_config_data(path)
     if not isinstance(data, dict):
         raise RuntimeError(f"system config '{path}' is invalid")
     return data

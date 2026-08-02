@@ -39,6 +39,55 @@ from host.host_lab import STATS_FORMAT_V7, parse_stats
 
 
 class HostConfiguratorSyncTests(unittest.TestCase):
+    def test_sync_writes_device_settings_to_local_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "base.json").write_text(
+                json.dumps(
+                    {
+                        "storage": {"capture_schema": 1},
+                        "channels": [
+                            {
+                                "name": "line-a",
+                                "port": "/dev/ttyACM0",
+                                "nodes": [{"id": 1, "board_revision": 2}],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path = root / "local.json"
+            config_path.write_text(
+                json.dumps({"extends": "base.json", "system": {"name": "host-one"}}),
+                encoding="utf-8",
+            )
+
+            sync_system_config_from_device_config(
+                config_path,
+                port="/dev/ttyACM0",
+                previous_node_id=1,
+                updated=ConfigView(
+                    node_id=1,
+                    baudrate=115200,
+                    odr_hz=250,
+                    range_g=2,
+                    offset_x=1,
+                    offset_y=2,
+                    offset_z=3,
+                    fifo_watermark=30,
+                    act_threshold=0,
+                    act_count=1,
+                    high_pass_corner=0,
+                    board_revision=2,
+                ),
+            )
+
+            local = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(local["extends"], "base.json")
+            self.assertEqual(local["channels"][0]["name"], "line-a")
+            self.assertEqual(local["channels"][0]["nodes"][0]["board_revision"], 2)
+
     def test_parse_current_config_includes_board_revision(self) -> None:
         payload = struct.pack(
             GET_CONFIG_FORMAT,

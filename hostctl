@@ -34,6 +34,7 @@ Commands:
   dashboard  Run web dashboard for supervisor/runtime state
   operator   Run operator control panel for host, node config, runs, and preview
   paths      Show the effective config, recording, archive, log and runtime paths
+  doctor     Run read-only host, storage, runtime and device inventory checks
   boot       Run bootloader maintenance tool
   update     Upload latest firmware package over RS485
   py         Run arbitrary python module/script inside host venv
@@ -53,6 +54,7 @@ Examples:
   ./hostctl dashboard --config host/system_config.json --port 8080
   ./hostctl operator --config host/system_config.json --port 8090
   ./hostctl paths
+  ./hostctl doctor
   ./hostctl boot --port /dev/sensor-system-rs485 --node 1 --enter app hello
   ./hostctl update --port /dev/sensor-system-rs485 --node 1
 EOF
@@ -99,6 +101,9 @@ case "$COMMAND" in
     ;;
   paths)
     exec "$VENV_PYTHON" "$ROOT_DIR/host/host_paths.py" "$@"
+    ;;
+  doctor)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_doctor.py" "$@"
     ;;
   boot)
     exec "$VENV_PYTHON" "$ROOT_DIR/host/tools/bootloader_cli.py" "$@"

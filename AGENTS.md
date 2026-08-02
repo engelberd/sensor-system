@@ -9,6 +9,9 @@
   DRDY 14, INT1 15 and DE on GPIO2.
 - Node address, baudrate, ODR, range, filters and offsets are runtime configuration, not board-profile constants.
 - Never commit `host/system_config.json`, active systemd units, recordings, runtime files or raw diagnostic dumps.
+- Shared deployment defaults belong in `host/configs/host_system.base.json`;
+  each ignored `host/system_config.json` may extend it and contain only local
+  port, storage and enable/disable overrides.
 
 ## Local state
 
@@ -23,6 +26,8 @@
 - After firmware logic changes run `bash node/tests/run_host_tests.sh`.
 - Use `./sgit` instead of `git` in this Codex workspace.
 - A firmware update must not bypass board-revision validation unless the physical board was checked manually.
+- Run `./hostctl doctor` after changing host configuration or deploying to a
+  different system.
 
 ## Repository hygiene
 

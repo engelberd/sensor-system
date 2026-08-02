@@ -1,8 +1,86 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def _item_identity(section: str, item: object) -> object:
+    if section == "channels" and isinstance(item, dict):
+        return item.get("name")
+    if section == "nodes":
+        if isinstance(item, int):
+            return item
+        if isinstance(item, dict):
+            return item.get("id", item.get("node_id"))
+    return None
+
+
+def merge_config_data(base: object, overlay: object, *, section: str = "") -> object:
+    """Recursively merge config data, matching channels by name and nodes by id."""
+    if isinstance(base, dict) and isinstance(overlay, dict):
+        merged = deepcopy(base)
+        for key, value in overlay.items():
+            if key in merged:
+                merged[key] = merge_config_data(merged[key], value, section=key)
+            else:
+                merged[key] = deepcopy(value)
+        return merged
+
+    if isinstance(base, list) and isinstance(overlay, list) and section in {"channels", "nodes"}:
+        merged = deepcopy(base)
+        positions = {
+            _item_identity(section, item): index
+            for index, item in enumerate(merged)
+            if _item_identity(section, item) is not None
+        }
+        for item in overlay:
+            identity = _item_identity(section, item)
+            if identity is None:
+                raise ValueError(f"overlay entry in '{section}' must define its identity")
+            if identity in positions:
+                index = positions[identity]
+                merged[index] = merge_config_data(
+                    merged[index], item, section=section
+                )
+            else:
+                positions[identity] = len(merged)
+                merged.append(deepcopy(item))
+        return merged
+
+    return deepcopy(overlay)
+
+
+def load_config_data(
+    path: str | Path,
+    *,
+    _stack: tuple[Path, ...] = (),
+) -> dict:
+    """Load a system config, resolving an optional relative ``extends`` chain."""
+    config_path = Path(path).expanduser().resolve()
+    if config_path in _stack:
+        chain = " -> ".join(str(item) for item in (*_stack, config_path))
+        raise ValueError(f"circular system config extends chain: {chain}")
+
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"system config '{config_path}' must contain a JSON object")
+
+    extends = raw.pop("extends", None)
+    if extends is None:
+        return raw
+    if not isinstance(extends, str) or not extends.strip():
+        raise ValueError("system config 'extends' must be a non-empty path string")
+
+    base_path = Path(extends).expanduser()
+    if not base_path.is_absolute():
+        base_path = config_path.parent / base_path
+    base = load_config_data(base_path, _stack=(*_stack, config_path))
+    merged = merge_config_data(base, raw)
+    if not isinstance(merged, dict):
+        raise ValueError("resolved system config must contain a JSON object")
+    return merged
 
 
 @dataclass(frozen=True)
@@ -101,9 +179,7 @@ class HostSystemConfig:
 
     @classmethod
     def load(cls, path: str | Path) -> "HostSystemConfig":
-        config_path = Path(path)
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-        return cls.from_dict(data)
+        return cls.from_dict(load_config_data(path))
 
     @classmethod
     def from_dict(cls, data: dict) -> "HostSystemConfig":

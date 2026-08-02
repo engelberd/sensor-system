@@ -1,0 +1,17 @@
+{
+  "extends": "configs/host_system.base.json",
+  "system": {
+    "name": "rpi-example",
+    "site": "example-site"
+  },
+  "channels": [
+    {"name": "line-a", "port": "/dev/ttyCH9344USB0"},
+    {"name": "line-b", "port": "/dev/ttyCH9344USB1"},
+    {"name": "line-c", "port": "/dev/ttyCH9344USB2"},
+    {"name": "line-d", "port": "/dev/ttyCH9344USB3"},
+    {"name": "line-e", "port": "/dev/ttyCH9344USB4"},
+    {"name": "line-f", "port": "/dev/ttyCH9344USB5", "enabled": false},
+    {"name": "line-g", "port": "/dev/ttyCH9344USB6"},
+    {"name": "line-h", "port": "/dev/ttyCH9344USB7"}
+  ]
+}
