@@ -27,6 +27,23 @@ class SystemConfigOverlayTests(unittest.TestCase):
             all(node.board_revision == 2 for channel in profile.channels for node in channel.nodes)
         )
 
+    def test_repository_macos_overlay_is_valid_when_copied_to_host(self) -> None:
+        template_path = (
+            PROJECT_ROOT / "host/configs/host_system.macos.example.json"
+        )
+        data = json.loads(template_path.read_text(encoding="utf-8"))
+        data["extends"] = str(PROJECT_ROOT / "host" / data["extends"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = Path(tmp) / "system_config.json"
+            local_path.write_text(json.dumps(data), encoding="utf-8")
+            config = HostSystemConfig.load(local_path)
+
+        self.assertEqual(config.system.name, "macos-workstation")
+        self.assertEqual(config.supervisor.channel_runtime_dir, "var/run")
+        self.assertEqual(len(config.channels), 8)
+        self.assertTrue(all(not channel.enabled for channel in config.channels))
+
     def test_overlay_merges_channels_by_name_and_nodes_by_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

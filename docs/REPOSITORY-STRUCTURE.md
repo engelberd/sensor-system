@@ -19,11 +19,13 @@ sensor-system/
 │   └── system_config.json    lokalna, ignorowana nakładka aktywnego hosta
 ├── docs/                     formaty danych, ADR-y i instrukcje
 ├── tools/                    wspólne narzędzia repozytorium
+├── Brewfile                  deklaracja zewnętrznych narzędzi macOS
 └── var/                      lokalne dane robocze; zawartość ignorowana
     ├── recordings/
     ├── archive/
     ├── diagnostics/
     ├── log/
+    ├── run/
     └── tmp/
 ```
 

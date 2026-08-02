@@ -8,6 +8,7 @@ local and ignored by Git:
 - `diagnostics/` — temporary diagnostic exports
 - `log/` — supervisor and worker logs
 - `tmp/` — disposable working files
+- `run/` — portable runtime status and locks for development workstations
 
 Only this README and the empty directory markers are versioned. Never commit
 measurements, logs, locks, status files or temporary artifacts.

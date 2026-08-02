@@ -1,0 +1,27 @@
+{
+  "extends": "configs/systems/rpi-sanok.json",
+  "system": {
+    "name": "macos-workstation",
+    "site": "local-development"
+  },
+  "storage": {
+    "root_dir": "var/recordings",
+    "archive_dir": "var/archive"
+  },
+  "supervisor": {
+    "status_file": "var/run/supervisor.status.json",
+    "event_log": "var/log/supervisor.events.jsonl",
+    "channel_runtime_dir": "var/run",
+    "log_dir": "var/log"
+  },
+  "channels": [
+    {"name": "line-a", "port": "/dev/cu.REPLACE-line-a", "enabled": false},
+    {"name": "line-b", "port": "/dev/cu.REPLACE-line-b", "enabled": false},
+    {"name": "line-c", "port": "/dev/cu.REPLACE-line-c", "enabled": false},
+    {"name": "line-d", "port": "/dev/cu.REPLACE-line-d", "enabled": false},
+    {"name": "line-e", "port": "/dev/cu.REPLACE-line-e", "enabled": false},
+    {"name": "line-f", "port": "/dev/cu.REPLACE-line-f", "enabled": false},
+    {"name": "line-g", "port": "/dev/cu.REPLACE-line-g", "enabled": false},
+    {"name": "line-h", "port": "/dev/cu.REPLACE-line-h", "enabled": false}
+  ]
+}

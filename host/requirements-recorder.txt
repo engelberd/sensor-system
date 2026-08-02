@@ -1,3 +1,3 @@
-pyserial
-numpy
-h5py
+pyserial>=3.5,<4
+numpy>=2,<3
+h5py>=3.11,<4

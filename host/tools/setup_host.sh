@@ -17,7 +17,9 @@ fi
 if [[ ! -f "${PROFILE_PATH}" ]]; then
     echo "[ERROR] Nie ma profilu systemu: ${PROFILE_PATH}" >&2
     echo "Dostępne profile:" >&2
-    find "${ROOT_DIR}/host/configs/systems" -maxdepth 1 -name '*.json' -printf '  %f\n' >&2
+    for profile_path in "${ROOT_DIR}"/host/configs/systems/*.json; do
+        echo "  $(basename "${profile_path}")" >&2
+    done
     exit 2
 fi
 

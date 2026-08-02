@@ -15,6 +15,10 @@ For day-to-day use, see the Polish
 ./host/tools/setup_host.sh rpi-sanok
 ```
 
+For a macOS KiCad, firmware and host-development workstation, follow
+[the macOS setup guide](docs/SETUP-MACOS.md), install declared tools with
+`brew bundle --file Brewfile`, and run `./tools/check_macos.sh`.
+
 The generated, ignored `host/system_config.json` extends a tracked profile from
 `host/configs/systems/`. Product-wide defaults live in
 `host/configs/common.json`; stable channel and sensor facts live in the system

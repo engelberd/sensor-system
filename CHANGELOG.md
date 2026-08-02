@@ -11,6 +11,8 @@
   dependency.
 - Removed the broken `pico-sdk` gitlink; the SDK remains an ignored external
   dependency selected through `PICO_SDK_PATH`.
+- Added a Homebrew dependency manifest, macOS environment checker, portable
+  runtime overlay and setup guide for KiCad, Pico SDK and USB-RS485 workflows.
 
 Wersjonowanie projektu stosuje format `MAJOR.MINOR.PATCH`. Numer wydania jest
 wspólny dla narzędzi hosta i firmware'u.

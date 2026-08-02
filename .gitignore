@@ -21,6 +21,8 @@ logs/
 !/var/log/.gitkeep
 !/var/tmp/
 !/var/tmp/.gitkeep
+!/var/run/
+!/var/run/.gitkeep
 /LINUX/
 /pico-sdk/
 diagnostics/*
