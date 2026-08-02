@@ -50,6 +50,7 @@ class CaptureV1WindowedWriter(BaseWriter):
         self.current_path: Path | None = None
         self.current_window_start: datetime | None = None
         self.current_window_end: datetime | None = None
+        self._recover_partial_windows()
 
     def aligned_window_start(self, when_utc: datetime) -> datetime:
         timestamp = when_utc.astimezone(timezone.utc).timestamp()
@@ -97,6 +98,48 @@ class CaptureV1WindowedWriter(BaseWriter):
                 self.node.node_id, expected, received, packet, boot_epoch
             )
         self.pending_gaps.clear()
+
+    def _recover_partial_windows(self) -> None:
+        """Resume the current UTC window and publish windows that already ended."""
+        output_dir = Path(self.args.output_dir)
+        prefix = f"sensor-{self.identity.sensor_label}_"
+        suffix = ".capture.h5.partial"
+        pattern = f"????-??-??/{prefix}????????T??????Z{suffix}"
+        now = datetime.now(timezone.utc)
+        for partial in sorted(output_dir.glob(pattern)):
+            label = partial.name[len(prefix):-len(suffix)]
+            try:
+                window_start = datetime.strptime(
+                    label,
+                    "%Y%m%dT%H%M%SZ",
+                ).replace(tzinfo=timezone.utc)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"invalid Capture partial window name: {partial}"
+                ) from exc
+            final = Path(str(partial)[:-len(".partial")])
+            if final.exists():
+                raise RuntimeError(
+                    f"Capture final and partial both exist: {final}"
+                )
+            writer = CaptureV1Writer(
+                partial,
+                self.identity,
+                self._metadata_for(window_start),
+                compression=self.args.compression,
+                append=True,
+            )
+            self._prepare_writer(writer)
+            self.seen_sample_keys.update(writer.committed_keys())
+            window_end = window_start + timedelta(seconds=self.args.window_seconds)
+            if window_end <= now:
+                self._publish(final, partial, writer)
+                self.finalized_windows.add(window_start)
+                continue
+            self.active_windows[window_start] = (final, partial, writer)
+            self.current_window_start = window_start
+            self.current_window_end = window_end
+            self.current_path = final
 
     def _ensure_window(self, window_start: datetime) -> CaptureV1Writer:
         existing = self.active_windows.get(window_start)
@@ -325,8 +368,15 @@ class CaptureV1WindowedWriter(BaseWriter):
             self.unresolved[2].flush()
 
     def close(self) -> None:
+        now = datetime.now(timezone.utc)
         for start in sorted(tuple(self.active_windows)):
-            self._finalize_window(start)
+            final, partial, writer = self.active_windows.pop(start)
+            if start + timedelta(seconds=self.args.window_seconds) <= now:
+                self._publish(final, partial, writer)
+                self.finalized_windows.add(start)
+            else:
+                writer.flush()
+                writer.close()
         if self.unresolved is not None:
             final, partial, writer = self.unresolved
             self._publish(final, partial, writer)

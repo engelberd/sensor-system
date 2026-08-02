@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from argparse import Namespace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -215,6 +215,62 @@ class CaptureV1Tests(unittest.TestCase):
             self.assertEqual(len(paths), 1)
             with CaptureV1Reader(paths[0]) as reader:
                 self.assertEqual(reader.validate().sample_count, 1)
+
+    def test_graceful_restart_resumes_current_partial_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(output_dir=tmp, window_seconds=600, compression="none")
+            identity = SensorIdentity.temporary(1, node_address=1)
+            node = self.make_node()
+            now = datetime.now(timezone.utc)
+            samples = self.make_samples()[:2]
+            samples[0].acquisition_utc_ns = int(now.timestamp() * 1_000_000_000)
+            samples[1].acquisition_utc_ns = samples[0].acquisition_utc_ns + 8_000_000
+
+            first = CaptureV1WindowedWriter(args, {}, [node], identity)
+            first.write_samples(1, [samples[0]])
+            first.close()
+
+            partials = list(Path(tmp).rglob("*.capture.h5.partial"))
+            self.assertEqual(len(partials), 1)
+            self.assertEqual(list(Path(tmp).rglob("*.capture.h5")), [])
+
+            resumed = CaptureV1WindowedWriter(args, {}, [node], identity)
+            self.assertIsNotNone(resumed.current_path)
+            resumed.write_samples(1, samples)
+            resumed.close()
+
+            with CaptureV1Reader(partials[0], allow_partial=True) as reader:
+                report = reader.validate()
+                self.assertTrue(report.valid, report.errors)
+                self.assertEqual(report.sample_count, 2)
+
+    def test_startup_publishes_stale_partial_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(output_dir=tmp, window_seconds=600, compression="none")
+            identity = SensorIdentity.temporary(1, node_address=1)
+            node = self.make_node()
+            stale = datetime.now(timezone.utc) - timedelta(minutes=20)
+            stale = stale.replace(
+                minute=(stale.minute // 10) * 10,
+                second=0,
+                microsecond=0,
+            )
+            directory = Path(tmp) / stale.strftime("%Y-%m-%d")
+            final = directory / (
+                f"sensor-A_{stale.strftime('%Y%m%dT%H%M%SZ')}.capture.h5"
+            )
+            partial = Path(str(final) + ".partial")
+            raw = CaptureV1Writer(partial, identity, compression="none")
+            raw.add_node(node)
+            raw.close()
+
+            recovered = CaptureV1WindowedWriter(args, {}, [node], identity)
+            recovered.close()
+
+            self.assertTrue(final.exists())
+            self.assertFalse(partial.exists())
+            with CaptureV1Reader(final) as reader:
+                self.assertTrue(reader.validate().valid)
 
 
 if __name__ == "__main__":

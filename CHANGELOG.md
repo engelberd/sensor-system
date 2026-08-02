@@ -19,6 +19,9 @@ wspólny dla narzędzi hosta i firmware'u.
 
 - Deduplikacja obejmuje całą sesję Capture i zamknięte okna, dzięki czemu
   retransmisja nie tworzy kopii `late`/`unresolved`.
+- Kontrolowane zatrzymanie pozostawia trwające okno UTC jako odzyskiwalny
+  `.partial`; restart kontynuuje ten sam plik, a zaległe okna uszczelnia
+  atomowo po upływie ich czasu.
 - Trwała konfiguracja v3 jest migrowana do v4 bez utraty adresu i ustawień.
 - Produkcyjny build domyślnie używa faktycznego profilu `legacy_eval` z
   timestampingiem DRDY v2, a pakiet aktualizacyjny jawnie zapisuje oba parametry.
