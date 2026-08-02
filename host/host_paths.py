@@ -35,13 +35,14 @@ def main() -> int:
         "archive": resolve_path(config.storage.archive_dir).resolve(),
         "diagnostics": (PROJECT_ROOT / "var/diagnostics").resolve(),
         "logs": resolve_path(config.supervisor.log_dir).resolve(),
+        "temporary": (PROJECT_ROOT / "var/tmp").resolve(),
         "runtime": resolve_path(config.supervisor.channel_runtime_dir).resolve(),
         "supervisor_status": resolve_path(config.supervisor.status_file).resolve(),
         "supervisor_events": resolve_path(config.supervisor.event_log).resolve(),
     }
 
     if args.init:
-        for name in ("recordings", "archive", "diagnostics", "logs"):
+        for name in ("recordings", "archive", "diagnostics", "logs", "temporary"):
             paths[name].mkdir(parents=True, exist_ok=True)
 
     for name, path in paths.items():

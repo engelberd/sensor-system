@@ -5,11 +5,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${ROOT_DIR}/host/.venv"
 CONFIG_PATH="${ROOT_DIR}/host/system_config.json"
-CONFIG_TEMPLATE="${ROOT_DIR}/host/configs/host_system.local.example.json"
 LOCAL_STATE_DIR="${ROOT_DIR}/var"
+SYSTEM_PROFILE="${1:-rpi-sanok}"
+PROFILE_PATH="${ROOT_DIR}/host/configs/systems/${SYSTEM_PROFILE}.json"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
     echo "[ERROR] Nie znaleziono ${PYTHON_BIN}. Zainstaluj Python 3 z pakietem venv." >&2
+    exit 2
+fi
+
+if [[ ! -f "${PROFILE_PATH}" ]]; then
+    echo "[ERROR] Nie ma profilu systemu: ${PROFILE_PATH}" >&2
+    echo "Dostępne profile:" >&2
+    find "${ROOT_DIR}/host/configs/systems" -maxdepth 1 -name '*.json' -printf '  %f\n' >&2
     exit 2
 fi
 
@@ -30,8 +38,10 @@ mkdir -p \
 if [[ -e "${CONFIG_PATH}" ]]; then
     echo "[OK] Zachowano istniejącą konfigurację: ${CONFIG_PATH}"
 else
-    cp "${CONFIG_TEMPLATE}" "${CONFIG_PATH}"
-    echo "[OK] Utworzono konfigurację z szablonu: ${CONFIG_PATH}"
+    "${VENV_DIR}/bin/python" -c \
+        'import json,sys; from pathlib import Path; Path(sys.argv[1]).write_text(json.dumps({"extends": f"configs/systems/{sys.argv[2]}.json", "system": {"name": sys.argv[2]}}, indent=2) + "\n", encoding="utf-8")' \
+        "${CONFIG_PATH}" "${SYSTEM_PROFILE}"
+    echo "[OK] Utworzono lokalną konfigurację dla profilu ${SYSTEM_PROFILE}: ${CONFIG_PATH}"
 fi
 
 echo

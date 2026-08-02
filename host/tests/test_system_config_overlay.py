@@ -7,8 +7,26 @@ from pathlib import Path
 
 from host.common.system_config import HostSystemConfig, load_config_data
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 class SystemConfigOverlayTests(unittest.TestCase):
+    def test_repository_system_profile_and_compatibility_alias_match(self) -> None:
+        profile = HostSystemConfig.load(
+            PROJECT_ROOT / "host/configs/systems/rpi-sanok.json"
+        )
+        compatibility = HostSystemConfig.load(
+            PROJECT_ROOT / "host/configs/host_system.base.json"
+        )
+
+        self.assertEqual(profile, compatibility)
+        self.assertEqual(profile.system.name, "rpi-sanok")
+        self.assertEqual(profile.system.site, "sanok")
+        self.assertEqual(len(profile.channels), 8)
+        self.assertTrue(
+            all(node.board_revision == 2 for channel in profile.channels for node in channel.nodes)
+        )
+
     def test_overlay_merges_channels_by_name_and_nodes_by_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

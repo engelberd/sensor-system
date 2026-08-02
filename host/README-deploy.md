@@ -31,10 +31,11 @@ will own RS485 communication plus future remote updates.
 
 ## 2) Host (computer) must-haves
 
-- **Layered configuration**: keep shared defaults in the tracked
-  `host/configs/host_system.base.json` and copy
-  `host/configs/host_system.local.example.json` to the ignored
-  `host/system_config.json`. The local file should contain only host-specific
+- **Layered configuration**: keep product defaults in tracked
+  `host/configs/common.json`, installation facts in
+  `host/configs/systems/<system>.json`, then run
+  `./host/tools/setup_host.sh <system>`. It creates the ignored
+  `host/system_config.json`; this local file should contain only host-specific
   ports, paths and enable/disable overrides. Run `./hostctl doctor` after every
   configuration or deployment change.
 - **Stable serial device path**: install a udev rule so the RS485 adapter appears

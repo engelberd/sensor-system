@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Split host configuration into product-wide `common.json`, tracked physical
+  system profiles and ignored per-host overlays.
+- Added a versioned `var/` directory skeleton and documented the canonical
+  monorepo layout for consistent clones and Codex sessions.
+
 Wersjonowanie projektu stosuje format `MAJOR.MINOR.PATCH`. Numer wydania jest
 wspólny dla narzędzi hosta i firmware'u.
 

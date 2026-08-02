@@ -1,5 +1,5 @@
 {
-  "extends": "configs/host_system.base.json",
+  "extends": "configs/systems/rpi-sanok.json",
   "system": {
     "name": "rpi-example",
     "site": "example-site"

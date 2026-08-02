@@ -1,0 +1,35 @@
+{
+  "extends": "../common.json",
+  "system": {
+    "name": "replace-me",
+    "site": "replace-me"
+  },
+  "channels": [
+    {
+      "name": "line-a",
+      "channel_id": 1,
+      "label": "Line A",
+      "enabled": true,
+      "port": "/dev/sensor-system-line-a",
+      "baud": 115200,
+      "timing_mode": "required",
+      "nodes": [
+        {
+          "id": 1,
+          "name": "Sensor A",
+          "sensor_label": "A",
+          "board_revision": 1,
+          "enabled": true,
+          "expected_odr_hz": 125.0,
+          "sensor_odr_hz": 250,
+          "range_g": 2,
+          "high_pass_corner": 0,
+          "fifo_watermark": 30,
+          "offset_x": 0,
+          "offset_y": 0,
+          "offset_z": 0
+        }
+      ]
+    }
+  ]
+}

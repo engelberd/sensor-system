@@ -12,13 +12,15 @@ For day-to-day use, see the Polish
 [operator guide](docs/INSTRUKCJA-OPERATORA.md). For a new host computer, run:
 
 ```bash
-./host/tools/setup_host.sh
+./host/tools/setup_host.sh rpi-sanok
 ```
 
-The generated, ignored `host/system_config.json` extends the tracked
-`host/configs/host_system.base.json`. Keep shared channel and sensor defaults in
-the base file; keep the host name, device ports, storage overrides and disabled
-channels in the local overlay. Validate an installation with:
+The generated, ignored `host/system_config.json` extends a tracked profile from
+`host/configs/systems/`. Product-wide defaults live in
+`host/configs/common.json`; stable channel and sensor facts live in the system
+profile; device paths, storage overrides and temporary disabled channels remain
+in the local overlay. See [the repository structure](docs/REPOSITORY-STRUCTURE.md)
+and validate an installation with:
 
 ```bash
 ./hostctl doctor --config host/system_config.json

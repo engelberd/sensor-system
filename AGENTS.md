@@ -9,9 +9,11 @@
   DRDY 14, INT1 15 and DE on GPIO2.
 - Node address, baudrate, ODR, range, filters and offsets are runtime configuration, not board-profile constants.
 - Never commit `host/system_config.json`, active systemd units, recordings, runtime files or raw diagnostic dumps.
-- Shared deployment defaults belong in `host/configs/host_system.base.json`;
-  each ignored `host/system_config.json` may extend it and contain only local
-  port, storage and enable/disable overrides.
+- Product-wide deployment defaults belong in `host/configs/common.json`.
+- Stable facts for one installation belong in a tracked
+  `host/configs/systems/<system>.json`; each ignored `host/system_config.json`
+  extends that profile and contains only local port, storage and temporary
+  enable/disable overrides.
 
 ## Local state
 
