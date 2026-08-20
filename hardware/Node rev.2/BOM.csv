@@ -1,0 +1,16 @@
+Reference;Qty;Opis
+Raspberry Pi Pico 2;1;Pico
+P6KE15A-DIO;1;Dioda
+OKI78SR-5/1.5-W36C;1;Przetwornica
+1N5819/ST;1;Ochrona przed odwrotna polaryzacja
+LP2950CZ-3.3/NOPB;1;LDO do adxl
+KM10/50;1;10uF
+K104K10X7RF5UH5;2;100nF
+FRH035080-A;1;Ferryt
+EVAL-ADXL355Z;1;ADXL
+EEUFR1V221;1;220uF
+EEUFR1E471Y;1;470uF
+ZL262-6DG;2;2x3 header adxl
+ZL262-20SG;2;1x20 header pico
+08710030FXS01130;1;1x3 pins
+TAD05-02-1-L-G;2;2pin screw terminal

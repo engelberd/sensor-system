@@ -9,7 +9,8 @@
     "format": "hdf5",
     "compression": "gzip",
     "window_seconds": 600,
-    "capture_schema": 1
+    "capture_schema": 1,
+    "min_free_bytes": 1073741824
   },
   "supervisor": {
     "status_file": "/run/sensor-system/supervisor.status.json",

@@ -1,5 +1,9 @@
 # Sensor System RS485 Recorder
 
+The production Capture/Archive lifecycle, locking rules, full-file validation,
+effective-ODR diagnostics, and derived resampling policy are defined in
+[`docs/HDF5-DATA-POLICY.md`](../docs/HDF5-DATA-POLICY.md).
+
 `host_recorder.py` is the single-channel production-oriented host receiver. It
 talks to nodes over one RS485 channel, drains burst packets, commits received
 sample ranges, and writes decoded XYZ samples to disk.

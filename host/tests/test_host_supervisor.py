@@ -19,11 +19,57 @@ from host.host_supervisor import (
     supervisor_command_path,
     rotate_process_log,
     restart_delay_for,
+    control_state_label,
+    register_worker_exit,
 )
 from host.common.runtime_status import JsonlEventWriter
 
 
 class SupervisorWorkerCommandTests(unittest.TestCase):
+    def test_storage_failure_is_latched_in_control_state(self) -> None:
+        config = self.make_config()
+        state = WorkerState(
+            config=config.channels[0],
+            status_file=Path("/tmp/line-a.status.json"),
+            event_log=Path("/tmp/line-a.events.jsonl"),
+            process_log=Path("/tmp/line-a.process.log"),
+            command_file=Path("/tmp/line-a.command.json"),
+            desired_running=False,
+            failure_latched_reason="storage-error",
+        )
+        self.assertEqual(control_state_label(state, 0.0), "failed-storage")
+
+    def test_storage_exit_stops_automatic_restart_until_operator_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config()
+            root = Path(tmp)
+            state = WorkerState(
+                config=config.channels[0],
+                status_file=root / "line-a.status.json",
+                event_log=root / "line-a.events.jsonl",
+                process_log=root / "line-a.process.log",
+                command_file=root / "line-a.command.json",
+            )
+            events = JsonlEventWriter(root / "supervisor.events.jsonl")
+            register_worker_exit(
+                state,
+                exit_code=3,
+                process_runtime_s=1.0,
+                now_monotonic=100.0,
+                restart_delay_s=2.0,
+                restart_delay_max_s=60.0,
+                event_writer=events,
+            )
+            self.assertFalse(state.desired_running)
+            self.assertEqual(state.failure_latched_reason, "storage-error")
+            payloads = [
+                json.loads(line)
+                for line in (root / "supervisor.events.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(payloads[-1]["event"], "channel_failure_latched")
+
     def make_config(self) -> HostSystemConfig:
         return HostSystemConfig.from_dict(
             {
@@ -74,6 +120,8 @@ class SupervisorWorkerCommandTests(unittest.TestCase):
         self.assertEqual(command[channel_id_index], "1")
         sensor_label_index = command.index("--sensor-label") + 1
         self.assertEqual(command[sensor_label_index], "A")
+        reserve_index = command.index("--min-free-bytes") + 1
+        self.assertEqual(command[reserve_index], "1073741824")
 
     def test_worker_command_passes_required_timing_mode(self) -> None:
         config = HostSystemConfig.from_dict(

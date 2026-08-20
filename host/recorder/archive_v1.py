@@ -15,6 +15,7 @@ import time
 from uuid import uuid4
 
 from host.recorder.capture_reader import CaptureV1Reader
+from host.recorder.archive_reader import ArchiveV1Reader
 from host.recorder.contracts import (
     ARCHIVE_SCHEMA_MAJOR,
     ARCHIVE_SCHEMA_MINOR,
@@ -531,6 +532,15 @@ class ArchiveV1Compactor:
         finally:
             file.close()
 
+        # Validate the complete private file before its name becomes visible to
+        # normal readers. The public SHA-256 manifest is created after rename.
+        with ArchiveV1Reader(partial, verify_manifest=False) as reader:
+            validation = reader.validate()
+        if not validation.valid:
+            raise RuntimeError(
+                "generated Archive failed validation: "
+                + "; ".join(validation.errors)
+            )
         os.replace(partial, output)
         directory_fd = os.open(output.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:

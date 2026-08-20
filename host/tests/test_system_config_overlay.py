@@ -11,6 +11,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class SystemConfigOverlayTests(unittest.TestCase):
+    def test_capture_v1_window_must_be_bounded_and_divide_utc_day(self) -> None:
+        with self.assertRaisesRegex(ValueError, "divide one UTC day"):
+            HostSystemConfig.from_dict({
+                "storage": {"capture_schema": 1, "window_seconds": 700},
+                "channels": [{
+                    "name": "line-a",
+                    "port": "/dev/ttyUSB0",
+                    "nodes": [{"id": 1}],
+                }],
+            })
+
     def test_repository_system_profile_and_compatibility_alias_match(self) -> None:
         profile = HostSystemConfig.load(
             PROJECT_ROOT / "host/configs/systems/rpi-sanok.json"

@@ -79,6 +79,7 @@ class SupervisorChannelStatus:
     process_log: str | None
     nodes: list[RuntimeStatusNode]
     timing_mode: str = "legacy"
+    failure_reason: str | None = None
 
 
 @dataclass

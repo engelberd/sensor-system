@@ -16,13 +16,16 @@ from host.host_recorder import (
     WindowedWriter,
     emit_sample_flow_changes,
     emit_stats_changes,
+    ensure_storage_reserve,
     maybe_refresh_window_start_temperature,
     resolve_window_timezone,
     update_rate_metrics,
+    run_recorder,
 )
 from host.recorder.capture_writers import Hdf5Writer
 from host.recorder.decoder import raw_lsb_to_m_s2
 from host.recorder.model import RecorderNode, SampleRecord
+from host.recorder.ports import StorageError
 from host.host_lab import (
     BURST_HEADER_FORMAT,
     BURST_TIMING_V2_FORMAT,
@@ -43,6 +46,38 @@ from host.host_lab import (
 
 
 class RecorderWindowingTests(unittest.TestCase):
+    def test_storage_reserve_fails_before_disk_is_completely_full(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "host.host_recorder.shutil.disk_usage",
+                return_value=SimpleNamespace(free=1024),
+            ):
+                with self.assertRaisesRegex(StorageError, "reserve breached"):
+                    ensure_storage_reserve(Path(tmp) / "future", 2048)
+
+    def test_preflight_storage_failure_uses_fatal_storage_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(
+                status_file=str(Path(tmp) / "status.json"),
+                event_log=str(Path(tmp) / "events.jsonl"),
+                output_dir=str(Path(tmp) / "recordings"),
+                output=None,
+                channel_name="line-a",
+                min_free_bytes=2048,
+                port="/dev/test",
+                baud=115200,
+                start_from="newest",
+                grant_packets=4,
+                window_seconds=600,
+                window_timezone_name="UTC",
+                timing_mode="required",
+            )
+            with patch(
+                "host.host_recorder.ensure_storage_reserve",
+                side_effect=StorageError("reserve breached"),
+            ):
+                self.assertEqual(run_recorder(args), 3)
+
     def make_args(
         self,
         *,

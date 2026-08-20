@@ -98,6 +98,7 @@ class StorageConfig:
     compression: str = "gzip"
     window_seconds: int = 600
     capture_schema: int = 5
+    min_free_bytes: int = 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,30 @@ class HostSystemConfig:
         if channels_data is None:
             return cls._from_legacy_dict(data)
 
+        capture_schema = int(
+            storage_data.get("capture_schema", StorageConfig.capture_schema)
+        )
+        if capture_schema not in {1, 5}:
+            raise ValueError("storage.capture_schema must be 1 or 5")
+        window_seconds = int(
+            storage_data.get("window_seconds", StorageConfig.window_seconds)
+        )
+        min_free_bytes = int(
+            storage_data.get("min_free_bytes", StorageConfig.min_free_bytes)
+        )
+        if min_free_bytes < 0:
+            raise ValueError("storage.min_free_bytes must be non-negative")
+        if window_seconds <= 0:
+            raise ValueError("storage.window_seconds must be greater than zero")
+        if capture_schema == 1 and (
+            not 60 <= window_seconds <= 3600
+            or 86400 % window_seconds != 0
+        ):
+            raise ValueError(
+                "Capture v1 storage.window_seconds must divide one UTC day "
+                "and be in range 60..3600"
+            )
+
         channels: list[ChannelConfig] = []
         for index, raw in enumerate(channels_data):
             raw_nodes = raw.get("nodes", [])
@@ -217,11 +242,6 @@ class HostSystemConfig:
                 raise ValueError(
                     f"channel '{name}' channel_id must be in range 1..8"
                 )
-            capture_schema = int(
-                storage_data.get("capture_schema", StorageConfig.capture_schema)
-            )
-            if capture_schema not in {1, 5}:
-                raise ValueError("storage.capture_schema must be 1 or 5")
             if capture_schema == 1 and len(nodes) != 1:
                 raise ValueError(
                     f"channel '{name}' Capture v1 requires exactly one node"
@@ -262,13 +282,9 @@ class HostSystemConfig:
                 archive_dir=str(storage_data.get("archive_dir", StorageConfig.archive_dir)),
                 format=str(storage_data.get("format", StorageConfig.format)),
                 compression=str(storage_data.get("compression", StorageConfig.compression)),
-                window_seconds=int(storage_data.get("window_seconds", StorageConfig.window_seconds)),
-                capture_schema=int(
-                    storage_data.get(
-                        "capture_schema",
-                        StorageConfig.capture_schema,
-                    )
-                ),
+                window_seconds=window_seconds,
+                capture_schema=capture_schema,
+                min_free_bytes=min_free_bytes,
             ),
             supervisor=SupervisorConfig(
                 status_file=str(supervisor_data.get("status_file", SupervisorConfig.status_file)),
@@ -350,6 +366,12 @@ class HostSystemConfig:
                 format=str(storage_data.get("format", StorageConfig.format)),
                 compression=str(storage_data.get("compression", StorageConfig.compression)),
                 window_seconds=legacy_window_seconds,
+                min_free_bytes=int(
+                    storage_data.get(
+                        "min_free_bytes",
+                        StorageConfig.min_free_bytes,
+                    )
+                ),
             ),
             supervisor=SupervisorConfig(),
             channels=(

@@ -1,0 +1,13 @@
+"Id";"Designator";"Footprint";"Quantity";"Designation";"Supplier and ref";
+1;"C2";"CP_Radial_D8.0mm_P3.50mm";1;"220uF";;;
+2;"C3, C6";"C_Disc_D5.0mm_W2.5mm_P5.00mm";2;"100nF";;;
+3;"C4";"CP_Radial_D5.0mm_P2.00mm";1;"10uF";;;
+4;"C5";"CP_Radial_D8.0mm_P3.50mm";1;"470uF";;;
+5;"D1";"D_DO-15_P10.16mm_Horizontal";1;"P6KE15A-DIO";;;
+6;"F1";"Fuse_BelFuse_0ZRE0016FF_L9.9mm_W3.8mm";1;"MF-R050";;;
+7;"J1, J2";"TerminalBlock_4Ucon_1x02_P3.50mm_Horizontal";2;"Screw_Terminal_01x02";;;
+8;"L1";"L_Axial_L5.3mm_D2.2mm_P7.62mm_Horizontal_Vishay_IM-1";1;"FRH035080-A";;;
+9;"MOD1";"EVAL-ADXL355Z";1;"~";;;
+10;"PICO1";"RaspberryPi_Pico_Common_Unspecified";1;"RaspberryPi_Pico";;;
+11;"U1";"Converter_DCDC_Murata_OKI-78SR_Vertical";1;"OKI-78SR-5_1_5-W36-C";;;
+12;"U2";"TO-92_Inline_Wide";1;"LP2950CZ-3.3/NOPB";;;

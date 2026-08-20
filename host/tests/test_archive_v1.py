@@ -12,6 +12,7 @@ from host.recorder.capture_reader import CaptureV1Reader
 from host.recorder.capture_v1 import CaptureV1Writer
 from host.recorder.contracts import SensorIdentity
 from host.recorder.model import RecorderNode, SampleRecord
+from host.recorder.verification import verify_hdf5
 
 
 class ArchiveV1Tests(unittest.TestCase):
@@ -98,6 +99,12 @@ class ArchiveV1Tests(unittest.TestCase):
                     sum(int(row["sample_count"]) for row in reader.file["quality/intervals"]),
                     8,
                 )
+            verification = verify_hdf5(output)
+            self.assertTrue(verification.valid, verification.errors)
+            self.assertAlmostEqual(
+                verification.diagnostics["timing"]["observed_odr_hz"],
+                125.0,
+            )
 
     def test_rejects_duplicate_sample_identity_without_publishing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

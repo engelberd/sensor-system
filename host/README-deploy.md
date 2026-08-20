@@ -56,7 +56,8 @@ will own RS485 communication plus future remote updates.
   - Ensure there is enough free space for continuous capture.
   - Keep runtime status under `/run/sensor-system` and bounded logs outside tmpfs.
   - Define a measurement-data retention/archive policy; the host warns below 15%
-    free space but never deletes HDF5 measurements automatically.
+    free space, and the recorder stops safely below the configured 1 GiB reserve,
+    but never deletes HDF5 measurements automatically.
 - **Time sync**: enable NTP/chrony/systemd-timesyncd; host timestamps are written
   into the output files.
 
@@ -105,5 +106,11 @@ host, the minimum local setup is:
   - verify `host_console.py` stays responsive (status + events update)
 - Reboot host during recording and confirm it restarts and continues with
   `--start-from newest`.
+- Hard-cut host power during an active Capture window. After boot, confirm the
+  channel resumes automatically, or that the unreadable partial appears under
+  `quarantine/partial-recovery/` with a JSON sidecar while a new window records.
+- Simulate the storage reserve threshold and confirm the supervisor exposes
+  `failed-storage` without a restart loop. Repair storage, then explicitly start
+  or restart the channel.
 - Power-cycle the node and confirm it comes back and answers `./hostctl ping`.
 - Confirm `./hostctl update --port ... --node ...` still works from the final host.

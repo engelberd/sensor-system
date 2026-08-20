@@ -12,6 +12,8 @@ from host.recorder.capture_v1 import CaptureV1Writer, SIGNED24_MAX
 from host.recorder.capture_windowing import CaptureV1WindowedWriter
 from host.recorder.contracts import SensorIdentity
 from host.recorder.model import QualityEventRecord, RecorderNode, SampleRecord
+from host.recorder.verification import verify_hdf5
+from host.recorder.ports import StorageError
 
 
 class CaptureV1Tests(unittest.TestCase):
@@ -103,6 +105,12 @@ class CaptureV1Tests(unittest.TestCase):
                     samples[0].x,
                     places=12,
                 )
+            verification = verify_hdf5(path)
+            self.assertTrue(verification.valid, verification.errors)
+            self.assertAlmostEqual(
+                verification.diagnostics["timing"]["observed_odr_hz"],
+                125.0,
+            )
 
     def test_append_recovers_uncommitted_raw_tail(self) -> None:
         import h5py
@@ -271,6 +279,171 @@ class CaptureV1Tests(unittest.TestCase):
             self.assertFalse(partial.exists())
             with CaptureV1Reader(final) as reader:
                 self.assertTrue(reader.validate().valid)
+
+    def test_startup_quarantines_truncated_partial_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(output_dir=tmp, window_seconds=600, compression="none")
+            identity = SensorIdentity.temporary(1, node_address=1)
+            node = self.make_node()
+            now = datetime.now(timezone.utc)
+            window = now.replace(
+                minute=(now.minute // 10) * 10,
+                second=0,
+                microsecond=0,
+            )
+            directory = Path(tmp) / window.strftime("%Y-%m-%d")
+            final = directory / (
+                f"sensor-A_{window.strftime('%Y%m%dT%H%M%SZ')}.capture.h5"
+            )
+            partial = Path(str(final) + ".partial")
+            raw = CaptureV1Writer(partial, identity, compression="none")
+            raw.add_node(node)
+            raw.write_samples(1, self.make_samples())
+            raw.close()
+            with partial.open("r+b") as stream:
+                stream.truncate(max(1, partial.stat().st_size - 163))
+
+            recovered = CaptureV1WindowedWriter(args, {}, [node], identity)
+            self.assertEqual(len(recovered.recovery_events), 1)
+            event = recovered.recovery_events[0]
+            self.assertEqual(event["event"], "partial_window_unrecoverable")
+            self.assertEqual(event["reason"], "resume_failed")
+            self.assertFalse(partial.exists())
+            quarantine = Path(str(event["quarantine_path"]))
+            self.assertTrue(quarantine.is_file())
+            self.assertTrue(
+                Path(str(quarantine) + ".recovery.json").is_file()
+            )
+
+            sample = self.make_samples()[0]
+            sample.acquisition_utc_ns = int(now.timestamp() * 1_000_000_000)
+            recovered.write_samples(1, [sample])
+            recovered.close()
+
+    def test_startup_publishes_completed_partial_without_reopening_for_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(output_dir=tmp, window_seconds=600, compression="none")
+            identity = SensorIdentity.temporary(1, node_address=1)
+            node = self.make_node()
+            now = datetime.now(timezone.utc)
+            window = now.replace(
+                minute=(now.minute // 10) * 10,
+                second=0,
+                microsecond=0,
+            )
+            directory = Path(tmp) / window.strftime("%Y-%m-%d")
+            final = directory / (
+                f"sensor-A_{window.strftime('%Y%m%dT%H%M%SZ')}.capture.h5"
+            )
+            partial = Path(str(final) + ".partial")
+            raw = CaptureV1Writer(partial, identity, compression="none")
+            raw.add_node(node)
+            raw.write_samples(1, self.make_samples())
+            raw.finalize()
+            raw.close()
+
+            recovered = CaptureV1WindowedWriter(args, {}, [node], identity)
+            recovered.close()
+
+            self.assertTrue(final.is_file())
+            self.assertFalse(partial.exists())
+            self.assertEqual(
+                recovered.recovery_events[0]["event"],
+                "partial_window_published",
+            )
+            with CaptureV1Reader(final) as reader:
+                self.assertTrue(reader.validate().valid)
+
+    def test_storage_failure_is_not_misclassified_as_node_failure(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(output_dir=tmp, window_seconds=600, compression="none")
+            identity = SensorIdentity.temporary(1, node_address=1)
+            writer = CaptureV1WindowedWriter(
+                args,
+                {},
+                [self.make_node()],
+                identity,
+            )
+            sample = self.make_samples()[0]
+            sample.acquisition_utc_ns = int(
+                datetime.now(timezone.utc).timestamp() * 1_000_000_000
+            )
+            with patch.object(
+                writer,
+                "_ensure_window",
+                side_effect=OSError("disk full"),
+            ):
+                with self.assertRaisesRegex(StorageError, "disk full"):
+                    writer.write_samples(1, [sample])
+            writer.close()
+
+    def test_identity_mismatch_partial_is_quarantined_not_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(output_dir=tmp, window_seconds=600, compression="none")
+            now = datetime.now(timezone.utc)
+            window = now.replace(
+                minute=(now.minute // 10) * 10,
+                second=0,
+                microsecond=0,
+            )
+            directory = Path(tmp) / window.strftime("%Y-%m-%d")
+            final = directory / (
+                f"sensor-A_{window.strftime('%Y%m%dT%H%M%SZ')}.capture.h5"
+            )
+            partial = Path(str(final) + ".partial")
+            original = CaptureV1Writer(
+                partial,
+                SensorIdentity.temporary(1, node_address=1),
+                compression="none",
+            )
+            original.add_node(self.make_node())
+            original.close()
+
+            replacement_node = self.make_node()
+            replacement_node.node_id = 2
+            recovered = CaptureV1WindowedWriter(
+                args,
+                {},
+                [replacement_node],
+                SensorIdentity.temporary(1, node_address=2),
+            )
+            self.assertFalse(partial.exists())
+            self.assertEqual(
+                recovered.recovery_events[0]["reason"],
+                "resume_failed",
+            )
+            self.assertIn(
+                "identity",
+                str(recovered.recovery_events[0]["error"]),
+            )
+            recovered.close()
+
+    def test_quarantine_move_failure_is_a_fatal_storage_error(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Namespace(output_dir=tmp, window_seconds=600, compression="none")
+            writer = CaptureV1WindowedWriter(
+                args,
+                {},
+                [self.make_node()],
+                SensorIdentity.temporary(1, node_address=1),
+            )
+            partial = Path(tmp) / "broken.capture.h5.partial"
+            partial.write_bytes(b"broken")
+            with patch(
+                "host.recorder.capture_windowing.os.replace",
+                side_effect=PermissionError("read-only filesystem"),
+            ):
+                with self.assertRaisesRegex(StorageError, "cannot quarantine"):
+                    writer._quarantine_partial(
+                        partial,
+                        reason="resume_failed",
+                        error="truncated",
+                    )
+            writer.close()
 
 
 if __name__ == "__main__":

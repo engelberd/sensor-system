@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from host.recorder.archive_v1 import ArchiveV1Compactor
+from host.recorder.verification import verify_hdf5
 
 
 def main() -> int:
@@ -30,10 +31,18 @@ def main() -> int:
         args.captures, args.output,
         archive_day=args.day, compression=args.compression,
     )
+    verification = verify_hdf5(report.output)
+    if not verification.valid:
+        raise RuntimeError(
+            "published Archive failed full verification: "
+            + "; ".join(verification.errors)
+        )
+    timing = verification.diagnostics["timing"]
     print(
         f"[ARCHIVE] {report.output} samples={report.sample_count} "
         f"sources={report.source_count} controls={report.control_point_count} "
-        f"sha256={report.sha256}"
+        f"sha256={report.sha256} observed_odr_hz="
+        f"{timing['observed_odr_hz']} odr_shift_ppm={timing['odr_shift_ppm']}"
     )
     return 0
 

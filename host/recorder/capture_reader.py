@@ -92,7 +92,7 @@ class CaptureV1Reader:
             errors.append("raw_xyz must use little-endian int32")
 
         expected_offset = 0
-        previous_key: tuple[int, int] | None = None
+        last_sequence_by_boot: dict[int, int] = {}
         for index, block in enumerate(self.blocks_dataset):
             offset = int(block["sample_offset"])
             count = int(block["sample_count"])
@@ -103,14 +103,25 @@ class CaptureV1Reader:
                     f"block {index} starts at {offset}, expected {expected_offset}"
                 )
             expected_offset = offset + count
-            key = (int(block["boot_epoch"]), int(block["first_sample_seq"]))
-            if (
-                previous_key is not None
-                and key[0] == previous_key[0]
-                and key[1] <= previous_key[1]
-            ):
-                errors.append(f"block {index} is not stream-ordered")
-            previous_key = key
+            boot = int(block["boot_epoch"])
+            first = int(block["first_sample_seq"])
+            previous_last = last_sequence_by_boot.get(boot)
+            if previous_last is not None and first <= previous_last:
+                errors.append(f"block {index} overlaps or is not stream-ordered")
+            last_sequence_by_boot[boot] = max(
+                previous_last if previous_last is not None else -1,
+                first + max(0, count) - 1,
+            )
+            first_device = int(block["first_device_time_us"])
+            last_device = int(block["last_device_time_us"])
+            if count > 1 and first_device > 0 and last_device <= first_device:
+                errors.append(f"block {index} has non-increasing device time")
+            first_utc = int(block["first_utc_ns"])
+            last_utc = int(block["last_utc_ns"])
+            if (first_utc < 0) != (last_utc < 0):
+                errors.append(f"block {index} has incomplete UTC endpoints")
+            if count > 1 and first_utc >= 0 and last_utc <= first_utc:
+                errors.append(f"block {index} has non-increasing UTC")
         if expected_offset != sample_count:
             errors.append(
                 f"blocks cover {expected_offset} samples, raw_xyz has {sample_count}"

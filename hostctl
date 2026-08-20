@@ -29,6 +29,7 @@ Commands:
   lab        Run lab/diagnostic tool
   recorder   Run production recorder
   archive    Compact sealed Capture v1 files into Archive v1
+  verify     Fully validate Capture/Archive HDF5 and report effective ODR
   supervisor Run multi-channel recorder supervisor
   console    Run operator console
   dashboard  Run web dashboard for supervisor/runtime state
@@ -49,6 +50,7 @@ Examples:
   ./hostctl config --port /dev/sensor-system-rs485 commission-assign --hardware-id 0123456789ABCDEF --node-id 7
   ./hostctl recorder --port /dev/sensor-system-rs485 --nodes 1 --output-dir runs/sensor-system --format hdf5 --window-seconds 600
   ./hostctl archive --day 2026-08-02 --output archive/sensor-A_2026-08-02.archive.h5 capture/*.capture.h5
+  ./hostctl verify --json var/archive/sensor-A_2026-08-02.archive.h5
   ./hostctl supervisor --config host/system_config.json
   ./hostctl console
   ./hostctl dashboard --config host/system_config.json --port 8080
@@ -86,6 +88,9 @@ case "$COMMAND" in
     ;;
   archive)
     exec "$VENV_PYTHON" "$ROOT_DIR/host/host_archive.py" "$@"
+    ;;
+  verify)
+    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_hdf5.py" "$@"
     ;;
   supervisor)
     exec "$VENV_PYTHON" "$ROOT_DIR/host/host_supervisor.py" "$@"

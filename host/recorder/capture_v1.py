@@ -59,11 +59,20 @@ class CaptureV1Writer(BaseWriter):
             "fletcher32": True,
         }
 
-        self._initialize_attributes(metadata or {}, append=append)
-        self._initialize_datasets()
-        if append:
-            self._recover_uncommitted_tail()
-        self._seen_keys = self._load_committed_keys()
+        try:
+            self._initialize_attributes(metadata or {}, append=append)
+            self._initialize_datasets()
+            if append:
+                self._recover_uncommitted_tail()
+            self._seen_keys = self._load_committed_keys()
+        except Exception:
+            # A rejected/malformed partial must not leave an HDF5 descriptor and
+            # its advisory lock alive until garbage collection.
+            try:
+                self.file.close()
+            except Exception:
+                pass
+            raise
 
     def _initialize_attributes(
         self,

@@ -48,6 +48,9 @@ Archive file is validated and a future storage policy confirms replication.
   Archive v1 is declared production, incompatible changes require a new major
   schema version.
 
+The operational policy, validation gate, locking rules, and concrete Archive v1
+layout are specified in [HDF5-DATA-POLICY.md](../HDF5-DATA-POLICY.md).
+
 ## Rejected alternatives
 
 - **Keep only Capture forever:** simple but retains transport repetition and

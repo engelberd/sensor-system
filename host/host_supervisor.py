@@ -66,6 +66,7 @@ class WorkerState:
     last_status: dict[str, Any] | None = None
     last_status_updated_utc: str | None = None
     desired_running: bool = True
+    failure_latched_reason: str | None = None
 
     @property
     def running(self) -> bool:
@@ -207,6 +208,8 @@ def build_worker_command(
         channel.nodes[0].hardware_id or "",
         "--window-seconds",
         str(system_config.storage.window_seconds),
+        "--min-free-bytes",
+        str(system_config.storage.min_free_bytes),
         "--window-timezone",
         system_config.system.timezone or "local",
         "--timing-mode",
@@ -361,11 +364,14 @@ def purge_worker_runtime(state: WorkerState, event_writer: JsonlEventWriter) -> 
     state.last_exit_code = None
     state.restart_count = 0
     state.consecutive_failures = 0
+    state.failure_latched_reason = None
 
 
 def control_state_label(state: WorkerState, now_monotonic: float) -> str:
     if not state.config.enabled:
         return "disabled"
+    if state.failure_latched_reason is not None:
+        return "failed-storage"
     if not state.desired_running:
         return "stopped-manual"
     if state.running:
@@ -380,6 +386,62 @@ def restart_delay_for(failure_count: int, base_delay_s: float, max_delay_s: floa
         return max(0.0, base_delay_s)
     exponent = min(failure_count - 1, 20)
     return min(max(0.0, max_delay_s), max(0.0, base_delay_s) * (2 ** exponent))
+
+
+def register_worker_exit(
+    state: WorkerState,
+    *,
+    exit_code: int,
+    process_runtime_s: float,
+    now_monotonic: float,
+    restart_delay_s: float,
+    restart_delay_max_s: float,
+    event_writer: JsonlEventWriter,
+) -> None:
+    """Record an exit and latch fatal storage failures for operator action."""
+    if process_runtime_s >= 300.0:
+        state.consecutive_failures = 0
+    state.consecutive_failures += 1
+    state.last_exit_code = exit_code
+    state.process = None
+    state.process_started_monotonic = None
+    state.restart_count += 1
+    if exit_code == 3:
+        state.desired_running = False
+        state.failure_latched_reason = "storage-error"
+    delay = restart_delay_for(
+        state.consecutive_failures,
+        restart_delay_s,
+        restart_delay_max_s,
+    )
+    state.next_start_monotonic = now_monotonic + delay
+    state.close_process_log()
+    event_writer.emit(
+        "channel_exited",
+        severity="warning" if exit_code == 0 else "error",
+        fields={
+            "channel_name": state.config.name,
+            "port": state.config.port,
+            "exit_code": exit_code,
+            "restart_count": state.restart_count,
+            "consecutive_failures": state.consecutive_failures,
+            "restart_delay_s": delay,
+            "process_runtime_s": process_runtime_s,
+            "process_log": str(state.process_log),
+        },
+    )
+    if exit_code == 3:
+        event_writer.emit(
+            "channel_failure_latched",
+            severity="critical",
+            fields={
+                "channel_name": state.config.name,
+                "port": state.config.port,
+                "reason": state.failure_latched_reason,
+                "process_log": str(state.process_log),
+                "operator_action": "repair storage and start/restart channel",
+            },
+        )
 
 
 def apply_channel_command(
@@ -411,6 +473,8 @@ def apply_channel_command(
             )
             return
         state.desired_running = True
+        state.failure_latched_reason = None
+        state.consecutive_failures = 0
         state.next_start_monotonic = now_monotonic
         event_writer.emit(
             "channel_start_requested",
@@ -427,6 +491,8 @@ def apply_channel_command(
             )
             return
         state.desired_running = True
+        state.failure_latched_reason = None
+        state.consecutive_failures = 0
         if state.running:
             stop_worker(state, event_writer)
             state.next_start_monotonic = now_monotonic + restart_delay_s
@@ -527,6 +593,8 @@ def apply_supervisor_command(
     any_running = False
     for state in enabled_states:
         state.desired_running = True
+        state.failure_latched_reason = None
+        state.consecutive_failures = 0
         if state.running:
             any_running = True
             stop_worker(state, event_writer)
@@ -617,6 +685,7 @@ def build_supervisor_snapshot(
                     if state.last_status
                     else state.config.timing_mode
                 ),
+                failure_reason=state.failure_latched_reason,
             )
         )
 
@@ -770,33 +839,18 @@ def main() -> int:
                             if state.process_started_monotonic is not None
                             else 0.0
                         )
-                        if process_runtime_s >= 300.0:
-                            state.consecutive_failures = 0
-                        state.consecutive_failures += 1
-                        state.last_exit_code = exit_code
-                        state.process = None
-                        state.process_started_monotonic = None
-                        state.restart_count += 1
-                        restart_delay_s = restart_delay_for(
-                            state.consecutive_failures,
-                            system_config.supervisor.restart_delay_s,
-                            system_config.supervisor.restart_delay_max_s,
-                        )
-                        state.next_start_monotonic = now + restart_delay_s
-                        state.close_process_log()
-                        event_writer.emit(
-                            "channel_exited",
-                            severity="warning" if exit_code == 0 else "error",
-                            fields={
-                                "channel_name": state.config.name,
-                                "port": state.config.port,
-                                "exit_code": exit_code,
-                                "restart_count": state.restart_count,
-                                "consecutive_failures": state.consecutive_failures,
-                                "restart_delay_s": restart_delay_s,
-                                "process_runtime_s": process_runtime_s,
-                                "process_log": str(state.process_log),
-                            },
+                        register_worker_exit(
+                            state,
+                            exit_code=exit_code,
+                            process_runtime_s=process_runtime_s,
+                            now_monotonic=now,
+                            restart_delay_s=(
+                                system_config.supervisor.restart_delay_s
+                            ),
+                            restart_delay_max_s=(
+                                system_config.supervisor.restart_delay_max_s
+                            ),
+                            event_writer=event_writer,
                         )
 
                 if (

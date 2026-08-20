@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export GIT_DIR="${ROOT_DIR}/.git-main"
+if [[ -d "${ROOT_DIR}/.git-main" ]]; then
+    export GIT_DIR="${ROOT_DIR}/.git-main"
+else
+    export GIT_DIR="${ROOT_DIR}/.git"
+fi
 export GIT_WORK_TREE="${ROOT_DIR}"
 
 exec git "$@"

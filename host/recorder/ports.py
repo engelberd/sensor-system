@@ -13,6 +13,10 @@ from host.recorder.model import (
 )
 
 
+class StorageError(RuntimeError):
+    """A recorder storage operation failed and acquisition must stop safely."""
+
+
 class BaseWriter(ABC):
     """Composite capture sink used by the recorder application.
 

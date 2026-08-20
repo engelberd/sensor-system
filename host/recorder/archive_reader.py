@@ -108,7 +108,7 @@ class ArchiveV1Reader:
         segments = self.file["stream/segments"]
         configurations = self.file["configuration/intervals"]
         expected = 0
-        identities: set[tuple[int, int]] = set()
+        last_sequence_by_boot: dict[int, int] = {}
         for index, segment in enumerate(segments):
             offset = int(segment["sample_offset"])
             count = int(segment["sample_count"])
@@ -121,12 +121,16 @@ class ArchiveV1Reader:
                 errors.append(f"segment {index} has invalid configuration index")
             boot = int(segment["boot_epoch"])
             first = int(segment["first_sample_seq"])
-            for sequence in range(first, first + count):
-                key = (boot, sequence)
-                if key in identities:
-                    errors.append(f"duplicate sample identity {key}")
-                    break
-                identities.add(key)
+            previous_last = last_sequence_by_boot.get(boot)
+            if previous_last is not None and first <= previous_last:
+                errors.append(
+                    f"segment {index} overlaps sample identity "
+                    f"{(boot, first)}"
+                )
+            last_sequence_by_boot[boot] = max(
+                previous_last if previous_last is not None else -1,
+                first + max(0, count) - 1,
+            )
         if expected != sample_count:
             errors.append(
                 f"segments cover {expected} samples, raw_xyz has {sample_count}"
@@ -148,14 +152,25 @@ class ArchiveV1Reader:
             )
 
         previous = -1
+        previous_utc = -1
         for index, control in enumerate(self.file["timing/control_points"]):
             offset = int(control["sample_offset"])
+            utc_ns = int(control["utc_ns"])
             if offset < 0 or offset >= sample_count:
                 errors.append(f"control point {index} is outside measurement")
             if offset <= previous:
                 errors.append("timing control points are not strictly ordered")
                 break
+            if utc_ns <= previous_utc:
+                errors.append("timing control UTC values are not strictly ordered")
+                break
             previous = offset
+            previous_utc = utc_ns
+
+        for index, gap in enumerate(self.file["stream/gaps"]):
+            after = int(gap["after_sample_offset"])
+            if sample_count == 0 or after >= sample_count:
+                errors.append(f"gap {index} is outside measurement")
 
         sources = self.file["provenance/sources"]
         source_samples = sum(int(row["sample_count_read"]) for row in sources)

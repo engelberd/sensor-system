@@ -5,6 +5,7 @@ import argparse
 from collections import deque
 import math
 import os
+import shutil
 import socket
 import signal
 import struct
@@ -85,6 +86,7 @@ from host.common.runtime_status import (
     RuntimeStatusNode,
     RuntimeStatusSnapshot,
 )
+from host.common.instance_lock import InstanceLock
 from host.common.clock_models import (
     ClockState,
     TimeSyncObservation,
@@ -121,7 +123,7 @@ from host.recorder.model import (
     SampleRecord,
     TemperatureRecord,
 )
-from host.recorder.ports import BaseWriter
+from host.recorder.ports import BaseWriter, StorageError
 from host.recorder.windowing import (
     AcquisitionWindowedWriter,
     WindowedWriter,
@@ -133,6 +135,7 @@ RECORDER_SCHEMA_VERSION = CAPTURE_SCHEMA_VERSION
 RECORDER_VERSION = PROJECT_VERSION
 SAMPLE_FLOW_STALL_CONFIRM_S = 2.0
 DEFAULT_WINDOW_SECONDS = 600
+DEFAULT_MIN_FREE_BYTES = 1024 * 1024 * 1024
 GET_VERSION_FORMAT = "<BBBBBB"
 CMD_GET_VERSION = 0x04
 
@@ -1183,6 +1186,12 @@ def parse_args() -> argparse.Namespace:
         help="Timezone used to align --output-dir windows; use 'local', 'UTC', or an IANA name like Europe/Warsaw",
     )
     parser.add_argument("--duration", type=float, default=0.0, help="Seconds to record; 0 means until Ctrl+C")
+    parser.add_argument(
+        "--min-free-bytes",
+        type=int,
+        default=DEFAULT_MIN_FREE_BYTES,
+        help="Stop safely before storage free space falls below this reserve",
+    )
     parser.add_argument("--start-from", choices=["newest", "oldest"], default="newest")
     parser.add_argument("--grant-packets", type=int, default=4)
     parser.add_argument("--timeout", type=float, default=0.5)
@@ -1226,6 +1235,16 @@ def parse_args() -> argparse.Namespace:
         parser.error("use either --output or --output-dir, not both")
     if args.window_seconds <= 0:
         parser.error("--window-seconds must be greater than zero")
+    if args.min_free_bytes < 0:
+        parser.error("--min-free-bytes must be non-negative")
+    if args.capture_schema == 1 and args.output_dir and (
+        not 60 <= args.window_seconds <= 3600
+        or 86400 % args.window_seconds != 0
+    ):
+        parser.error(
+            "Capture v1 --window-seconds must divide one UTC day and be "
+            "in range 60..3600"
+        )
     args.window_timezone_name = args.window_timezone
     try:
         args.window_timezone = resolve_window_timezone(args.window_timezone_name)
@@ -1234,8 +1253,29 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def main() -> int:
-    args = parse_args()
+def storage_usage_path(destination: str | Path) -> Path:
+    candidate = Path(destination).resolve()
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def ensure_storage_reserve(destination: str | Path, min_free_bytes: int) -> int:
+    try:
+        free = shutil.disk_usage(storage_usage_path(destination)).free
+    except OSError as exc:
+        raise StorageError(
+            f"cannot inspect storage capacity for '{destination}': {exc}"
+        ) from exc
+    if free < min_free_bytes:
+        raise StorageError(
+            f"storage reserve breached for '{destination}': "
+            f"free={free} bytes, required={min_free_bytes} bytes"
+        )
+    return free
+
+
+def run_recorder(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
     created_utc = datetime.now(timezone.utc).isoformat()
     stop_reason = "running"
@@ -1246,6 +1286,7 @@ def main() -> int:
     diagnostic_archive = JsonlEventWriter(
         diagnostic_root / "diagnostics" / f"{args.channel_name}.events.jsonl"
     )
+    destination = args.output_dir or args.output
     signal.signal(signal.SIGINT, stop_flag.request_stop)
     signal.signal(signal.SIGTERM, stop_flag.request_stop)
 
@@ -1265,6 +1306,7 @@ def main() -> int:
     }
 
     try:
+        ensure_storage_reserve(destination, args.min_free_bytes)
         live_buffer: LiveBuffer | None = None
         live_server: LiveServer | None = None
         with serial.Serial(
@@ -1330,6 +1372,27 @@ def main() -> int:
 
             writer = make_writer(args, metadata, nodes)
             try:
+                for recovery in getattr(writer, "recovery_events", ()):
+                    recovery_event = str(
+                        recovery.get("event", "partial_window_recovery")
+                    )
+                    severity = (
+                        "error"
+                        if recovery_event == "partial_window_unrecoverable"
+                        else "warning"
+                    )
+                    fields = dict(recovery)
+                    fields.pop("event", None)
+                    event_writer.emit(
+                        recovery_event,
+                        severity=severity,
+                        fields=fields,
+                    )
+                    diagnostic_archive.emit(
+                        recovery_event,
+                        severity=severity,
+                        fields=fields,
+                    )
                 event_writer.emit(
                     "recorder_started",
                     fields={
@@ -1389,9 +1452,13 @@ def main() -> int:
                 next_console_status_at = started_at
                 next_flush_at = started_at + args.flush_interval
                 next_stats_at = started_at + args.stats_interval
+                next_storage_check_at = started_at + 30.0
 
                 while not stop_flag.stop_requested:
                     now = time.monotonic()
+                    if now >= next_storage_check_at:
+                        ensure_storage_reserve(destination, args.min_free_bytes)
+                        next_storage_check_at = now + 30.0
                     if args.duration > 0 and (now - started_at) >= args.duration:
                         stop_reason = "duration_elapsed"
                         break
@@ -1439,6 +1506,8 @@ def main() -> int:
                                 now_utc=loop_now_utc,
                             )
                             record_one_burst(client, writer, node, args, event_writer, live_buffer)
+                        except StorageError:
+                            raise
                         except RuntimeError as exc:
                             handle_node_runtime_error(node, args, event_writer, exc)
 
@@ -1457,6 +1526,8 @@ def main() -> int:
                                         sample_seq_anchor,
                                         reason="periodic",
                                     )
+                                except StorageError:
+                                    raise
                                 except RuntimeError as exc:
                                     print(f"[WARN] {exc}", file=sys.stderr)
                                     event_writer.emit(
@@ -1512,7 +1583,11 @@ def main() -> int:
                 if stop_flag.stop_requested:
                     stop_reason = f"signal:{stop_flag.signal_name or stop_flag.signal_number}"
                 write_runtime_status(writer, args, nodes, created_utc, status_writer)
-                writer.close()
+                close_error: Exception | None = None
+                try:
+                    writer.close()
+                except Exception as exc:
+                    close_error = exc
                 if live_server is not None:
                     live_server.stop()
                 event_writer.emit(
@@ -1524,8 +1599,13 @@ def main() -> int:
                         "stop_reason": stop_reason,
                         "signal_number": stop_flag.signal_number,
                         "signal_name": stop_flag.signal_name,
+                        "close_error": str(close_error) if close_error else None,
                     },
                 )
+                if close_error is not None:
+                    raise StorageError(
+                        f"failed to close recorder storage safely: {close_error}"
+                    ) from close_error
 
         print_status(nodes, started_at)
         destination = args.output_dir or args.output
@@ -1539,6 +1619,30 @@ def main() -> int:
         )
         print(f"[ERROR] serial error on {args.port}: {exc}", file=sys.stderr)
         return 1
+    except StorageError as exc:
+        event_writer.emit(
+            "storage_error",
+            severity="critical",
+            fields={
+                "channel_name": args.channel_name,
+                "destination": args.output_dir or args.output,
+                "error": str(exc),
+            },
+        )
+        print(f"[ERROR] storage failure: {exc}", file=sys.stderr)
+        return 3
+    except OSError as exc:
+        event_writer.emit(
+            "storage_io_error",
+            severity="critical",
+            fields={
+                "channel_name": args.channel_name,
+                "destination": args.output_dir or args.output,
+                "error": str(exc),
+            },
+        )
+        print(f"[ERROR] storage I/O failure: {exc}", file=sys.stderr)
+        return 3
     except RuntimeError as exc:
         event_writer.emit(
             "runtime_error",
@@ -1547,6 +1651,39 @@ def main() -> int:
         )
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
+
+
+def recorder_lock_path(args: argparse.Namespace) -> Path:
+    """Use the runtime-status namespace so supervised and manual runs conflict."""
+    safe_channel = "".join(
+        character if character.isalnum() or character in "-_" else "_"
+        for character in args.channel_name
+    ) or "default"
+    return Path(args.status_file).parent / f"{safe_channel}.recorder.lock"
+
+
+def main() -> int:
+    args = parse_args()
+    lock = InstanceLock(
+        recorder_lock_path(args),
+        {
+            "kind": "sensor-system-recorder",
+            "channel_name": args.channel_name,
+            "port": args.port,
+            "destination": args.output_dir or args.output,
+        },
+    )
+    try:
+        lock.acquire()
+        return run_recorder(args)
+    except OSError as exc:
+        print(f"[ERROR] recorder runtime storage failure: {exc}", file=sys.stderr)
+        return 3
+    except RuntimeError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":
