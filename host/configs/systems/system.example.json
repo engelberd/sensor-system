@@ -10,24 +10,19 @@
       "channel_id": 1,
       "label": "Line A",
       "enabled": true,
-      "port": "/dev/sensor-system-line-a",
-      "baud": 115200,
-      "timing_mode": "required",
+      "transport": {
+        "kind": "serial-rs485",
+        "device_id": "usb-rs485-1",
+        "endpoint": "/dev/sensor-system-line-a",
+        "baud_rate": 115200
+      },
       "nodes": [
         {
           "id": 1,
-          "name": "Sensor A",
-          "sensor_label": "A",
-          "board_revision": 1,
+          "hardware_id": "0011223344556677",
+          "board_revision": 2,
           "enabled": true,
-          "expected_odr_hz": 125.0,
-          "sensor_odr_hz": 250,
-          "range_g": 2,
-          "high_pass_corner": 0,
-          "fifo_watermark": 30,
-          "offset_x": 0,
-          "offset_y": 0,
-          "offset_z": 0
+          "output_rate_hz": 125
         }
       ]
     }
