@@ -1,5 +1,6 @@
 use core::fmt;
 use std::io::{Read, Write};
+#[cfg(not(target_os = "linux"))]
 use std::time::Instant;
 
 use sensor_protocol::FrameError;
@@ -14,14 +15,23 @@ pub trait MonotonicClock {
 
 #[derive(Clone, Debug)]
 pub struct SystemMonotonicClock {
+    #[cfg(not(target_os = "linux"))]
     origin: Instant,
 }
 
 impl SystemMonotonicClock {
     pub fn new() -> Self {
-        Self {
+        Self::try_new().expect("system monotonic clock must be available")
+    }
+
+    pub fn try_new() -> Result<Self, SystemMonotonicClockError> {
+        #[cfg(target_os = "linux")]
+        linux_boottime_micros()?;
+
+        Ok(Self {
+            #[cfg(not(target_os = "linux"))]
             origin: Instant::now(),
-        }
+        })
     }
 }
 
@@ -33,10 +43,44 @@ impl Default for SystemMonotonicClock {
 
 impl MonotonicClock for SystemMonotonicClock {
     fn now(&self) -> MonotonicMicros {
-        let micros = self.origin.elapsed().as_micros().min(u128::from(u64::MAX));
-        MonotonicMicros::new(micros as u64)
+        #[cfg(target_os = "linux")]
+        let micros = linux_boottime_micros()
+            .expect("CLOCK_BOOTTIME became unavailable after clock construction");
+        #[cfg(not(target_os = "linux"))]
+        let micros = self.origin.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+
+        MonotonicMicros::new(micros)
     }
 }
+
+#[cfg(target_os = "linux")]
+fn linux_boottime_micros() -> Result<u64, SystemMonotonicClockError> {
+    let value = nix::time::ClockId::CLOCK_BOOTTIME
+        .now()
+        .map_err(|_| SystemMonotonicClockError::ClockRead)?;
+    let seconds =
+        u64::try_from(value.tv_sec()).map_err(|_| SystemMonotonicClockError::InvalidClockValue)?;
+    let nanoseconds =
+        u64::try_from(value.tv_nsec()).map_err(|_| SystemMonotonicClockError::InvalidClockValue)?;
+    seconds
+        .checked_mul(1_000_000)
+        .and_then(|micros| micros.checked_add(nanoseconds / 1_000))
+        .ok_or(SystemMonotonicClockError::InvalidClockValue)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SystemMonotonicClockError {
+    ClockRead,
+    InvalidClockValue,
+}
+
+impl fmt::Display for SystemMonotonicClockError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "system monotonic clock error: {self:?}")
+    }
+}
+
+impl std::error::Error for SystemMonotonicClockError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ChannelEndpointEvent {
@@ -163,6 +207,16 @@ mod tests {
     use std::cell::Cell;
     use std::collections::VecDeque;
     use std::io;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn clock_value_does_not_restart_with_each_instance() {
+        let first = SystemMonotonicClock::try_new().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let before_second = first.now();
+        let second = SystemMonotonicClock::try_new().unwrap();
+        assert!(second.now().get() >= before_second.get());
+    }
 
     #[derive(Default)]
     struct ScriptedIo {

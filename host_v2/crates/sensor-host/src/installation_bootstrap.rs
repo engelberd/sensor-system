@@ -6,7 +6,9 @@ use crate::channel_agent::{ChannelAgent, ChannelAgentError, ChannelPolicy};
 use crate::channel_bootstrap::{
     bootstrap_channel, BootstrappedChannel, ChannelBootstrapError, ChannelBootstrapPolicy,
 };
-use crate::channel_endpoint::{ChannelEndpoint, MonotonicClock, SystemMonotonicClock};
+use crate::channel_endpoint::{
+    ChannelEndpoint, MonotonicClock, SystemMonotonicClock, SystemMonotonicClockError,
+};
 use crate::channel_port::{ChannelPortError, SerialChannelPort, SerialPortConfig};
 use crate::discovery::{
     ChannelDiscoveryPlan, DiscoveryError, DiscoveryInventory, InstallationDiscoveryPlan,
@@ -197,7 +199,8 @@ pub fn bootstrap_serial_installation(
             policy.agent,
         )
         .map_err(SerialChannelBootstrapError::Agent)?;
-        let endpoint = ChannelEndpoint::new(agent, port, SystemMonotonicClock::new());
+        let clock = SystemMonotonicClock::try_new().map_err(SerialChannelBootstrapError::Clock)?;
+        let endpoint = ChannelEndpoint::new(agent, port, clock);
         bootstrap_channel(
             endpoint,
             channel_plan,
@@ -259,6 +262,7 @@ pub enum SerialChannelBootstrapError {
     InvalidPolicy(&'static str),
     ZeroSessionSeed,
     Port(ChannelPortError),
+    Clock(SystemMonotonicClockError),
     Agent(ChannelAgentError),
     Bootstrap(ChannelBootstrapError),
 }
@@ -271,6 +275,7 @@ impl fmt::Display for SerialChannelBootstrapError {
             }
             Self::ZeroSessionSeed => formatter.write_str("bootstrap session seed must be non-zero"),
             Self::Port(source) => write!(formatter, "cannot open channel port: {source}"),
+            Self::Clock(source) => write!(formatter, "cannot read monotonic clock: {source}"),
             Self::Agent(source) => write!(formatter, "cannot create channel agent: {source}"),
             Self::Bootstrap(source) => write!(formatter, "channel exchange failed: {source}"),
         }
@@ -281,6 +286,7 @@ impl std::error::Error for SerialChannelBootstrapError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Port(source) => Some(source),
+            Self::Clock(source) => Some(source),
             Self::Agent(source) => Some(source),
             Self::Bootstrap(source) => Some(source),
             Self::InvalidPolicy(_) | Self::ZeroSessionSeed => None,
