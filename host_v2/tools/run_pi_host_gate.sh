@@ -110,16 +110,19 @@ if command -v vmstat >/dev/null 2>&1; then
 fi
 
 run_log="$output_directory/run.log"
+status_file="$output_directory/runtime-status.json"
 if [[ -x /usr/bin/time ]]; then
   /usr/bin/time -v -o "$output_directory/resource-usage.txt" \
     timeout --preserve-status --signal=TERM --kill-after=120s \
     "${duration_seconds}s" "$binary" run \
     --config "$config" --repository-root "$repository_root" \
+    --status-file "$status_file" \
     > "$run_log" 2>&1
 else
   timeout --preserve-status --signal=TERM --kill-after=120s \
     "${duration_seconds}s" "$binary" run \
     --config "$config" --repository-root "$repository_root" \
+    --status-file "$status_file" \
     > "$run_log" 2>&1
 fi
 cleanup

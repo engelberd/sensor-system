@@ -23,6 +23,7 @@ use crate::host_health::{
     SharedStorageFault,
 };
 use crate::installation_bootstrap::{BootstrappedInstallation, BootstrappedInstallationChannel};
+use crate::node_metrics::{NodeMetricsReader, NodeMetricsSnapshot};
 use crate::storage_health::{
     StorageHealthObservation, StorageHealthProbe, StorageHealthProbeError,
 };
@@ -157,6 +158,7 @@ where
     inventory: DiscoveryInventory,
     channels: ChannelSupervisorSet<T>,
     channel_metrics: Vec<ChannelMetricsReader>,
+    node_metrics: Vec<NodeMetricsReader>,
     time: TimeRuntime,
     lifecycle: HostCoordinatorLifecycle,
     shared_storage_fault: Option<SharedStorageFault>,
@@ -178,6 +180,13 @@ where
         self.channel_metrics
             .iter()
             .map(ChannelMetricsReader::snapshot)
+            .collect()
+    }
+
+    pub fn node_metrics(&self) -> Vec<NodeMetricsSnapshot> {
+        self.node_metrics
+            .iter()
+            .map(NodeMetricsReader::snapshot)
             .collect()
     }
 
@@ -408,10 +417,12 @@ where
     }
 
     let mut channel_metrics = Vec::with_capacity(prepared.len());
+    let mut node_metrics = Vec::with_capacity(inventory.nodes().len());
     let specs = prepared
         .into_iter()
         .map(|(channel_id, channel_name, task)| {
             channel_metrics.push(task.metrics_reader());
+            node_metrics.extend(task.node_metrics_readers());
             ChannelTaskSpec::new(channel_id, channel_name, task)
         })
         .collect();
@@ -432,6 +443,7 @@ where
         inventory,
         channels,
         channel_metrics,
+        node_metrics,
         time,
         lifecycle: HostCoordinatorLifecycle::Running,
         shared_storage_fault: None,

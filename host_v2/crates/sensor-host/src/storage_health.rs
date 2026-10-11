@@ -58,6 +58,10 @@ impl StorageHealthProbe {
         &self.root
     }
 
+    pub const fn minimum_available_bytes(&self) -> u64 {
+        self.policy.minimum_available_bytes
+    }
+
     pub fn observe(&self) -> Result<StorageHealthObservation, StorageHealthProbeError> {
         let statistics = statvfs(&self.root).map_err(StorageHealthProbeError::Statvfs)?;
         if statistics.flags().contains(FsFlags::ST_RDONLY) {

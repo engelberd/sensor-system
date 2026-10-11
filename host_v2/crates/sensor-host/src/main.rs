@@ -3,11 +3,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use sensor_host::channel_endpoint::{MonotonicClock, SystemMonotonicClock};
 use sensor_host::discovery::InstallationDiscoveryPlan;
 use sensor_host::discovery_executor::{execute_installation_discovery, DiscoveryExecutionPolicy};
 use sensor_host::host_process::{summarize_shutdown, HostProcessShutdownSummary, LinuxHostProcess};
 use sensor_host::installation_topology::HostInstallationProfile;
+use sensor_host::runtime_status::{
+    unix_time_ms, HostRuntimeObservation, RuntimeProcessPhase, RuntimeStatusIdentity,
+    RuntimeStatusPublisher,
+};
 use sensor_host::termination_signal::TerminationSignalReceiver;
+use sensor_host::time_wal::HostClockId;
 
 fn main() -> ExitCode {
     match parse_arguments(std::env::args_os().skip(1)) {
@@ -38,7 +44,8 @@ fn main() -> ExitCode {
         Ok(Command::Run {
             config,
             repository_root,
-        }) => match run(config, repository_root) {
+            status_file,
+        }) => match run(config, repository_root, status_file) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("sensor-host: run failed: {error}");
@@ -57,15 +64,76 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(config: PathBuf, repository_root: PathBuf) -> Result<(), RunCommandError> {
+fn run(
+    config: PathBuf,
+    repository_root: PathBuf,
+    status_file: PathBuf,
+) -> Result<(), RunCommandError> {
     // Install before any worker is created. The blocked mask is inherited by
     // every channel thread, so SIGINT/SIGTERM has one synchronous owner.
     let signals = TerminationSignalReceiver::install().map_err(RunCommandError::Signal)?;
     let profile =
         HostInstallationProfile::load(config, repository_root).map_err(RunCommandError::Profile)?;
     let system_name = profile.system_name().to_owned();
-    let mut process = LinuxHostProcess::start(&profile, fresh_session_seed(), fresh_work_id_seed())
-        .map_err(RunCommandError::Start)?;
+    let clock = SystemMonotonicClock::try_new().map_err(RunCommandError::Clock)?;
+    let host_boot_id = HostClockId::read_current_linux_boot_id().map_err(|error| {
+        RunCommandError::Start(
+            sensor_host::host_process::LinuxHostProcessStartError::HostClock(error),
+        )
+    })?;
+    let session_seed = fresh_session_seed();
+    let work_id_seed = fresh_work_id_seed();
+    let identity = RuntimeStatusIdentity {
+        system_name: system_name.clone(),
+        config_fingerprint: profile.config_fingerprint(),
+        process_id: std::process::id(),
+        process_instance_id: format!("{session_seed:08x}-{work_id_seed:016x}"),
+        host_boot_id,
+        started_unix_ms: unix_time_ms().map_err(RunCommandError::Status)?,
+        started_monotonic_us: clock.now().get(),
+    };
+    let mut status =
+        RuntimeStatusPublisher::new(status_file, identity).map_err(RunCommandError::Status)?;
+    status
+        .publish(
+            RuntimeProcessPhase::Starting,
+            clock.now().get(),
+            None,
+            None,
+            None,
+        )
+        .map_err(RunCommandError::Status)?;
+    let mut process = match LinuxHostProcess::start_with_host_clock(
+        &profile,
+        host_boot_id,
+        session_seed,
+        work_id_seed,
+    ) {
+        Ok(process) => process,
+        Err(error) => {
+            let message = error.to_string();
+            let _ = status.publish(
+                RuntimeProcessPhase::Faulted,
+                clock.now().get(),
+                None,
+                Some(&message),
+                Some(false),
+            );
+            return Err(RunCommandError::Start(error));
+        }
+    };
+    let initial_observation = observe_runtime(&process);
+    let mut cause = None;
+    if let Err(error) = status.publish(
+        runtime_phase(&initial_observation),
+        clock.now().get(),
+        Some(&initial_observation),
+        None,
+        None,
+    ) {
+        cause = Some(error.to_string());
+        let _ = process.request_stop();
+    }
     println!(
         "host running: system={} channels={} supervision_interval_ms={} metrics_interval_ms={}",
         system_name,
@@ -74,9 +142,8 @@ fn run(config: PathBuf, repository_root: PathBuf) -> Result<(), RunCommandError>
         process.metrics_interval().as_millis()
     );
 
-    let mut cause = None;
     let mut next_metrics = Instant::now() + process.metrics_interval();
-    loop {
+    while cause.is_none() {
         match signals.try_receive() {
             Ok(Some(signal)) => {
                 println!("termination requested: signal={signal:?}");
@@ -108,6 +175,18 @@ fn run(config: PathBuf, repository_root: PathBuf) -> Result<(), RunCommandError>
         }
         if Instant::now() >= next_metrics {
             print_runtime_metrics(&process);
+            let observation = observe_runtime(&process);
+            if let Err(error) = status.publish(
+                runtime_phase(&observation),
+                clock.now().get(),
+                Some(&observation),
+                None,
+                None,
+            ) {
+                cause = Some(error.to_string());
+                let _ = process.request_stop();
+                break;
+            }
             next_metrics = Instant::now() + process.metrics_interval();
         }
         std::thread::sleep(process.supervision_interval());
@@ -116,12 +195,61 @@ fn run(config: PathBuf, repository_root: PathBuf) -> Result<(), RunCommandError>
     // Always leave one final snapshot, including for short commissioning runs
     // that end before the periodic interval.
     print_runtime_metrics(&process);
+    let stopping_observation = observe_runtime(&process);
+    if let Err(error) = status.publish(
+        RuntimeProcessPhase::Stopping,
+        clock.now().get(),
+        Some(&stopping_observation),
+        cause.as_deref(),
+        None,
+    ) {
+        if cause.is_none() {
+            cause = Some(error.to_string());
+        }
+    }
     let summary = summarize_shutdown(process.shutdown());
     print_shutdown_summary(&summary);
-    if cause.is_none() && summary.clean() {
+    let clean = cause.is_none() && summary.clean();
+    status
+        .publish(
+            if clean {
+                RuntimeProcessPhase::Stopped
+            } else {
+                RuntimeProcessPhase::Faulted
+            },
+            clock.now().get(),
+            Some(&stopping_observation),
+            cause.as_deref(),
+            Some(clean),
+        )
+        .map_err(RunCommandError::Status)?;
+    if clean {
         Ok(())
     } else {
         Err(RunCommandError::Execution { cause, summary })
+    }
+}
+
+fn observe_runtime(process: &LinuxHostProcess) -> HostRuntimeObservation {
+    HostRuntimeObservation {
+        health: process.health_snapshot(),
+        channel_metrics: process.channel_metrics(),
+        node_metrics: process.node_metrics(),
+        nodes: process.inventory().nodes().to_vec(),
+        time_streams: process.time_health().streams().to_vec(),
+        storage_root: process.storage_root().to_path_buf(),
+        storage_minimum_available_bytes: process.storage_minimum_available_bytes(),
+        storage: process
+            .storage_observation()
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn runtime_phase(observation: &HostRuntimeObservation) -> RuntimeProcessPhase {
+    match observation.health.level {
+        sensor_host::host_health::HostHealthLevel::Healthy => RuntimeProcessPhase::Recording,
+        sensor_host::host_health::HostHealthLevel::Degraded => RuntimeProcessPhase::Degraded,
+        sensor_host::host_health::HostHealthLevel::StopRequired => RuntimeProcessPhase::Faulted,
     }
 }
 
@@ -291,6 +419,7 @@ enum Command {
     Run {
         config: PathBuf,
         repository_root: PathBuf,
+        status_file: PathBuf,
     },
     Help,
 }
@@ -312,6 +441,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
         let operation = arguments[0].clone();
         let mut config = None;
         let mut repository_root = None;
+        let mut status_file = None;
         let mut index = 1;
         while index < arguments.len() {
             let flag = &arguments[index];
@@ -322,6 +452,9 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                 Some("--config") if config.is_none() => config = Some(PathBuf::from(value)),
                 Some("--repository-root") if repository_root.is_none() => {
                     repository_root = Some(PathBuf::from(value));
+                }
+                Some("--status-file") if operation == "run" && status_file.is_none() => {
+                    status_file = Some(PathBuf::from(value));
                 }
                 _ => return Err("unknown or repeated operation option"),
             }
@@ -341,6 +474,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
             Some("run") => Ok(Command::Run {
                 config,
                 repository_root,
+                status_file: status_file.ok_or("run requires --status-file")?,
             }),
             _ => unreachable!("operation was matched above"),
         };
@@ -350,15 +484,17 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  sensor-host --version\n  sensor-host validate --config <profile.json> --repository-root <path>\n  sensor-host discover --config <profile.json> --repository-root <path>\n  sensor-host run --config <profile.json> --repository-root <path>"
+        "usage:\n  sensor-host --version\n  sensor-host validate --config <profile.json> --repository-root <path>\n  sensor-host discover --config <profile.json> --repository-root <path>\n  sensor-host run --config <profile.json> --repository-root <path> --status-file <path>"
     );
 }
 
 #[derive(Debug)]
 enum RunCommandError {
     Signal(sensor_host::termination_signal::TerminationSignalError),
+    Clock(sensor_host::channel_endpoint::SystemMonotonicClockError),
     Profile(sensor_host::installation_topology::HostInstallationProfileError),
     Start(sensor_host::host_process::LinuxHostProcessStartError),
+    Status(sensor_host::runtime_status::RuntimeStatusError),
     Execution {
         cause: Option<String>,
         summary: HostProcessShutdownSummary,
@@ -369,8 +505,10 @@ impl std::fmt::Display for RunCommandError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Signal(error) => error.fmt(formatter),
+            Self::Clock(error) => error.fmt(formatter),
             Self::Profile(error) => error.fmt(formatter),
             Self::Start(error) => error.fmt(formatter),
+            Self::Status(error) => error.fmt(formatter),
             Self::Execution { cause, summary } => write!(
                 formatter,
                 "controlled shutdown was not clean: cause={cause:?}, summary={summary:?}"
@@ -448,12 +586,47 @@ mod tests {
                 "--config",
                 "/etc/sensor.json",
                 "--repository-root",
-                "/repo"
+                "/repo",
+                "--status-file",
+                "/run/status.json"
             ])),
             Ok(Command::Run {
                 config: PathBuf::from("/etc/sensor.json"),
                 repository_root: PathBuf::from("/repo"),
+                status_file: PathBuf::from("/run/status.json"),
             })
         );
+    }
+
+    #[test]
+    fn parses_explicit_runtime_status_path() {
+        assert_eq!(
+            parse_arguments(strings(&[
+                "run",
+                "--config",
+                "/etc/sensor.json",
+                "--repository-root",
+                "/repo",
+                "--status-file",
+                "/run/sensor-system/host-v2-status.json"
+            ])),
+            Ok(Command::Run {
+                config: PathBuf::from("/etc/sensor.json"),
+                repository_root: PathBuf::from("/repo"),
+                status_file: PathBuf::from("/run/sensor-system/host-v2-status.json"),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_run_without_a_status_destination() {
+        assert!(parse_arguments(strings(&[
+            "run",
+            "--config",
+            "/etc/sensor.json",
+            "--repository-root",
+            "/repo"
+        ]))
+        .is_err());
     }
 }

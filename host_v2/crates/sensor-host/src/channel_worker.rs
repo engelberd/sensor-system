@@ -26,6 +26,7 @@ use crate::channel_startup::{
 use crate::channel_supervisor::SupervisedChannelTask;
 use crate::discovery::DiscoveryTargetId;
 use crate::measurement_coordinator::MeasurementCoordinatorError;
+use crate::node_metrics::NodeMetricsReader;
 use crate::persistence_executor::{
     GroupedPersistenceExecutor, PersistenceExecutorError, PersistenceShutdown,
 };
@@ -62,6 +63,7 @@ pub struct ProductionChannelTask<P, C, T> {
     shutdown_policy: ControlledChannelShutdownPolicy,
     metrics: ChannelMetricsPublisher,
     metrics_reader: ChannelMetricsReader,
+    node_metrics_readers: Vec<NodeMetricsReader>,
 }
 
 impl<P, C, T> ProductionChannelTask<P, C, T>
@@ -85,6 +87,7 @@ where
             })
             .collect();
         let storage_metrics = recording.persistence().metrics_reader();
+        let node_metrics_readers = recording.measurements().node_metrics_readers();
         let (metrics, metrics_reader) =
             ChannelMetricsPublisher::new(startup.channel_id(), Some(storage_metrics));
         Ok(Self {
@@ -93,11 +96,16 @@ where
             shutdown_policy,
             metrics,
             metrics_reader,
+            node_metrics_readers,
         })
     }
 
     pub fn metrics_reader(&self) -> ChannelMetricsReader {
         self.metrics_reader.clone()
+    }
+
+    pub fn node_metrics_readers(&self) -> Vec<NodeMetricsReader> {
+        self.node_metrics_readers.clone()
     }
 }
 

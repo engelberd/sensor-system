@@ -8,19 +8,23 @@ use crate::channel_endpoint::SystemMonotonicClock;
 use crate::channel_metrics::ChannelMetricsSnapshot;
 use crate::channel_supervisor::ChannelWorkerExit;
 use crate::channel_worker::ControlledChannelShutdownReport;
+use crate::discovery::DiscoveryInventory;
 use crate::discovery::InstallationDiscoveryPlan;
 use crate::host_coordinator::{
     plan_host_startup, start_host_runtime, HostCoordinatorError, HostCoordinatorRuntime,
     HostCoordinatorShutdown, HostRuntimeStartError, HostSupervisionError, HostSupervisionReport,
     ProductionHostChannelTask,
 };
+use crate::host_health::HostHealthSnapshot;
 use crate::installation_bootstrap::{
     bootstrap_serial_installation, InstallationBootstrapError, SerialChannelBootstrapError,
 };
 use crate::installation_topology::HostInstallationProfile;
+use crate::node_metrics::NodeMetricsSnapshot;
 use crate::storage_health::{
     StorageHealthObservation, StorageHealthPolicy, StorageHealthProbe, StorageHealthProbeError,
 };
+use crate::time_health::TimePersistenceHealth;
 use crate::time_wal::{HostClockId, HostClockIdError};
 
 pub type LinuxSerialPort = Box<dyn serialport::SerialPort>;
@@ -53,6 +57,15 @@ impl LinuxHostProcess {
         // Reject an unsupported host before touching storage or opening RS485.
         let host_clock_id = HostClockId::read_current_linux_boot_id()
             .map_err(LinuxHostProcessStartError::HostClock)?;
+        Self::start_with_host_clock(profile, host_clock_id, session_seed, work_id_seed)
+    }
+
+    pub fn start_with_host_clock(
+        profile: &HostInstallationProfile,
+        host_clock_id: HostClockId,
+        session_seed: u32,
+        work_id_seed: u64,
+    ) -> Result<Self, LinuxHostProcessStartError> {
         let storage = prepare_storage_health(
             profile.storage().capture().root(),
             profile.storage().minimum_free_bytes(),
@@ -103,6 +116,34 @@ impl LinuxHostProcess {
 
     pub fn channel_metrics(&self) -> Vec<ChannelMetricsSnapshot> {
         self.runtime.channel_metrics()
+    }
+
+    pub fn node_metrics(&self) -> Vec<NodeMetricsSnapshot> {
+        self.runtime.node_metrics()
+    }
+
+    pub fn inventory(&self) -> &DiscoveryInventory {
+        self.runtime.inventory()
+    }
+
+    pub fn health_snapshot(&self) -> HostHealthSnapshot {
+        self.runtime.health_snapshot()
+    }
+
+    pub fn time_health(&self) -> &TimePersistenceHealth {
+        self.runtime.time_health()
+    }
+
+    pub fn storage_observation(&self) -> Result<StorageHealthObservation, StorageHealthProbeError> {
+        self.storage.observe()
+    }
+
+    pub fn storage_root(&self) -> &Path {
+        self.storage.root()
+    }
+
+    pub const fn storage_minimum_available_bytes(&self) -> u64 {
+        self.storage.minimum_available_bytes()
     }
 
     pub fn channel_count(&self) -> usize {

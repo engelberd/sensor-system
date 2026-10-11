@@ -17,6 +17,7 @@ pub const PRODUCTION_RS485_BAUD_RATE: u32 = 115_200;
 
 pub struct HostInstallationProfile {
     system_name: String,
+    config_fingerprint: u64,
     storage: InstallationStorageProfile,
     topology: InstallationTopologyProfile,
     runtime: HostRuntimeInstallationProfile,
@@ -40,8 +41,10 @@ impl HostInstallationProfile {
             .channel_startup(storage.time_sync())
             .map_err(HostInstallationProfileError::Runtime)?;
         let system_name = topology.system_name().to_owned();
+        let config_fingerprint = fingerprint_document(&document);
         Ok(Self {
             system_name,
+            config_fingerprint,
             storage,
             topology,
             runtime,
@@ -50,6 +53,10 @@ impl HostInstallationProfile {
 
     pub fn system_name(&self) -> &str {
         &self.system_name
+    }
+
+    pub const fn config_fingerprint(&self) -> u64 {
+        self.config_fingerprint
     }
 
     pub const fn storage(&self) -> &InstallationStorageProfile {
@@ -63,6 +70,16 @@ impl HostInstallationProfile {
     pub const fn runtime(&self) -> &HostRuntimeInstallationProfile {
         &self.runtime
     }
+}
+
+fn fingerprint_document(document: &Value) -> u64 {
+    // serde_json's default map representation has deterministic key ordering.
+    // FNV-1a is used as a compact change detector, not as an authentication
+    // primitive; the algorithm is named explicitly in the status contract.
+    let bytes = serde_json::to_vec(document).expect("serializing a JSON Value cannot fail");
+    bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -797,5 +814,17 @@ mod tests {
             profile.storage().checkpoint_root(),
             temp.0.join("var/recordings/.retention")
         );
+    }
+
+    #[test]
+    fn configuration_fingerprint_is_stable_and_detects_a_semantic_change() {
+        let first = serde_json::json!({"b": [1, 2], "a": {"enabled": true}});
+        let reordered = serde_json::json!({"a": {"enabled": true}, "b": [1, 2]});
+        let changed = serde_json::json!({"a": {"enabled": false}, "b": [1, 2]});
+        assert_eq!(
+            fingerprint_document(&first),
+            fingerprint_document(&reordered)
+        );
+        assert_ne!(fingerprint_document(&first), fingerprint_document(&changed));
     }
 }

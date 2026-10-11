@@ -193,7 +193,7 @@ pub fn assemble_recording_coordinator(
         work_id_seed,
     )
     .map_err(ChannelAssemblyError::Runtime)?;
-    let mut coordinator = ChannelWorkCoordinator::new(runtime);
+    let mut coordinator = ChannelWorkCoordinator::new(runtime, plan.channel_id());
 
     for (index, planned) in plan.nodes.iter().enumerate() {
         let position = recovered

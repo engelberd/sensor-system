@@ -705,7 +705,7 @@ mod tests {
             1,
         )
         .unwrap();
-        let mut coordinator = MeasurementCoordinator::new(runtime);
+        let mut coordinator = MeasurementCoordinator::new(runtime, 1);
         for address in 1..=NODE_COUNT as u8 {
             coordinator
                 .register_node(

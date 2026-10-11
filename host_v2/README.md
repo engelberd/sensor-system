@@ -72,7 +72,8 @@ admission, recovery Capture/Time i dopiero wtedy wysyła `Start`:
 host_v2/target/release/sensor-host validate \
   --config host/system_config.json --repository-root "$PWD"
 host_v2/target/release/sensor-host run \
-  --config host/system_config.json --repository-root "$PWD"
+  --config host/system_config.json --repository-root "$PWD" \
+  --status-file var/tmp/host-v2-status.json
 ```
 
 `SIGINT` i `SIGTERM` uruchamiają tę samą kontrolowaną sekwencję: quiesce,
@@ -82,6 +83,11 @@ WAL. Proces wypisuje wynik każdego kanału i kończy się kodem 0 wyłącznie p
 czystym shutdownie. Szablon usługi znajduje się w
 `systemd/sensor-host-v2.service.example`; nie jest aktywną jednostką i wymaga
 dopasowania użytkownika oraz ścieżek instalacji.
+
+`run` wymaga jawnej ścieżki statusu. Testy ręczne zapisują ją razem z
+artefaktami, a usługa produkcyjna używa
+`/run/sensor-system/host-v2-status.json`. Plik ma wersjonowany schemat, jest
+zastępowany atomowo i pozostaje ostatnim terminalnym snapshotem po shutdownie.
 
 Parametry wykonania są zebrane w `runtime_v2` w `host/configs/common.json`.
 Obejmują timeouty wire, quarantine, admission, rozmiar chunku, retry, fazowanie

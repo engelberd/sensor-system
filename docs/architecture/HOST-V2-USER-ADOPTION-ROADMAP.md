@@ -72,7 +72,7 @@ usługi albo przez przyszłe Operations API.
 
 ## 4. Kolejność implementacji
 
-### Etap 1 — kontrakt statusu hosta v2
+### Etap 1 — kontrakt statusu hosta v2 — implementacja gotowa, Pi gate otwarty
 
 Najpierw `sensor-host` zacznie publikować wersjonowany snapshot JSON w
 `/run/sensor-system/host-v2-status.json`. Zapis będzie atomowy, ograniczony
@@ -96,6 +96,12 @@ kursora. Aktualizacja nie może blokować workera RS485 ani storage writera.
 Kryterium ukończenia: test jednostkowy schematu i zapisu atomowego, poprawny
 snapshot podczas startu, pracy, degradacji i shutdownu oraz brak mierzalnej
 zmiany tempa akwizycji.
+
+Implementacja publikuje schema 1 atomowym `rename`, eksportuje health, storage,
+metryki kanałów, identity oraz cursory i świeżość per node. Błąd publikacji po
+starcie uruchamia kontrolowany Stop. Testy jednostkowe i pełny workspace Rust
+przechodzą. Do zamknięcia gate pozostaje fizyczny przebieg na Raspberry Pi i
+porównanie z baseline sześciu kanałów.
 
 ### Etap 2 — natywny `hostctl doctor` dla v2
 
@@ -288,4 +294,3 @@ Jest wspólnym, małym kontraktem dla `doctor`, systemd health i dashboardu.
 Po jego ukończeniu wykonujemy kolejno Etap 2 i Etap 3. Dopiero na stabilnym
 statusie oraz lifecycle procesu podłączamy dashboard, dzięki czemu UI nie
 tworzy własnego modelu stanu systemu.
-

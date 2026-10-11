@@ -12,6 +12,7 @@ use crate::channel_runtime::{
 };
 use crate::measurement_persistence::{persist_pending, DurableMeasurementSink, PersistenceError};
 use crate::measurement_transfer::{MeasurementTransfer, MeasurementTransferError};
+use crate::node_metrics::{NodeMetricsPublisher, NodeMetricsReader};
 use crate::node_session::{NodeSession, SessionPhase};
 use crate::persistence_executor::WriteRecoveryRange;
 use crate::time_persistence::{
@@ -55,6 +56,8 @@ pub enum TimeSyncSettlement {
 struct ManagedSession {
     node_address: u8,
     session: Option<NodeSession>,
+    metrics: NodeMetricsPublisher,
+    metrics_reader: NodeMetricsReader,
 }
 
 struct PendingCompletion {
@@ -73,6 +76,7 @@ struct InFlightWrite {
 /// scheduling or persistence policy. Measurement keeps its dedicated session
 /// and durable-settlement path; TimeSync only shares arbitration and dispatch.
 pub struct ChannelWorkCoordinator {
+    channel_id: u8,
     runtime: ChannelRuntime,
     sessions: Vec<ManagedSession>,
     active_dispatch: Option<MeasurementDispatch>,
@@ -84,9 +88,10 @@ pub struct ChannelWorkCoordinator {
 }
 
 impl ChannelWorkCoordinator {
-    pub fn new(runtime: ChannelRuntime) -> Self {
+    pub fn new(runtime: ChannelRuntime, channel_id: u8) -> Self {
         let capacity = runtime.node_capacity();
         Self {
+            channel_id,
             runtime,
             sessions: Vec::with_capacity(capacity),
             active_dispatch: None,
@@ -197,11 +202,22 @@ impl ChannelWorkCoordinator {
         self.runtime
             .register_node(config, recovered_cursor, now)
             .map_err(MeasurementCoordinatorError::Runtime)?;
+        let (metrics, metrics_reader) =
+            NodeMetricsPublisher::new(self.channel_id, config.node_address, session.cursors());
         self.sessions.push(ManagedSession {
             node_address: config.node_address,
             session: Some(session),
+            metrics,
+            metrics_reader,
         });
         Ok(())
+    }
+
+    pub fn node_metrics_readers(&self) -> Vec<NodeMetricsReader> {
+        self.sessions
+            .iter()
+            .map(|managed| managed.metrics_reader.clone())
+            .collect()
     }
 
     pub fn dispatch_next(
@@ -281,6 +297,9 @@ impl ChannelWorkCoordinator {
                     self.runtime
                         .complete_time_sync(dispatch, now)
                         .map_err(MeasurementCoordinatorError::Runtime)?;
+                    self.managed_session(node_address)?
+                        .metrics
+                        .observe_time_sync(now);
                     TimeSyncSettlement::Submitted { node_address }
                 }
                 Err(error) => {
@@ -426,10 +445,13 @@ impl ChannelWorkCoordinator {
             }
         };
 
+        let produced = settlement_progress(settlement).map(|progress| progress.produced.get());
         let session = pending.transfer.into_session();
-        self.managed_session_mut(node_address)
-            .map_err(MeasurementSettlementError::Coordinator)?
-            .session = Some(session);
+        let managed = self
+            .managed_session_mut(node_address)
+            .map_err(MeasurementSettlementError::Coordinator)?;
+        managed.metrics.observe_session(&session, produced, now);
+        managed.session = Some(session);
         self.active_dispatch = None;
         self.observe_shutdown_settlement(settlement)
             .map_err(MeasurementSettlementError::Coordinator)?;
@@ -602,7 +624,12 @@ impl ChannelWorkCoordinator {
                 Err(error) => return Err(MeasurementCoordinatorError::Runtime(error)),
             };
         let write = self.in_flight_writes.remove(index);
-        self.managed_session_mut(node_address)?.session = Some(write.transfer.into_session());
+        let session = write.transfer.into_session();
+        let managed = self.managed_session_mut(node_address)?;
+        managed
+            .metrics
+            .observe_session(&session, Some(produced.get()), now);
+        managed.session = Some(session);
         Ok(settlement)
     }
 
@@ -615,7 +642,9 @@ impl ChannelWorkCoordinator {
         self.runtime
             .recover_node(node_address, session.cursors().received(), now)
             .map_err(MeasurementCoordinatorError::Runtime)?;
-        self.managed_session_mut(node_address)?.session = Some(session);
+        let managed = self.managed_session_mut(node_address)?;
+        managed.metrics.observe_session(&session, None, now);
+        managed.session = Some(session);
         Ok(())
     }
 
@@ -783,6 +812,15 @@ impl ChannelWorkCoordinator {
 /// Transitional name retained for callers that only compose Measurement.
 /// New channel-level composition should use `ChannelWorkCoordinator`.
 pub type MeasurementCoordinator = ChannelWorkCoordinator;
+
+fn settlement_progress(settlement: MeasurementSettlement) -> Option<MeasurementProgress> {
+    match settlement {
+        MeasurementSettlement::Persisted { progress, .. }
+        | MeasurementSettlement::NoData { progress, .. } => Some(progress),
+        MeasurementSettlement::RetryScheduled { .. }
+        | MeasurementSettlement::RecoveryRequired { .. } => None,
+    }
+}
 
 #[derive(Debug)]
 pub enum MeasurementSettlementError<E> {
@@ -971,7 +1009,7 @@ mod tests {
             100,
         )
         .unwrap();
-        let mut coordinator = MeasurementCoordinator::new(runtime);
+        let mut coordinator = MeasurementCoordinator::new(runtime, 1);
         coordinator
             .register_node(
                 NodeScheduleConfig {
