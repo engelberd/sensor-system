@@ -1,0 +1,25 @@
+[Unit]
+Description=Sensor System host v2 recorder
+After=local-fs.target
+
+[Service]
+Type=simple
+User=sensor-system
+Group=dialout
+WorkingDirectory=/opt/sensor-system
+ExecStartPre=/opt/sensor-system/host_v2/target/release/sensor-host validate --config /opt/sensor-system/host/system_config.json --repository-root /opt/sensor-system
+ExecStart=/opt/sensor-system/host_v2/target/release/sensor-host run --config /opt/sensor-system/host/system_config.json --repository-root /opt/sensor-system
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=120s
+KillSignal=SIGTERM
+RuntimeDirectory=sensor-system
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sensor-system/var /run/sensor-system
+
+[Install]
+WantedBy=multi-user.target
