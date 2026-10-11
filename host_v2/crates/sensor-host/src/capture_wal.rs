@@ -16,7 +16,8 @@ use crate::measurement_persistence::DurableMeasurementSink;
 
 const FILE_MAGIC: [u8; 8] = *b"SSCAPWAL";
 const FILE_VERSION: u16 = 1;
-const FILE_HEADER_BYTES: usize = 64;
+pub const CAPTURE_WAL_HEADER_BYTES: usize = 64;
+const FILE_HEADER_BYTES: usize = CAPTURE_WAL_HEADER_BYTES;
 const FILE_HEADER_CRC_OFFSET: usize = FILE_HEADER_BYTES - 4;
 
 const RECORD_VERSION: u8 = 1;

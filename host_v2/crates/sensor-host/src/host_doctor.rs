@@ -12,6 +12,7 @@ use nix::unistd::{access, AccessFlags};
 use serde_json::{json, Value};
 
 use crate::capture_export::validate_sealed_capture_chain;
+use crate::capture_wal::CAPTURE_WAL_HEADER_BYTES;
 use crate::channel_endpoint::{MonotonicClock, SystemMonotonicClock};
 use crate::discovery::InstallationDiscoveryPlan;
 use crate::discovery_executor::{execute_installation_discovery, DiscoveryExecutionPolicy};
@@ -994,12 +995,15 @@ fn inspect_capture_tree(root: &Path, findings: &mut Vec<DoctorFinding>) {
             Ok(summary) => {
                 windows = windows.saturating_add(summary.window_count);
                 samples = samples.saturating_add(summary.sample_count);
-                match unsealed_wal_count(stream) {
-                    Ok(0) => {}
-                    Ok(count) => findings.push(DoctorFinding::new(
+                match unsealed_wal_summary(stream) {
+                    Ok((_, 0)) => {}
+                    Ok((_, nonempty)) => findings.push(DoctorFinding::new(
                         DoctorSeverity::Warning,
                         "deep.capture-unsealed",
-                        format!("{}: unsealed_wal_files={count}", stream.display()),
+                        format!(
+                            "{}: nonempty_unsealed_wal_files={nonempty}",
+                            stream.display()
+                        ),
                     )),
                     Err(error) => {
                         findings.push(DoctorFinding::new(
@@ -1031,8 +1035,9 @@ fn inspect_capture_tree(root: &Path, findings: &mut Vec<DoctorFinding>) {
     ));
 }
 
-fn unsealed_wal_count(stream: &Path) -> Result<u64, String> {
-    let mut count = 0_u64;
+fn unsealed_wal_summary(stream: &Path) -> Result<(u64, u64), String> {
+    let mut empty = 0_u64;
+    let mut nonempty = 0_u64;
     for entry in fs::read_dir(stream).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let file_type = entry.file_type().map_err(|error| error.to_string())?;
@@ -1046,10 +1051,21 @@ fn unsealed_wal_count(stream: &Path) -> Result<u64, String> {
             continue;
         };
         if stem.starts_with("window-") && !stream.join(format!("{stem}.manifest")).is_file() {
-            count = count.saturating_add(1);
+            let bytes = entry.metadata().map_err(|error| error.to_string())?.len();
+            if bytes < CAPTURE_WAL_HEADER_BYTES as u64 {
+                return Err(format!(
+                    "{} is shorter than a Capture header",
+                    entry.path().display()
+                ));
+            }
+            if bytes == CAPTURE_WAL_HEADER_BYTES as u64 {
+                empty = empty.saturating_add(1);
+            } else {
+                nonempty = nonempty.saturating_add(1);
+            }
         }
     }
-    Ok(count)
+    Ok((empty, nonempty))
 }
 
 fn inspect_time_tree(root: &Path, findings: &mut Vec<DoctorFinding>) {
@@ -1267,7 +1283,11 @@ mod tests {
         fs::create_dir_all(&stream).unwrap();
         fs::write(stream.join("window-1.manifest"), b"x").unwrap();
         fs::write(stream.join("time.wal"), b"x").unwrap();
-        fs::write(stream.join("window-2.wal"), b"x").unwrap();
+        fs::write(
+            stream.join("window-2.wal"),
+            [0_u8; CAPTURE_WAL_HEADER_BYTES],
+        )
+        .unwrap();
         assert_eq!(
             discover_parent_directories(&root, |name| name.ends_with(".manifest")).unwrap(),
             BTreeSet::from([stream.clone()])
@@ -1276,7 +1296,7 @@ mod tests {
             discover_files(&root, |name| name.ends_with(".wal")).unwrap(),
             vec![stream.join("time.wal"), stream.join("window-2.wal")]
         );
-        assert_eq!(unsealed_wal_count(&stream).unwrap(), 1);
+        assert_eq!(unsealed_wal_summary(&stream).unwrap(), (1, 0));
         fs::remove_dir_all(root).unwrap();
     }
 }
