@@ -4,8 +4,10 @@ use std::process::ExitCode;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use sensor_host::channel_endpoint::{MonotonicClock, SystemMonotonicClock};
+use sensor_host::channel_supervisor::ChannelWorkerPhase;
 use sensor_host::discovery::InstallationDiscoveryPlan;
 use sensor_host::discovery_executor::{execute_installation_discovery, DiscoveryExecutionPolicy};
+use sensor_host::host_health::{HostHealthLevel, HostHealthReason, HostHealthSnapshot};
 use sensor_host::host_process::{summarize_shutdown, HostProcessShutdownSummary, LinuxHostProcess};
 use sensor_host::installation_topology::HostInstallationProfile;
 use sensor_host::runtime_status::{
@@ -210,6 +212,17 @@ fn run(
     let summary = summarize_shutdown(process.shutdown());
     print_shutdown_summary(&summary);
     let clean = cause.is_none() && summary.clean();
+    let mut terminal_observation = stopping_observation;
+    apply_shutdown_summary(&mut terminal_observation.health, &summary);
+    let terminal_error = if clean {
+        None
+    } else {
+        Some(
+            cause
+                .clone()
+                .unwrap_or_else(|| format!("controlled shutdown was not clean: {summary:?}")),
+        )
+    };
     status
         .publish(
             if clean {
@@ -218,8 +231,8 @@ fn run(
                 RuntimeProcessPhase::Faulted
             },
             clock.now().get(),
-            Some(&stopping_observation),
-            cause.as_deref(),
+            Some(&terminal_observation),
+            terminal_error.as_deref(),
             Some(clean),
         )
         .map_err(RunCommandError::Status)?;
@@ -228,6 +241,53 @@ fn run(
     } else {
         Err(RunCommandError::Execution { cause, summary })
     }
+}
+
+fn apply_shutdown_summary(health: &mut HostHealthSnapshot, summary: &HostProcessShutdownSummary) {
+    for channel in &mut health.channels {
+        let Some(shutdown) = summary
+            .channels
+            .iter()
+            .find(|shutdown| shutdown.channel_id == Some(channel.channel_id))
+        else {
+            channel.phase = ChannelWorkerPhase::Faulted;
+            continue;
+        };
+        if let Some(completed_steps) = shutdown.completed_steps {
+            channel.completed_steps = completed_steps;
+        }
+        channel.phase = if shutdown.clean() {
+            ChannelWorkerPhase::Stopped
+        } else {
+            ChannelWorkerPhase::Faulted
+        };
+    }
+
+    health.reasons.retain(|reason| {
+        !matches!(
+            reason,
+            HostHealthReason::ChannelFaulted { .. } | HostHealthReason::ChannelTerminated { .. }
+        )
+    });
+    for channel in &health.channels {
+        if channel.phase == ChannelWorkerPhase::Faulted {
+            health.reasons.push(HostHealthReason::ChannelFaulted {
+                channel_id: channel.channel_id,
+            });
+        }
+    }
+    health.level = if health.reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            HostHealthReason::TimeIntegrityFault | HostHealthReason::SharedStorageFault(_)
+        )
+    }) {
+        HostHealthLevel::StopRequired
+    } else if health.reasons.is_empty() {
+        HostHealthLevel::Healthy
+    } else {
+        HostHealthLevel::Degraded
+    };
 }
 
 fn observe_runtime(process: &LinuxHostProcess) -> HostRuntimeObservation {
@@ -628,5 +688,86 @@ mod tests {
             "/repo"
         ]))
         .is_err());
+    }
+
+    fn shutdown_channel(
+        channel_id: Option<u8>,
+        completed_steps: Option<u64>,
+        worker_fault: Option<&str>,
+    ) -> sensor_host::host_process::ChannelProcessShutdownSummary {
+        sensor_host::host_process::ChannelProcessShutdownSummary {
+            channel_id,
+            completed_steps,
+            worker_fault: worker_fault.map(str::to_owned),
+            join_error: None,
+            protocol_error: None,
+            persistence_error: None,
+        }
+    }
+
+    fn running_health() -> HostHealthSnapshot {
+        HostHealthSnapshot {
+            level: HostHealthLevel::Healthy,
+            coordinator: sensor_host::host_health::HostCoordinatorLifecycle::StopRequested,
+            time: sensor_host::time_health::TimePersistenceHealthState::Healthy,
+            channels: vec![
+                sensor_host::channel_supervisor::ChannelWorkerSnapshot {
+                    channel_id: 1,
+                    phase: ChannelWorkerPhase::Running,
+                    completed_steps: 10,
+                },
+                sensor_host::channel_supervisor::ChannelWorkerSnapshot {
+                    channel_id: 2,
+                    phase: ChannelWorkerPhase::StopRequested,
+                    completed_steps: 20,
+                },
+            ],
+            reasons: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn terminal_status_projects_clean_join_reports_as_stopped() {
+        let mut health = running_health();
+        let summary = HostProcessShutdownSummary {
+            stop_request_failed: false,
+            channels: vec![
+                shutdown_channel(Some(1), Some(11), None),
+                shutdown_channel(Some(2), Some(21), None),
+            ],
+            time_shutdown_failed: false,
+        };
+
+        apply_shutdown_summary(&mut health, &summary);
+
+        assert_eq!(health.level, HostHealthLevel::Healthy);
+        assert!(health.reasons.is_empty());
+        assert_eq!(health.channels[0].phase, ChannelWorkerPhase::Stopped);
+        assert_eq!(health.channels[0].completed_steps, 11);
+        assert_eq!(health.channels[1].phase, ChannelWorkerPhase::Stopped);
+        assert_eq!(health.channels[1].completed_steps, 21);
+    }
+
+    #[test]
+    fn terminal_status_exposes_faulted_or_missing_join_reports() {
+        let mut health = running_health();
+        let summary = HostProcessShutdownSummary {
+            stop_request_failed: false,
+            channels: vec![shutdown_channel(Some(1), Some(12), Some("wire fault"))],
+            time_shutdown_failed: false,
+        };
+
+        apply_shutdown_summary(&mut health, &summary);
+
+        assert_eq!(health.level, HostHealthLevel::Degraded);
+        assert_eq!(health.channels[0].phase, ChannelWorkerPhase::Faulted);
+        assert_eq!(health.channels[0].completed_steps, 12);
+        assert_eq!(health.channels[1].phase, ChannelWorkerPhase::Faulted);
+        assert!(health
+            .reasons
+            .contains(&HostHealthReason::ChannelFaulted { channel_id: 1 }));
+        assert!(health
+            .reasons
+            .contains(&HostHealthReason::ChannelFaulted { channel_id: 2 }));
     }
 }
