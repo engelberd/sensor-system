@@ -936,6 +936,30 @@ host nie mógł pomylić nowego obrazu z rollbackiem do poprzedniego slotu.
 Aktualizacja `0.5.5` → `0.5.6` również przeszła po RS485 przez Lifecycle
 `prepare-update`, zapis nieaktywnego slotu, trial i exact-version confirm.
 
+### Raspberry Pi — pierwszy wielokanałowy gate
+
+Na Raspberry Pi 5 wykonano migrację sześciu fizycznych node board rev 2 ze
+starego firmware do `0.5.6` wyłącznie przez RS485. Każda linia przeszła osobno
+pełny upload A/B, odczyt Identity/Capabilities i exact-version trial confirm.
+Aktywne były linie A, B, C, D, G i H; E oraz F nie były fizycznie podłączone.
+
+Pierwszy jednokanałowy gate ujawnił po kolejnym uruchomieniu procesu, że
+`SystemMonotonicClock` liczył czas od startu procesu, chociaż Time WAL wiąże oś
+czasu z linuxowym `boot_id`. Powodowało to prawidłowe fail-closed odrzucenie
+niemonotonicznej obserwacji po restarcie hosta. Zegar produkcyjny używa teraz
+linuxowego `CLOCK_BOOTTIME`; bootstrap sprawdza jego dostępność przed otwarciem
+runtime, a test regresji potwierdza, że utworzenie nowej instancji zegara nie
+zeruje wartości.
+
+Po poprawce zaliczono 60-sekundowy gate sześciu kanałów i kolejny 30-sekundowy
+gate restartu na tych samych Capture i Time WAL. Linia C pracowała z output ODR
+250 Hz, pozostałe z 125 Hz. Oba przebiegi zakończyły się kontrolowanym Stop i
+pełną walidacją wszystkich strumieni: zero gapów, timeoutów, decode errors,
+retry, storage failures oraz backpressure. Dłuższy przebieg zużył maksymalnie
+2592 KiB RSS, 0.40 s łącznego czasu CPU przez 60.24 s i nie użył swapu.
+Artefakty pozostają lokalnie poza Git. To jest baseline dla sześciu fizycznych
+linii, nie końcowa kwalifikacja 1/4/8 ani test długotrwały.
+
 Ostateczny profil pojemności wymaga pomiarów HIL przy docelowym ODR, obciążeniu
 core 1, retransmisjach i najdłuższej przerwie w odpytywaniu node. Wartości
 startowe pozostaną stałymi kompozycji, aby strojenie nie przebudowywało domeny.
