@@ -415,7 +415,7 @@ fn inspect_storage(profile: &HostInstallationProfile, findings: &mut Vec<DoctorF
         Ok(statistics) => findings.push(DoctorFinding::new(
             DoctorSeverity::Ok,
             "storage.filesystem",
-            format!("type={}", statistics.filesystem_type_name()),
+            filesystem_label(&statistics),
         )),
         Err(error) => findings.push(DoctorFinding::new(
             DoctorSeverity::Error,
@@ -1141,6 +1141,16 @@ fn required_u64(value: Option<&Value>, path: &str) -> Result<u64, String> {
 
 fn duration_us(duration: Duration) -> u64 {
     duration.as_micros().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(target_os = "linux")]
+fn filesystem_label(statistics: &nix::sys::statfs::Statfs) -> String {
+    format!("type_magic={:#x}", statistics.filesystem_type().0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn filesystem_label(statistics: &nix::sys::statfs::Statfs) -> String {
+    format!("type={}", statistics.filesystem_type_name())
 }
 
 fn fresh_session_seed() -> u32 {
