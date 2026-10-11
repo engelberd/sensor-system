@@ -29,6 +29,7 @@ pub mod discovery;
 pub mod discovery_executor;
 pub mod handshake;
 pub mod host_coordinator;
+pub mod host_doctor;
 pub mod host_health;
 pub mod host_process;
 pub mod installation_bootstrap;

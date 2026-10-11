@@ -89,6 +89,21 @@ artefaktami, a usługa produkcyjna używa
 `/run/sensor-system/host-v2-status.json`. Plik ma wersjonowany schemat, jest
 zastępowany atomowo i pozostaje ostatnim terminalnym snapshotem po shutdownie.
 
+Diagnostyka operatora jest osobnym natywnym binarium i nie wymaga legacy
+Python venv:
+
+```bash
+cargo build --release -p sensor-host --manifest-path host_v2/Cargo.toml
+./hostctl doctor --offline
+./hostctl doctor
+./hostctl doctor --deep
+./hostctl doctor --json
+```
+
+Tryb domyślny nie otwiera RS485. `--deep` odmawia discovery, gdy usługa albo
+skonfigurowany port są zajęte. Kontrakt raportu opisuje
+`docs/architecture/HOST-DOCTOR-V2.md`.
+
 Parametry wykonania są zebrane w `runtime_v2` w `host/configs/common.json`.
 Obejmują timeouty wire, quarantine, admission, rozmiar chunku, retry, fazowanie
 TimeSync i deadline shutdownu. Są walidowane jako jeden kontrakt. Wartości

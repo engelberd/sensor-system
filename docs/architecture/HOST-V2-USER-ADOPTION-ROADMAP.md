@@ -118,7 +118,7 @@ Runtime Status poprawnie zachował tę próbę jako `faulted`. Odporność start
 chwilowo nieobecny node pozostaje jawnym wymaganiem Etapu 3 i kwalifikacji z
 Etapu 7.
 
-### Etap 2 — natywny `hostctl doctor` dla v2
+### Etap 2 — natywny `hostctl doctor` dla v2 — implementacja gotowa, Pi gate otwarty
 
 `./hostctl doctor` rozpozna profil v2 i wykona dwie klasy kontroli.
 
@@ -151,6 +151,13 @@ rozpoznaniem polecenia. Natywne komendy v2 będą działały nawet bez legacy ve
 Kryterium ukończenia: `hostctl doctor` działa na Raspberry Pi z sześcioma
 obecnymi liniami, poprawnie oznacza E/F jako wyłączone, wykrywa celowo zepsuty
 port, brak praw, stary status i mało miejsca, nie przerywając rejestracji.
+
+Implementacja jest oddzielnym modułem domenowym i binarium `sensor-doctor`.
+`hostctl` wybiera je przed kontrolą legacy Python venv. Dostępne są stabilne
+findings, JSON schema 1 i kody wyjścia `0/1/2`. Tryb domyślny nie otwiera
+RS485; `--deep` sprawdza stan usługi oraz właścicieli deskryptorów w `/proc`
+przed discovery. Do zamknięcia etapu pozostaje gate na Raspberry Pi, w tym
+kontrolowane przypadki starego statusu, złego portu i naruszonej rezerwy.
 
 ### Etap 3 — automatyczne procesy na Raspberry Pi
 

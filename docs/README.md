@@ -42,6 +42,8 @@ Ograniczony handoff rekordów z kanałów do storage opisuje
 [BOUNDED-PERSISTENCE-WRITER.md](architecture/BOUNDED-PERSISTENCE-WRITER.md).
 Wersjonowany snapshot procesu dla `doctor`, systemd i dashboardu opisuje
 [RUNTIME-STATUS-V1.md](architecture/RUNTIME-STATUS-V1.md).
+Bezpieczne kontrole online/offline i jawny test głęboki opisuje
+[HOST-DOCTOR-V2.md](architecture/HOST-DOCTOR-V2.md).
 Kolejność recovery repozytorium, odczytu durable cursorów i startu workera
 opisuje [CAPTURE-RUNTIME-STARTUP.md](architecture/CAPTURE-RUNTIME-STARTUP.md).
 Zasady przekazywania sekwencjonowanych próbek i luk między rdzeniami opisuje

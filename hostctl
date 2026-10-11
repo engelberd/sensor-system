@@ -6,14 +6,6 @@ export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 VENV_PYTHON="$ROOT_DIR/host/.venv/bin/python"
 export PYTHONUNBUFFERED=1
 
-if [[ ! -x "$VENV_PYTHON" ]]; then
-  echo "[ERROR] missing host virtualenv python: $VENV_PYTHON" >&2
-  echo "Create it first, for example:" >&2
-  echo "  python3 -m venv host/.venv" >&2
-  echo "  host/.venv/bin/python -m pip install pyserial numpy h5py" >&2
-  exit 1
-fi
-
 # All repository-relative paths are anchored here, independently of the
 # caller's current working directory.
 cd "$ROOT_DIR"
@@ -36,7 +28,7 @@ Commands:
   dashboard  Run web dashboard for supervisor/runtime state
   operator   Run operator control panel for host, node config, runs, and preview
   paths      Show the effective config, recording, archive, log and runtime paths
-  doctor     Run read-only host, storage, runtime and device inventory checks
+  doctor     Run native v2 checks; add --offline, --deep or --json
   boot       Run bootloader maintenance tool
   update     Upload latest firmware package over RS485
   py         Run arbitrary python module/script inside host venv
@@ -70,6 +62,32 @@ fi
 
 COMMAND="$1"
 shift
+
+# Native v2 operator commands must remain available when the retired Python
+# environment is absent. They receive explicit repository-relative defaults
+# from their own stable CLI contract.
+if [[ "$COMMAND" == "doctor" ]]; then
+  DOCTOR_BINARY="${SENSOR_HOST_DOCTOR_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-doctor}"
+  if [[ ! -x "$DOCTOR_BINARY" ]]; then
+    echo "[ERROR] missing native v2 doctor: $DOCTOR_BINARY" >&2
+    echo "Build it with: cargo build --release -p sensor-host --manifest-path host_v2/Cargo.toml" >&2
+    exit 69
+  fi
+  exec "$DOCTOR_BINARY" --repository-root "$ROOT_DIR" "$@"
+fi
+
+if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$COMMAND" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ ! -x "$VENV_PYTHON" ]]; then
+  echo "[ERROR] missing host virtualenv python: $VENV_PYTHON" >&2
+  echo "Create it first, for example:" >&2
+  echo "  python3 -m venv host/.venv" >&2
+  echo "  host/.venv/bin/python -m pip install pyserial numpy h5py" >&2
+  exit 1
+fi
 
 case "$COMMAND" in
   ping)
@@ -108,9 +126,6 @@ case "$COMMAND" in
   paths)
     exec "$VENV_PYTHON" "$ROOT_DIR/host/host_paths.py" "$@"
     ;;
-  doctor)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_doctor.py" "$@"
-    ;;
   boot)
     exec "$VENV_PYTHON" "$ROOT_DIR/host/tools/bootloader_cli.py" "$@"
     ;;
@@ -129,9 +144,6 @@ case "$COMMAND" in
     ;;
   py)
     exec "$VENV_PYTHON" "$@"
-    ;;
-  help|-h|--help)
-    usage
     ;;
   *)
     echo "[ERROR] unknown command: $COMMAND" >&2
