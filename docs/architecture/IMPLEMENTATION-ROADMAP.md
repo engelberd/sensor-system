@@ -963,3 +963,8 @@ linii, nie końcowa kwalifikacja 1/4/8 ani test długotrwały.
 Ostateczny profil pojemności wymaga pomiarów HIL przy docelowym ODR, obciążeniu
 core 1, retransmisjach i najdłuższej przerwie w odpytywaniu node. Wartości
 startowe pozostaną stałymi kompozycji, aby strojenie nie przebudowywało domeny.
+
+Przejście od tego baseline do automatycznej pracy na Raspberry Pi, natywnego
+`hostctl doctor`, dashboardu i testów 24/7 opisuje
+[HOST-V2-USER-ADOPTION-ROADMAP.md](HOST-V2-USER-ADOPTION-ROADMAP.md). Jego Etap 1,
+wersjonowany snapshot statusu, jest następną pracą implementacyjną.
