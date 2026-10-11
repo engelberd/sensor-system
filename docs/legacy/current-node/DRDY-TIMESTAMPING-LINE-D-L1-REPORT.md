@@ -1,5 +1,8 @@
 # Raport L1 timestampingu — linia D, node 1
 
+> **Raport historyczny:** wynik dotyczy firmware i protokołu legacy wskazanego
+> poniżej. Nie potwierdza działania `host_v2`.
+
 Data: 2026-07-27
 System: testowy
 Zakres: jeden ADXL355, `/dev/ttyCH9344USB3`, node `1`

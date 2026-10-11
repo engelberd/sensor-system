@@ -17,7 +17,11 @@ sensor-system/
 │   ├── systemd/              wyłącznie szablony jednostek
 │   ├── tests/                testy hosta
 │   └── system_config.json    lokalna, ignorowana nakładka aktywnego hosta
-├── docs/                     formaty danych, ADR-y i instrukcje
+├── host_v2/                  nowy runtime Rust i narzędzia offline
+├── docs/
+│   ├── architecture/         obowiązujący projekt i roadmapa
+│   ├── adr/                  decyzje architektoniczne
+│   └── legacy/               opis starego hosta/protokołu i rolloutów
 ├── tools/                    wspólne narzędzia repozytorium
 ├── Brewfile                  deklaracja zewnętrznych narzędzi macOS
 └── var/                      lokalne dane robocze; zawartość ignorowana

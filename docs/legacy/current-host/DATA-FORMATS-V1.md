@@ -1,5 +1,9 @@
 # Sensor System data formats v1
 
+> **Legacy:** ten kontrakt opisuje działający host Python i nie jest formatem
+> danych `host_v2`. Aktualny kontrakt semantyczny znajduje się w
+> [MEASUREMENT-DATA-CONTRACT.md](../../architecture/MEASUREMENT-DATA-CONTRACT.md).
+
 This document is the implementation contract for the first clean Capture and
 Archive formats. Dataset names, types, units, sentinels, and invariants are
 normative. Examples are descriptive.

@@ -1,8 +1,12 @@
 # Sensor System RS485 Recorder
 
+> **Legacy runtime:** ten dokument opisuje działający host Python. Aktualny plan
+> następcy znajduje się w
+> [`docs/architecture/IMPLEMENTATION-ROADMAP.md`](../docs/architecture/IMPLEMENTATION-ROADMAP.md).
+
 The production Capture/Archive lifecycle, locking rules, full-file validation,
 effective-ODR diagnostics, and derived resampling policy are defined in
-[`docs/HDF5-DATA-POLICY.md`](../docs/HDF5-DATA-POLICY.md).
+[`docs/legacy/current-host/HDF5-DATA-POLICY.md`](../docs/legacy/current-host/HDF5-DATA-POLICY.md).
 
 `host_recorder.py` is the single-channel production-oriented host receiver. It
 talks to nodes over one RS485 channel, drains burst packets, commits received
@@ -172,5 +176,5 @@ stable udev alias such as `/dev/sensor-system-rs485`.
 
 For first-time node provisioning and later firmware updates, see:
 
-- [node/README-bootloader.md](/home/anone/pico-projects/node/README-bootloader.md:1)
-- [host/README-product.md](/home/anone/pico-projects/host/README-product.md:1)
+- [node/README-bootloader.md](../node/README-bootloader.md)
+- [host/README-product.md](README-product.md)

@@ -1,4 +1,5 @@
 node/build/
+host_v2/target/
 host/.venv/
 host/host_config.json
 host/system_config.json
@@ -6,6 +7,8 @@ host/systemd/*.service
 !host/systemd/*.service.example
 __pycache__/
 *.pyc
+.ipynb_checkpoints/
+host_v2/analysis/Untitled*.ipynb
 runs/
 data/
 logs/

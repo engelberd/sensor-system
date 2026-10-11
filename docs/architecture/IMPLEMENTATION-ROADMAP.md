@@ -1,0 +1,941 @@
+# Host v2 i firmware node — plan implementacji
+
+- Status dokumentu: aktywny plan wykonawczy
+- Ostatnia aktualizacja: 2026-10-10
+- Baseline: `architecture-v1`
+
+Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
+dalej i po czym poznajemy, że etap jest skończony. Nie zastępuje kontraktów
+produktowych ani ADR-ów.
+
+Krytyczny przegląd bieżącego rdzenia i mapa parametrów znajdują się w
+[CORE-READINESS-AUDIT.md](CORE-READINESS-AUDIT.md).
+
+## 1. Cel systemu
+
+System zbiera bez utraty surowe próbki XYZ z wielu node, zachowuje dowody czasu
+i jawnie opisuje każdą lukę. Jeden host obsługuje 1–16 niezależnych channels.
+Obecną implementacją channel jest half-duplex RS485 115200 bit/s na przewodzie
+około 400–800 m; jeden channel może mieć wiele node.
+
+Host odpytuje node. Node zachowuje niepotwierdzone próbki w ograniczonym
+`MeasurementJournal`. Host potwierdza zakres dopiero po trwałym zapisie. Krótkie
+zakłócenia naprawia retransmisja, a utrata po przekroczeniu retencji jest jawnym
+zdarzeniem jakościowym.
+
+System ma trzy tryby:
+
+- `Production` — maksymalnie przewidywalny transfer danych, tylko ograniczona
+  diagnostyka potrzebna do health i recovery;
+- `Diagnostic` — dodatkowa telemetria i narzędzia kosztem jawnie przydzielonego
+  budżetu;
+- `Maintenance` — konfiguracja, commissioning i update; pomiary mogą być
+  zatrzymane.
+
+## 2. Obowiązujący podział technologiczny
+
+| Obszar | Technologia | Odpowiedzialność |
+| --- | --- | --- |
+| Firmware node | C++17 + Pico SDK | sensor, journal, protokół, bootloader |
+| Runtime hosta | stable Rust, ARM64 Linux | protokół, scheduler, sesje, zapis, recovery, control plane |
+| Narzędzia danych | Python | odczyt, walidacja, migracja i analiza offline |
+| UI | cienki klient Operations API | prezentacja i składanie commands |
+
+Pierwszy runtime hosta jest jednym procesem `sensor-host`. Każdy channel ma
+własny logiczny `ChannelAgent`, ograniczone kolejki i jednego właściciela I/O.
+Izolacja do osobnych procesów może później objąć cały `TransportDevice`, jeśli
+uzasadnią ją pomiary lub testy awarii.
+
+## 3. Stan implementacji
+
+### Gotowe w kodzie v2
+
+- workspace Rust z crate'ami `sensor-core`, `sensor-protocol`, `sensor-host`;
+- zakaz `unsafe` w obecnych bibliotekach;
+- typy `HardwareId`, `BootEpoch`, `SampleSequence`, `SampleIdentity`;
+- osobny natywny `Adxl355SampleCode` signed-20 oraz `SampleAxis` signed-24 dla
+  dokładnego wyniku potoku node i zwartego wire;
+- dokładny `SampleRate` w nanohertz i profil wszystkich 11 ustawień ODR ADXL355;
+- jawny `Gap` z zakresem, przyczyną i ochroną przed overflow;
+- `SequenceCursor` jako granica wyłączna oraz trzy chronione cursory delivery:
+  received, durable i released;
+- semantyczne kontrakty `PULL_SAMPLES`, `GET_STREAM_STATE` i
+  `RELEASE_SAMPLES` oraz zamrożony wire Measurement Service;
+- wersje framing `3`, application `5`, host `0.5.0-dev`;
+- fail-closed przy niezgodnej wersji protokołu;
+- minimalna binarka hosta raportująca wersję oraz `sensor-hil` wykonujący
+  fail-closed handshake przez produkcyjny adapter portu;
+- 99 testów jednostkowych Rust, czysty Clippy i release build workspace;
+- zaakceptowany ADR-0008 i normatywna specyfikacja framing protocol 3;
+- bounded encoder/decoder COBS + CRC-32C w Rust i C++ z limitem payloadu 512 B;
+- wspólne binarne golden vectors potwierdzające identyczny wire Rust ↔ C++;
+- host-side Transaction Core z deadline, quarantine oraz rozróżnieniem
+  `RetrySafe`/`ReconcileState`;
+- kontrakty i codeki Identity/Capabilities po obu stronach;
+- bounded dispatcher node obsługujący pełną transakcję Identity przez framing v3;
+- fail-closed hostowa maszyna handshake z wymaganiami instalacji i Transaction Core;
+- event-driven `NodeSession` oraz bounded `SimulatedNodeLink` sprawdzające
+  retransmisję, trwałość, restart i overflow retencji bez I/O;
+- zamrożony wire Measurement Service, niezależne golden vectors oraz fail-closed
+  codeki Rust/C++ dla requestów, wyników, exact gap, timing evidence i signed
+  XYZ24 LE.
+- stałopojemnościowy firmware `MeasurementJournal` bez alokacji, łączący zwarty
+  sample ring z bounded `GapLedger`, widokami bez kopiowania oraz testami wrap,
+  overflow, retransmisji i mieszanego modelu stanów.
+- niezależny od wire `DeliverySession` z jednorazowym tokenem
+  prepare/complete/abort, ograniczeniem chunku, fail-closed timing evidence oraz
+  typowanymi wynikami dla wszystkich ścieżek Measurement pull/release.
+- `MeasurementServiceHandler` obsługujący trzy messages, pełne mapowanie błędów
+  oraz encoding bez pośredniej tablicy próbek przez ograniczony view journala.
+- routing Measurement w `ApplicationDispatcher` oraz stałopojemnościowy
+  `ResponseOutbox`, który atomowo rozstrzyga delivery token przy enqueue i nie
+  pozostawia sesji w `Busy`, gdy kolejka jest pełna.
+- niezależny `ProtocolV3TransportEndpoint` z ograniczonym budżetem RX, jednym
+  aktywnym TX, retry startu, deadline/abort oraz licznikami diagnostycznymi;
+  fake-port tests i pełny build board rev 2 przechodzą.
+- zaakceptowany ADR-0009, niezależny od sensora `SourceSequencer` oraz bounded
+  `GapLedger` z dokładnymi zakresami i scalaniem.
+- docelowy `MeasurementJournal`, który łączy zwarty sample ring i `GapLedger` w
+  jeden cursor space, zwraca sample albo exact gap i fail-closed skraca retencję
+  po przepełnieniu; test modelowy obejmuje 50 000 mieszanych zdarzeń.
+- bounded `SampleIngress` core 0 → core 1 z lock-free SPSC, źródłowym sequence,
+  pending quality backlogiem bez wyprzedzania oraz testem 200 000 zdarzeń pod
+  ThreadSanitizer.
+- bounded mailbox command/result core 1 ↔ core 0 oraz executor z pojedynczym
+  pending result; backpressure wyniku nie wykonuje operacji drugi raz, a każdy
+  `poll` ma ograniczony koszt.
+- przyjęty ADR-0010 rozdzielający obowiązkowe ordered quality events,
+  stałokosztową telemetrię Production i bounded diagnostykę serwisową; wykryty
+  niebezpieczny synchroniczny zapis flash z legacy hot path.
+- semantyczny `ContinuityBreak` w `sensor-core`/`sensor-protocol`, durable gating
+  w `NodeSession` oraz firmware `ContinuityLedger`, `MeasurementJournal` i
+  `DeliverySession`; break zajmuje marker cursora bez fałszywego missing count.
+- wire `CONTINUITY_BREAK` result 6 w Rust/C++, wspólny 35-bajtowy golden vector
+  i firmware handler z tym samym atomowym delivery tokenem co sample/gap.
+- `SampleIngress` przenosi sample, exact gap i continuity break; bounded pending
+  quality backlog zachowuje kolejność przy pełnej kolejce i przechodzi
+  fail-closed po przepełnieniu zamiast ukryć zdarzenie.
+- deterministyczny `Core1ProtocolRuntime`, `node_v2::DataPlane` i jeden
+  composition root łączący ingress, journal, protocol endpoint, lifecycle oraz
+  system operations;
+- osobny obraz `sensor_system_node_v2_integration` dla board rev 2, budujący
+  prawdziwe sterowniki z application protocol 5;
+- hostowy `ChannelAgent`, `ChannelPort` i `ChannelEndpoint`: jedna transakcja na
+  linię, stałe bufory wire, częściowe write, `tcdrain`, timeout po zakończeniu
+  TX, handshake, Lifecycle i Measurement w jednym arbitrze;
+- `MeasurementTransfer` zachowujący pełny `SampleChunk` z timing evidence i
+  `config_revision` oraz `DurableMeasurementSink`, który nie pozwala podnieść
+  release przed trwałym potwierdzeniem;
+- 32 wykonywalne zestawy testów host-side C++ firmware;
+- produkcyjne obrazy slotów A/B budowane z `main_v2`, paczka update protocol 5,
+  zdalne `ConfirmTrialBoot` oraz automatyczny restart do rollbacku po 30 s bez
+  potwierdzenia.
+- fizyczny update A/B wyłącznie przez RS485, wymuszony rollback bez confirm,
+  poprawny confirm obrazów 0.5.4 i 0.5.5 oraz pion Start → durable `fsync` →
+  Release → Stop → Maintenance;
+- naprawiony adapter hosta, który po timeoutcie odczytu nie odtwarza już
+  wcześniej zużytego fragmentu bufora wejściowego.
+- capabilities schema 2: typowana maska output ODR po decymacji, zgodna z
+  rzeczywistym zakresem `2000..62.5 Hz`, oraz feature bits zależne od rodzaju
+  obrazu A/B;
+
+### Gotowe jako decyzja lub kontrakt
+
+- model Host → TransportDevice → Channel → Node → Sensor;
+- jeden właściciel każdego zmiennego stanu;
+- dane źródłowe: raw XYZ, sequence, boot epoch, gaps, konfiguracja i dowody czasu;
+- ruchome, konfigurowalne okna Capture, domyślnie około 600 s od pierwszej
+  rzeczywistej próbki;
+- brak interpolacji w Capture i Archive;
+- rozdzielenie Capture, Archive i Derived;
+- niezależny profil Production/Diagnostic oraz lifecycle
+  Idle/Recording/Stopping/Maintenance/Faulted;
+- lokalny Operations API jako jedyna droga sterowania runtime;
+- ręczny wybór ODR z admission control; bez automatycznej zmiany ODR w pierwszej
+  wersji;
+- świadome zerwanie zgodności ze starym application protocol 4/framing 2.
+
+### Nadal działa wyłącznie w systemie legacy
+
+- obecny grant/burst/commit;
+- timing DRDY i model synchronizacji;
+- zapis HDF5, dashboard i konfigurator pozostają w legacy do czasu powstania
+  produkcyjnego Capture i Operations API.
+
+Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
+Nie oznacza to jeszcze gotowości produkcyjnej dla wielu node, 1–16 channels,
+długich przewodów ani awarii storage.
+
+Te elementy są źródłem doświadczeń i scenariuszy testowych. Nie importujemy ich
+bezpośrednio do `host_v2` i nie kopiujemy ich struktury klas.
+
+## 4. Granice modułów
+
+### `sensor-core`
+
+Zawiera znaczenie danych i polityki produktu. Obecnie są to identity, sample,
+gap, continuity i cursory. Docelowo trafią tu polityki schedulera, trybów,
+recovery i decyzji commit. Nie zna bajtów wire, serial, filesystemu, HDF5, HTTP
+ani konfiguracji JSON.
+
+### `sensor-protocol`
+
+Zawiera wyłącznie kontrakt wire: framing, CRC, ograniczony decoder strumienia,
+typowane messages, wersje i capabilities. Nie decyduje o retry, trwałości,
+harmonogramie ani trybie pracy.
+
+### `sensor-host`
+
+Składa runtime i adaptery: RS485, storage, clock, status/control IPC oraz
+konfigurację instalacji. `main.rs` pozostaje cienki.
+
+### Firmware node
+
+Docelowo rozdziela `SensorRuntime`, akwizycję i numerowanie źródłowe,
+`MeasurementJournal`, `DeliverySession`, codec protokołu oraz
+bounded mailbox danych i operacji sensora. Core 0 jest jedynym wykonawcą
+operacji ADXL; core 1 jest właścicielem journala i transportu. Każda próbka
+otrzymuje sequence na core 0, przed pierwszą granicą, na której może zostać
+utracona.
+
+### Python offline
+
+Czyta zapieczętowane produkty danych, waliduje je i tworzy Archive/Derived.
+Nie jest ładowany przez `sensor-host` i nie uczestniczy w durable commit.
+
+## 5. Krytyczny przepływ produkcyjny
+
+```text
+ADXL -> source sequence -> bounded sample/gap ingress -> MeasurementJournal node
+     -> odpowiedź na pull albo dokładna informacja o luce
+     -> decoder hosta -> kontrola identity/sequence
+     -> durable append Capture -> DurableReceipt
+     -> release do node -> zwolnienie retencji
+```
+
+Zakazane skróty:
+
+- commit przed `DurableReceipt`;
+- ciche pominięcie błędnej ramki lub luki;
+- nieograniczona kolejka;
+- retry sterowane przez codec;
+- bezpośrednie otwieranie portu przez UI lub konfigurator;
+- uznawanie czasu odbioru ramki za czas pobrania próbki.
+
+## 6. Etapy implementacji i bramki
+
+Numery oznaczają obszary i bramki produktu. Fundament, runtime node i pion HIL
+jednej linii są zamknięte. Bieżąca ścieżka zależności prowadzi przez scheduler
+wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
+1–16 channels i Operations. Stan na dziś:
+
+| Etap | Stan | Co realnie pozostaje |
+| --- | --- | --- |
+| 0. Fundament | ukończony | utrzymanie dokumentacji i reguł zależności |
+| 1. Framing v3 | codeki, integracja i HIL jednej linii gotowe | benchmark RP2350, szum i soak |
+| 2. Discovery | runtime oraz fizyczny fail-closed handshake gotowe | inventory i testy wielu node |
+| 3. Transfer/`NodeSession` | fizyczny wire-to-durable pion oraz produkcyjny Capture gotowe | recovery po utracie procesu/zasilania w HIL |
+| 4. Scheduler/`ChannelRuntime` | pełny pion Measurement, TimeSync i symulacja wielu node gotowe | wykonawcy Health/Diagnostic i HIL wielu node |
+| 5. Firmware protocol 5 | obrazy A/B, rollback, migracja oraz confirm 0.5.6 gotowe | soak i pomiary granic pojemności |
+| 6. Adapter RS485/HIL | handshake, update i pełny transfer jednej linii gotowe | wiele node, długi przewód, zakłócenia i restart hosta |
+| 7. Capture | WAL, recovery, segmenty, tracked profile parser, coverage index/proof, osobne checkpointy i cleanup Capture/Archive, bounded handoff, group commit i fault injection gotowe | integracja compactora/publishera, benchmark, process-kill matrix i dane rzeczywiste |
+| 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja i HIL jednego node gotowe | UTC, długi pomiar dryfu, przeplatany HIL i wiele node |
+| 9. Skala 1–16 | implementacja w toku | kompozycja startup/recovery, `HostCoordinator`, `run` i test macierzy |
+| 10. Operations | Lifecycle subset gotowy | API/IPC, audit, config i operacje grupowe |
+| 11. Migracja | nierozpoczęty | Archive, canary, rollback i usunięcie legacy |
+
+### Etap 0 — fundament projektu — ukończony
+
+Rezultat: workspace, kierunek zależności, podstawowe value types, wersje i
+dokumentacja źródła prawdy.
+
+### Etap 1 — framing protocol 3 — implementacja w toku
+
+Format zamrażają [ADR-0008](../adr/0008-framing-v3.md) i
+[FRAMING-V3-SPEC.md](../protocol/FRAMING-V3-SPEC.md). Codecs Rust i C++ oraz
+golden vectors są gotowe. Do zamknięcia etapu pozostaje benchmark na RP2350 i
+HIL warstwy RS485; nie blokuje to implementacji messages na tych codecach.
+
+Zakres:
+
+- spisać format envelope bajt po bajcie;
+- ustalić sync marker, length, adresowanie, message kind, request/operation ID,
+  wersję i CRC;
+- określić maksymalny rozmiar ramki oraz limity resynchronizacji;
+- zaimplementować encoder i inkrementalny bounded decoder w Rust;
+- przygotować poprawne i uszkodzone golden vectors niezależne od języka;
+- zaimplementować ten sam codec w małym module C++ host-test dla firmware.
+
+Brama ukończenia:
+
+- Rust i C++ kodują identyczne bajty;
+- oba dekodery odrzucają te same błędne ramki;
+- testy obejmują fragmentację, sklejenie ramek, szum, zły length, zły CRC i
+  powrót do synchronizacji w ograniczonej liczbie bajtów;
+- parser nie alokuje według niezaufanego `length`.
+
+### Etap 2 — discovery i capabilities — jedna linia sprawdzona fizycznie
+
+Zakres: `Hello`, tożsamość sprzętu, boot epoch, adres node, wersje, obsługiwane
+messages, maksymalny payload, profile ODR i możliwości journala.
+
+Przed messages obowiązuje wspólny host-side Transaction Core opisany w
+[TRANSACTION-POLICY.md](../protocol/TRANSACTION-POLICY.md): jedna próba na
+channel, nowy transaction ID dla retry, deadline, quarantine po timeout oraz
+rozdzielenie `RetrySafe` od `ReconcileState`.
+
+Brama: handshake przed recording jest fail-closed, a niezgodność wskazuje
+konkretne pole; identity nie zależy od portu USB ani etykiety operatora.
+
+### Etap 3 — strumień transferu i czysta `NodeSession` — logika podstawowa gotowa
+
+Zakres: continuous segment, transfer chunk, trzy jawne cursory, duplikaty,
+luki, retry, durable write i niejednoznaczny wynik release. Najpierw `SimulatedNodeLink`
+oraz pamięciowe repozytorium, bez serial i filesystemu.
+
+Semantykę opisuje
+[MEASUREMENT-SERVICE.md](../protocol/MEASUREMENT-SERVICE.md), a układ bajtów
+[MEASUREMENT-WIRE-V5.md](../protocol/MEASUREMENT-WIRE-V5.md). `NodeSession`,
+symulator, golden vectors i codeki Rust/C++ są gotowe. `ChannelPort` realizuje
+serial, a `DurableMeasurementSink` zamraża granicę storage bez wyboru formatu.
+Wire opisuje niedostępny prefiks retencji, exact `GAP` i `CONTINUITY_BREAK`;
+konkretny Capture sink i recovery pozostają etapem 7.
+
+Brama: deterministyczne testy dowodzą poprawności po timeout, duplikacie,
+restarcie node, restarcie hosta, błędzie storage i odpowiedzi utraconej po
+commit. Żaden commit nie wyprzedza trwałego cursora.
+
+### Etap 4 — scheduler wielu node i `ChannelRuntime` — pion Measurement zasymulowany
+
+Zakres: rotacja pull, deadline, retry budget, time-sync budget, trzy tryby,
+backpressure i admission control dla 115200 bit/s. Obowiązujący model transakcji
+i klas ruchu opisuje
+[COMMUNICATION-MODEL.md](../protocol/COMMUNICATION-MODEL.md); dokładne wagi,
+chunk size i interwały pozostają wynikiem pomiarów.
+
+Brama: symulacja wielu node nie głodzi żadnego zdrowego node, diagnostyka nie
+narusza budżetu Production, a konfiguracja niemieszcząca się w paśmie jest
+odrzucana przed startem.
+
+`ChannelScheduler` wybiera deterministycznie jedną gotową pracę według ryzyka
+overflow, deadline zakończenia, czasu oczekiwania i profilu obserwowalności.
+Waliduje maksymalny czas slotu, respektuje retry `ready_at`, nie dopuszcza
+diagnostyki w Production ani ponad przekazany budżet. `ChannelAdmission` liczy
+konserwatywny koszt measurement, time sync i health z osobną rezerwą recovery;
+czasy transakcji pozostają wejściem z HIL, a nie ukrytą stałą protokołu. Oba
+moduły są czystą polityką i mają deterministyczne testy.
+
+`ChannelRuntime` posiada bounded rejestr node jednej linii, wylicza
+`time_to_overflow` z output ODR bez float, starzeje ostatnią obserwację
+producenta, pilnuje jednej pracy `in_flight` na całym half-duplex channel i
+odrzuca stare completion przez `work_id`. Błąd dostaje wykładniczy bounded
+backoff, a po limicie przechodzi w wolne próby offline. Regresja strumienia
+wyłącza node z rotacji do jawnego recovery. Testy potwierdzają rotację równych
+node, brak równoległych dispatchy, ustępowanie magistrali po błędzie i ochronę
+przed starym wynikiem.
+
+`MeasurementCoordinator` domyka dispatch → `MeasurementTransfer` →
+`ChannelAgent` → durable sink → progress runtime. Przenosi jedyną instancję
+`NodeSession`, więc nie istnieją równoległe kopie cursorów. Błąd storage
+zachowuje ten sam pending transfer i ponawia tylko persistence. Zweryfikowane
+`produced` z odpowiedzi aktualizuje estymację backlogu dopiero po trwałym
+handoff. `ChannelAgent` wykonuje mały, konfigurowalny budżet prób w jednym
+slocie; po jego wyczerpaniu zwraca transfer do runtime, który stosuje backoff i
+pozwala pracować pozostałym node.
+
+`ChannelRecordingLoop` składa ten pion z `ChannelEndpoint` bez ukrytego wątku i
+wykonuje najwyżej jedną akcję wire albo jedno rozliczenie persistence na krok.
+Po odpowiedzi runtime wyznacza `ready_at` z output ODR, zweryfikowanego backlogu,
+docelowego wypełnienia chunku i deadline obsługi. Zapobiega to ciasnej pętli
+`NoData`, a zaległy strumień jest pobierany bez sztucznego oczekiwania.
+
+Deterministyczna symulacja bajtowej magistrali obejmuje cztery node 125 Hz przez
+pełny framing v3 i Measurement protocol 5. Potwierdza brak głodzenia zdrowych
+node, brak overflow, odzyskanie pojedynczej utraconej odpowiedzi bez luki,
+odrzucenie odpowiedzi przychodzącej po timeoutcie, ponowienie wyłącznie
+persistence po błędzie storage oraz wolne próby node offline. Zakres i
+ograniczenia zapisuje
+[HOST-V2-SIMULATION.md](HOST-V2-SIMULATION.md).
+
+Wykonawca wire Time i wspólne księgowanie jego budżetu są gotowe. Pozostają
+wykonawcy Health/Diagnostic oraz przeplatany HIL wielu node. FIFO agenta
+pozostaje bounded mechanizmem wykonawczym dla jawnie przekazanej pracy, a nie
+źródłem kolejności produkcyjnej.
+
+### Etap 5 — firmware node protocol 5 — pion A/B zaliczony
+
+Zakres: `MeasurementJournal`, `DeliverySession`, nowe messages, release ograniczony do
+trwale zapisanego i faktycznie dostarczonego zakresu, źródłowe sequence na core
+0, bounded ingress sample/gap core 0 → core 1, mailbox command/result core 1 ↔
+core 0 oraz zachowanie obecnego sterownika ADXL i bootloadera. Utrata na wejściu
+mailboxa musi utworzyć dokładny zakres luki; późniejsza próbka nie może dostać
+ponownie numeru utraconej próbki. Trial boot nie może zostać automatycznie
+potwierdzony tylko dlatego, że aplikacja wystartowała. Wymaga lokalnego health i
+jawnego potwierdzenia hosta przez nowy protokół; brak potwierdzenia kończy się
+restartem i rollbackiem do starego slotu.
+
+Brama: testy host-side C++, wspólne golden vectors, testy overflow journala i
+retransmisji; oba buildy slotów i profile płytki przechodzą. Bez wdrożenia na
+sprzęt przed walidacją board revision. Migracja node bez USB przechodzi pełną
+sekwencję framing 2 → bootloader protocol 2 → trial framing 3 → host confirm,
+łącznie z wymuszonym brakiem confirm i automatycznym rollbackiem.
+
+`main_v2.cpp` jest źródłem obrazów slot A/B i paczki update. Nie potwierdza
+startu automatycznie. Po poprawnej inicjalizacji wystawia capability trial
+confirm, a `ConfirmTrialBoot` zapisuje metadane wyłącznie dla aktualnie
+wykonywanego, uzbrojonego i już uruchomionego slotu. Zapis jest idempotentny po
+utracie odpowiedzi. Brak confirm przez 30 s albo błąd lokalnego startu powoduje
+restart, aby bootloader wykonał rollback. Logika i pełne buildy przechodzą.
+Fizyczne update przez RS485 sprawdziły zapis nieaktywnego slotu, rollback bez
+confirm, promocję dokładnie dopasowanego obrazu 0.5.4 oraz kolejną migrację do
+0.5.5 przez Lifecycle Service i ograniczony mostek capabilities schema 1.
+
+### Etap 6 — adapter RS485 i test HIL jednej linii
+
+Zakres: jedyny właściciel portu, timeouty, turnaround half-duplex, stabilne
+bindingi urządzeń, jedna i wiele node na linii.
+
+Brama: soak, szum/CRC, odłączenie i powrót node, restart procesu oraz pomiar
+rzeczywistego wykorzystania łącza na długim przewodzie.
+
+`ChannelPort` otwiera konkretny port 8N1, używa stałych buforów i drenuje TX.
+`ChannelEndpoint` składa go z agentem i zegarem. `sensor-hil` realizuje
+fail-closed handshake, trial confirm oraz scenariusz Start → pull → durable
+`fsync` → release → Stop → Maintenance. Test 0.5.5 zapisał 256 próbek bez gap,
+rozliczył końcowy `ProcessingReset` i zrównał cursory received, durable i released
+na 257. Pozostają testy długiego przewodu, wielu node, zakłóceń i soak.
+`sensor-hil capture-cycle` oraz ręczny skrypt HIL zapisują ten sam pion przez
+produkcyjny `CaptureSegmentStream`, wymuszają wiele krótkich okien i niezależnie
+walidują każdy WAL z manifestem. Pozwala to uruchomić test bez czekania na
+domyślne dziesięciominutowe okno; polityka produkcyjna nie jest zmieniana.
+Fizyczny przebieg zapisał 2505 nowych próbek w 10 oknach, bez gap, błędów decode
+i timeoutów, zrównał cursory na 5273 i zakończył w Maintenance. Runner odczytuje
+stan strumienia przed Start, więc kolejne ręczne sesje nie tworzą fałszywego
+`JournalOverflow` od cursora zero.
+
+### Etap 7 — trwały Capture i recovery
+
+Najpierw benchmarkujemy prosty append-only journal/WAL oraz HDF5. Wybór formatu
+nie jest jeszcze zamrożony. Kryteria to trwałość, recovery po utracie zasilania,
+koszt flush/fsync, rozmiar i łatwość walidacji.
+
+Brama: fault injection przed i po append/flush/commit; po restarcie cursor nie
+wyprzedza danych; okno zaczyna się na prawdziwej próbce i zachowuje gaps/timing.
+
+`CaptureWindowLedger` implementuje niezależną od formatu część tej bramki.
+Waliduje jeden wspólny cursor space próbek, `Gap` i `ContinuityBreak`, planuje
+rotację bez dzielenia wire chunku i udostępnia manifest dopiero przy commit
+planu po durable append. Manifesty mają jawne zakresy `[first_cursor,
+end_exclusive)` oraz ordinal; verifier odrzuca ukrytą dziurę, overlap i zamianę
+sensorów. Odrzucony zapis może porzucić plan bez przesunięcia ledgera.
+
+`CaptureWalSink` implementuje wersjonowany nagłówek, packed-int24 records,
+CRC32C, `sync_data`, trwały seal i odtwarzanie ledgera ze stałą pamięcią.
+Niepełny fizyczny ogon jest obcinany, natomiast pełny rekord z błędnym CRC
+zatrzymuje recovery fail-closed. Writer zostaje zatruty po niepewnym błędzie I/O
+i wymaga ponownego otwarcia, co zapobiega podwójnemu appendowi. Bounded
+`CaptureSegmentStream` wymusza jeden WAL na okno, publikuje manifest atomowym
+rename po synchronizacji i odtwarza go po crashu. `CaptureRepository` rozdziela
+skonfigurowane identity/boot epoch wielu node. `CaptureWalReader` i
+`validate_capture_segment` czytają blokowo, odtwarzają ledger i wymagają pełnej
+zgodności WAL z manifestem. Szczegóły i pozostałą bramkę opisuje
+[CAPTURE-WAL-V1.md](CAPTURE-WAL-V1.md).
+
+`CaptureWalBatch` rozdziela przygotowanie rekordów od bariery trwałości dla
+jednego fizycznego WAL. Batch nie zmienia durable cursora przed `sync_data`,
+odrzuca stary stan i kończy się na granicy okna. `CaptureRepositoryBatch`
+wiąże tę operację z jednym skonfigurowanym strumieniem. Executor celowo nadal
+używa grup jednoelementowych, dopóki recovery nie sklasyfikuje wszystkich
+`WriteJobId` niepewnej grupy.
+`classify_group_recovery` potrafi już rozdzielić odzyskany pełny prefiks od
+suffixu wymagającego ponowienia i zatrzymuje się fail-closed na cursorze
+wewnątrz rekordu lub nieciągłych zakresach.
+`GroupedPersistenceWorker` zachowuje wszystkie joby niepewnej grupy, potwierdza
+odzyskany prefiks i ponawia tylko suffix. Grupowy kontrakt storage pozostaje
+niezależny od WAL, a `CaptureRepository` jest jego pierwszym adapterem.
+`GroupedPersistenceExecutor` dodaje wątek, wspólny limit rekordów w locie,
+konfigurowalne `max_records`/`max_wait` i jawny wynik operacji recovery.
+`RecordingPersistence` odcina pętlę kanału od konkretnego executora, a
+`CaptureRuntimeConfig` wymaga jawnej polityki i uruchamia wariant grupowy.
+
+`ArchiveCoverageIndex` opisuje relację many-to-many pomiędzy segmentami Capture
+i produktami Archive. `CaptureCoverageCheckpointStore` utrwala pełny dowód
+pokrycia, wszystkie tożsamości produktów i deadline 48 h od najpóźniejszego
+acknowledgement. Brak dowodu, luka zakresu, niespójna tożsamość, overflow albo
+uszkodzony stan blokują usunięcie. Szczegóły opisują
+[ARCHIVE-COVERAGE-INDEX.md](ARCHIVE-COVERAGE-INDEX.md) i
+[RETENTION-CHECKPOINT.md](RETENTION-CHECKPOINT.md). Cleanup Capture wykonuje
+unlink WAL → unlink manifestu → sync katalogu → update checkpointu, uzgadnia
+crash i chroni aktywne okno writera. Osobny checkpoint Archive utrwala
+tożsamość produktu, deadline i pełny zbiór zależnych segmentów, a cleanup wymaga
+trwałego `deleted_at` każdego Capture przed usunięciem danych i coverage index.
+Pozostają wpięcie procesu compactora/uploadera, testy na rzeczywistych danych i
+rozszerzony fault injection procesu.
+
+`BoundedPersistenceWorker` zamraża ograniczoną własność rekordów i completion,
+backpressure, korelację `WriteJobId` oraz fail-closed po błędzie sinka.
+`PersistenceExecutor` przenosi sink na osobny wątek, a `CaptureRuntimeConfig`
+wykonuje recovery i zachowuje snapshot cursorów przed przekazaniem własności.
+Niejednoznaczny błąd I/O jest rozstrzygany przez porównanie zakresu pending
+jobu z odzyskanym durable cursorem; rekord już obecny nie jest dopisywany drugi
+raz.
+Pozostałą integrację opisują
+[BOUNDED-PERSISTENCE-WRITER.md](BOUNDED-PERSISTENCE-WRITER.md) oraz
+[CAPTURE-RUNTIME-STARTUP.md](CAPTURE-RUNTIME-STARTUP.md).
+
+Pierwszy powtarzalny benchmark syntetyczny opisuje
+[STORAGE-FORMAT-BENCHMARK.md](STORAGE-FORMAT-BENCHMARK.md). Wskazał też źródło
+problemu RAM starego compactora: zbiór jednej tuple tożsamości na każdą próbkę
+całej doby. Roboczym kierunkiem jest nieskompresowany packed-int24 WAL dla
+Capture oraz blokowy int32 byte-shuffle + zstd dla Archive. Archive pozostaje
+decyzją warunkową do testu na prawdziwych danych; fizyczny nośnik Raspberry Pi
+musi wyznaczyć politykę group commit i liczbę workerów.
+
+### Etap 8 — synchronizacja czasu
+
+Zakres: źródłowe obserwacje node monotonic ↔ host monotonic ↔ UTC, niepewność,
+holdover, timing anchors i effective ODR. Zachowujemy sprawdzone idee DRDY bez
+kopiowania starego formatu protokołu.
+
+Pierwszy model domenowy waliduje surowe `t1..t4`, odejmuje czas przetwarzania
+node, wyznacza konserwatywną niepewność, pilnuje `boot_epoch` i buduje bounded
+model `Acquiring/Locked/Holdover` z limitem dryfu. Nie tworzy UTC i nie ukrywa
+historii obserwacji. Kontrakt oraz kolejność następnego pionu opisuje
+[TIME-SERVICE.md](TIME-SERVICE.md).
+
+Firmware 0.5.6 chwyta `t2` przy przyjęciu kompletnego requestu i uzupełnia `t3`
+dopiero bezpośrednio przed `start_tx`. Hostowy `ChannelAgent` zachowuje `t1` po
+pełnym drain TX, dołącza `t4` po przyjęciu skorelowanej odpowiedzi i zwraca
+typowany `ClockObservation`. Time, Measurement i Lifecycle korzystają z jednego
+`TransactionCore`, więc nie wykonują równoległych transakcji na magistrali.
+
+`ChannelRuntime` utrzymuje osobną konfigurację i stan deadline TimeSync dla
+każdego node, ale przekazuje kandydatów do tego samego `ChannelScheduler`, co
+Measurement. Dzięki temu nie istnieje drugi arbiter magistrali. Zagrożenie
+overflow próbek zachowuje pierwszeństwo, synchronizacja wykonuje się przed
+upływem własnego deadline, a błąd próby zwalnia kanał i stosuje bounded retry.
+Pierwsze deadline mogą być rozłożone pomiędzy node, więc start systemu nie
+tworzy burstu synchronizacji. Produkcyjny koordynator i oba warianty pętli
+recording wykonują unified dispatch i rozliczają końcowe eventy TimeSync.
+Nieblokująca granica persistence jest gotowa jako `TimeObservationSubmitter`
+i bounded queue. Kanał
+wykonuje wyłącznie `try_submit`; nie zna filesystemu, `flush` ani `fsync`.
+Pełna lub rozłączona kolejka daje jawny `TimeSyncSettlement::Backpressured` i
+krótki retry TimeSync, ale nie zatrzymuje Measurement. Synchronizacja danego
+node jest również wyłączona, gdy jego `NodeSession` należy do oczekującego
+handoff do storage. Compact `TimeWalSink` zapisuje stałe rekordy 36 B
+(`t1..t4` + CRC32C), trzyma identity i oba clock epoch raz w nagłówku, grupuje
+barierę `sync_data` i odzyskuje wyłącznie niepełny ogon. Pełne uszkodzenie CRC
+jest fail-closed. Format opisuje [TIME-WAL-V1.md](TIME-WAL-V1.md).
+`TimeRepository` utrzymuje stałą topologię WAL-i jednego host clock epoch, a
+`TimePersistenceWorker` wykonuje bounded storage handoff i zatrzymuje się na
+pierwszym błędzie. Recovery porównuje record count sprzed próby z ponownie
+otwartym WAL-em, więc potwierdza już trwały rekord albo ponawia wyłącznie rekord
+nieobecny. `TimePersistenceExecutor` przenosi całe I/O na nazwany wątek,
+udostępnia klonowalne submittery kanałom, przenosi bounded completion i ma
+kontrolowany shutdown. `TimePersistenceInstallationProfile` buduje stałą
+topologię ze zweryfikowanego discovery i epoki zegara hosta, a `TimeRuntime`
+kończy recovery wszystkich WAL-i przed udostępnieniem submittera. Konfiguracja
+storage i harmonogramu synchronizacji pozostaje rozdzielona.
+`TimePersistenceHealth` utrzymuje dokładny niepewny rekord
+przez `RecoveryRequired/Recovering` i wraca do `Healthy` dopiero po sekwencyjnym
+durable receipt; niespójność przechodzi fail-closed do `IntegrityFault`.
+Przyjęcie przez RAM queue samo nie jest durable.
+
+Brama symulacyjna drift/jitter/asymetria/timeout/późna odpowiedź/restart jest
+gotowa i przechodzi przez rzeczywisty framing, `ChannelPort`, `ChannelAgent`
+oraz `TransactionCore`. HIL jednego node na firmware 0.5.6 potwierdził 8/8
+exchange, stały `boot_epoch`, brak decode errors i timeoutów oraz path delay
+12,7–17,8 ms przy 115200 bit/s. Następna analiza ma odtworzyć czas i niepewność
+bez używania nazw plików ani przypadkowego czasu odbioru pakietu.
+
+### Etap 9 — `HostCoordinator` i skala 1–16 channels
+
+Zakres: konfiguracja topologii, globalny budżet CPU/RAM/storage, staggered start,
+health, kontrolowany shutdown i rozpoznawanie wspólnej awarii TransportDevice.
+
+Brama: macierz 1/4/8/16 channels, bounded RSS, brak wspólnej nieograniczonej
+kolejki, awaria jednej linii nie zatrzymuje pozostałych, a globalny błąd storage
+zatrzymuje commit bez cichej utraty.
+
+Stan implementacji: moduły pojedynczego kanału, Capture i Time mają gotowe
+granice oraz testy. `HostInstallationProfile` składa z jednego scalonego
+dokumentu osobną politykę storage i typowaną topologię maksymalnie 16 kanałów.
+Przed I/O odrzuca duplikaty channel ID, endpointów, adresów i hardware ID,
+nieznane transporty, inną prędkość niż 115200, brak board revision oraz output
+ODR spoza pełnego zbioru ADXL355. `InstallationDiscoveryPlan` wybiera wyłącznie
+aktywne channel/node i wymaga Measurement, Lifecycle, Time, journala oraz timing
+DRDY. Wykonawca odpytuje node jednego half-duplex channel kolejno, a niezależne
+kanały uruchamia równolegle. Każdy node ma bounded deadline; brak odpowiedzi,
+rozłączenie lub błąd jednej linii nie może zwrócić częściowego inventory jako
+sukcesu. Collector koreluje wynik z `(channel_id, node_address)` i ponownie
+sprawdza identity oraz capabilities.
+
+`ChannelStartupPlan` przekształca kompletne inventory w jawne
+`NodeScheduleConfig` i raport admission per kanał. Używa output ODR, pojemności
+journala i maksymalnego chunku zgłoszonych przez node, ale czasy transakcji,
+rezerwę recovery i limity schedulera przyjmuje jako obowiązkowy profil z
+pomiarów. Kanał przekraczający budżet jest odrzucany przed startem runtime.
+
+`GET_STREAM_STATE` jest pełnoprawnym retry-safe zadaniem tego samego
+`ChannelAgent`, który posiada handshake, Lifecycle, Measurement i Time. Nie
+otwiera drugiego właściciela portu. `stream_recovery` uzgadnia zweryfikowane
+identity/capabilities, stan journala node oraz durable cursor odzyskany z
+Capture. Odrzuca zmianę epoki lub pojemności, Capture wyprzedzający node i
+przede wszystkim `released > durable`. Gdy mały fragment został już nadpisany,
+nie przesuwa kursora w pamięci: pozostawia zwykłemu pierwszemu pullowi zapisanie
+dokładnej luki `JournalOverflow`. Nowe nagranie dostaje jawny pre-Start boundary
+równy rzeczywistemu `produced`, więc wcześniejsze próbki nie są fałszywie
+oznaczane jako utracone.
+
+Produkcyjny `ChannelBootstrap` różni się celowo od read-only polecenia
+`discover`: zachowuje jeden żywy `ChannelEndpoint` i ten sam port przez
+handshake, `GetState` oraz `GET_STREAM_STATE` wszystkich node na linii. Wyniki
+mają wspólny bounded deadline per node, a rozbieżna epoka lub pojemność journala
+kończy startup fail-closed. `channel_recovery` przygotowuje origin nowego albo
+istniejącego WAL, ale tworzy `NodeSession` dopiero z durable snapshotu zwróconego
+po pełnym replayu `CaptureRuntime`. Snapshoty są łączone po
+`(hardware_id, boot_epoch)`, nigdy według kolejności adresów.
+`RecordingActivation` przyjmuje dopiero odzyskane sesje: zachowuje node już w
+`Recording + Production`, wysyła `Start` wyłącznie dla `Idle`, a stany
+Maintenance/Stopping/Faulted wymagają jawnej operacji. Aktywacja nie może
+zmienić żadnego cursora. Końcowy assembler rejestruje w
+`ChannelWorkCoordinator` dokładnie cursor należący do `NodeSession` i fazuje
+pierwsze deadline TimeSync; nie przyjmuje osobnej wartości kursora.
+`compose_channel_recording` spina te granice dla jednego fizycznego kanału:
+żywy endpoint → origin/replay Capture → reconciliation → aktywacja Recording →
+assembler → `ThreadedChannelRecordingLoop`. Jeśli którakolwiek faza po starcie
+storage zawiedzie, executor jest jawnie zamykany, a błąd shutdownu pozostaje w
+wyniku. Test pionowy potwierdza, że `produced=140` wybrane jako origin nowego
+WAL wraca po replayu jako durable i bez zmiany trafia do schedulera.
+
+`installation_bootstrap` wykonuje produkcyjny bootstrap wszystkich aktywnych
+kanałów równolegle i nie zamyka ich portów po zebraniu danych. Dopiero kompletny
+wynik jest ponownie sprawdzany przez `DiscoveryInventoryCollector`; błąd jednej
+linii odrzuca całą próbę startupu i nie publikuje częściowego inventory.
+`HostStartupBlueprint` łączy następnie każdy zachowany endpoint z jego planem
+admission po `channel_id`, buduje jedną topologię globalnego Time WAL i kończy
+całą walidację przed otwarciem Capture albo wysłaniem `Start`. Dzięki temu
+dalszy coordinator nie musi łączyć kanałów według pozycji w wektorze ani
+ponownie otwierać portów.
+
+`ChannelSupervisorSet` uruchamia maksymalnie 16 niezależnych, nazwanych
+workerów z osobnymi mailboxami sterowania o pojemności jeden i stałym snapshotem
+stanu. Próbki ani zdarzenia ramek nie przechodzą przez globalną kolejkę.
+Awaria jednego tasku zachowuje jego błąd i dowód shutdownu, ale nie zatrzymuje
+pozostałych kanałów; błąd tworzenia późniejszego wątku zatrzymuje i dołącza już
+uruchomione workery. Test ośmiu kanałów potwierdza tę izolację.
+
+`start_host_runtime` wykonuje produkcyjny blueprint. Uruchamia dokładnie jeden
+globalny `TimeRuntime`, daje każdemu kanałowi bounded submitter, składa jego
+Capture i `ProductionChannelTask`, a workery startuje dopiero po przygotowaniu
+całego zestawu. Błąd po częściowym przygotowaniu wykonuje kontrolowany shutdown
+gotowych kanałów i zamyka Time WAL. Błąd po częściowej aktywacji kanału wykonuje
+rollback Lifecycle do `Idle`; wynik rollbacku i zamknięcia Capture pozostają w
+błędzie startupu. Globalny shutdown najpierw zatrzymuje i dołącza wszystkie
+workery, a dopiero potem zamyka Time WAL.
+
+Test kompozycyjny uruchamia osiem niezależnych kanałów przez prawdziwy framing
+Measurement i Lifecycle na deterministycznych magistralach RS485. Każdy worker
+wykonuje pracę i pełny protokół Stop/drain/Capture shutdown, a końcowy wynik
+potwierdza osiem poprawnie zatrzymanych kanałów oraz jedno repozytorium Time z
+ośmioma strumieniami. Jest to bramka programowa przed testem procesu `run` i
+pomiarami na Raspberry Pi; nie zastępuje sterownika USB ani fizycznego I/O.
+
+`HostHealthSnapshot` oddziela lifecycle koordynatora od health. Fault jednego
+channel daje `Degraded` i pozostawia pozostałe linie aktywne. Time WAL po
+pierwszym błędzie wykonuje dokładnie jedną próbę uzgodnienia niepewnego rekordu;
+błąd odczytu health, recovery albo integralności rozsyła globalny Stop.
+`StorageHealthProbe` używa `statvfs` bez tworzenia plików, sprawdza flagę
+read-only oraz konfigurowalną rezerwę `min_free_bytes`. Potwierdzony fault
+wspólnego filesystemu zatrzymuje wszystkie linie, natomiast lokalny błąd pliku
+jednego kanału pozostaje faultem tego kanału. Pierwsza przyczyna globalna jest
+zachowywana i nie może zostać nadpisana późniejszym raportem.
+
+Coordinator pomiarów ma jawny stan `quiescing`: blokuje nowe Measurement i
+TimeSync, zachowując możliwość rozliczenia transakcji oraz trwałych zapisów już
+będących w locie. Retry-safe `stop_recording_nodes` używa tego samego endpointu
+i operation ID aż node osiągnie `Idle`. `ProductionChannelTask` wykonuje pełny
+kontrolowany shutdown: bariera istniejącego work, Stop wszystkich node,
+wymuszony Measurement Pull każdego zamrożonego journala aż do `NoData`, durable
+settlement i dopiero shutdown Capture executor. Drain omija zwykłe oczekiwanie
+na wypełnienie chunku, ale zachowuje retry backoff. Osobne deadline bariery,
+Lifecycle i drain uniemożliwiają nieskończone blokowanie workera. Test pionowy
+zapisuje końcowy chunk `140..141`, potwierdza durable cursor `141`, a następnie
+zamyka drain dopiero po `NoData`.
+
+Binarny `sensor-host validate --config ... --repository-root ...` wykonuje
+walidację bez otwierania portów. `sensor-host discover` wykonuje równoległy,
+read-only handshake wszystkich aktywnych linii i wypisuje zweryfikowane
+inventory. `sensor-host run` składa ten sam walidowany profil w produkcyjny
+proces, wykonuje preflight storage przed otwarciem RS485, okresowy health check
+oraz kontrolowany shutdown po `SIGINT`/`SIGTERM` z raportem per kanał. Biblioteka ma już side-effect-free planowanie oraz produkcyjne
+uruchamianie i kontrolowany shutdown 1–16 pętli recording ze wspólnym Time WAL.
+Polityka reakcji na globalny fault storage jest podłączona do pętli procesu.
+Tracked `runtime_v2` utrzymuje parametry wire, admission, schedulera i shutdownu
+w jednym fail-closed kontrakcie. Szablon jednostki systemd v2 jest gotowy, ale
+nie jest instalowany ani aktywowany z repozytorium. Następną bramką pozostaje
+powtarzalna macierz testów 1/4/8 na Raspberry Pi.
+
+Minimalna kolejność do pierwszego testu Raspberry Pi 1/4/8 channels:
+
+1. **Gotowe:** typowany `HostInstallationProfile` z maksymalnie 16 kanałami,
+   stabilnym bindingiem portu, oczekiwanym `hardware_id`, board revision,
+   adresem node i wymaganym output ODR;
+2. **Gotowe:** read-only discovery oraz równoległy produkcyjny bootstrap całej
+   instalacji, zachowujący po jednym właścicielu portu przez
+   handshake/`GetState`/`GET_STREAM_STATE`, kompletne inventory i channel
+   admission. Profil tuningu jest typowany i walidowany; jego wartości pozostają
+   do kalibracji z HIL;
+3. **Gotowe:** przygotowanie origin Capture bez zgadywania kursora,
+   fail-closed połączenie replayowanego durable snapshotu z node, utworzenie
+   `NodeSession` dokładnie na tym cursorze, aktywacja `Idle`/`Recording` i
+   złożenie `CaptureRuntime`, coordinatora i `ThreadedChannelRecordingLoop` bez
+   ponownego podawania cursora oraz dostarczenie submittera jednego globalnego
+   `TimeRuntime` każdemu kanałowi;
+4. **Gotowe planowanie i produkcyjna kompozycja nadzoru:** sparowanie żywych endpointów z
+   planami kanałów i zbudowanie jednej topologii Time WAL przed Capture/Start;
+   niezależne workery mają bounded control/status, izolację awarii, produkcyjne
+   pętle oraz wspólny `TimeRuntime`. Start i TimeSync są fazowane per node, a
+   Capture i Time zachowują własne bounded group commit;
+5. **Gotowe per channel:** shutdown drain obejmujący barierę nowych zadań,
+   rozliczenie aktywnego work, Stop do `Idle`, pobranie zamrożonego ogona,
+   durable completion i shutdown storage. Globalny coordinator zachowuje tę
+   kolejność dla wszystkich kanałów i zamyka Time na końcu. Sonda braku miejsca
+   i read-only uruchamia globalny Stop. `SIGINT`/`SIGTERM` używają tej samej
+   ścieżki;
+6. **Gotowe:** `sensor-host validate`, `discover`, `run`, szablon systemd,
+   powtarzalna bramka symulacyjna macierzy 1/4/8 oraz lekkie, lock-free
+   snapshoty metryk każdego kanału;
+7. **Przygotowane, wymaga sprzętu:** skryptowana bramka i checklista testu na Pi
+   kolejno 1, 4 i 8 kanałów z pomiarem RSS, CPU, I/O wait, fsync latency,
+   backlogu, retry, luk i niepewności TimeSync.
+
+### Etap 10 — Operations API i Maintenance
+
+Zakres: command/result/progress z `operation_id`, idempotency, audit, start/stop,
+config transaction, commissioning i firmware update. UI i CLI są klientami API.
+
+Brama: równoległe/conflicting commands mają deterministyczny wynik, UI nie
+otwiera portów, a przerwany update pozostawia bootowalny slot.
+
+### Etap 11 — Archive, narzędzia i migracja produkcyjna
+
+Zakres: walidacja sealed Capture, godzinne Archive per sensor, trwały publication
+outbox, idempotentna replikacja, Derived, polityka retencji, porównanie ze starym
+recorderem, canary i kontrolowany rollback. Reguły gotowości oparte na durable
+watermarku oraz rozdzielenie kompakcji od wysyłki opisuje
+[ARCHIVE-AND-PUBLICATION-POLICY.md](ARCHIVE-AND-PUBLICATION-POLICY.md).
+
+Brama: wielogodzinny soak, test utraty zasilania, zgodność liczby próbek/luk i
+zatwierdzona procedura operacyjna. Stary host usuwamy dopiero po tej bramie.
+
+## 7. Otwarte decyzje
+
+Nie wolno rozstrzygać ich przypadkową stałą w kodzie:
+
+- pojemność sample ingress oraz mailboxów command/result;
+- pojemność `GapLedger` i próg kontrolowanego collapse prefiksu retencji;
+- rozmiar journala node oraz gwarantowany czas retencji;
+- algorytm i wagi schedulera;
+- częstotliwość time sync i timing anchors;
+- format Capture, chunking, kompresja i polityka fsync;
+- technologia lokalnego Operations API/IPC;
+- kryterium wydzielenia TransportDevice do osobnego procesu;
+- profile admission control dla różnych Pi, SD/SSD i topologii;
+- fizyczny format Archive, poziom kompresji, parametry retencji i replikacji.
+
+Każda decyzja musi mieć właściciela, pomiar albo test oraz miejsce konfiguracji.
+Zmiana niezmiennika wymaga ADR.
+
+## 8. Reguły pracy dla następnej osoby
+
+1. Przeczytaj `docs/README.md`, baseline i ten dokument.
+2. Sprawdź realny kod; roadmapa opisuje stan, ale kompilator i testy rozstrzygają
+   szczegóły implementacji.
+3. Podejmij pierwszą nieukończoną bramkę zależności. Nie twórz modułów z
+   późniejszych etapów „na zapas”.
+4. Dodaj trait tylko dla rzeczywistego portu I/O, drugiego adaptera albo fake'a
+   potrzebnego w teście zachowania.
+5. Każdy bufor ma limit, przepełnienie i obserwowalny skutek.
+6. Każdy stan i cursor ma jednego właściciela.
+7. Zewnętrzny błąd jest typowany; nie sterujemy domeną przez tekst logu.
+8. Po zmianach Rust uruchom:
+
+```bash
+cargo fmt --all --manifest-path host_v2/Cargo.toml --check
+cargo clippy --workspace --all-targets --manifest-path host_v2/Cargo.toml -- -D warnings
+cargo test --workspace --manifest-path host_v2/Cargo.toml
+```
+
+9. Po zmianach starego hosta uruchom:
+
+```bash
+host/.venv/bin/python -m unittest discover -s host/tests
+```
+
+10. Po zmianach firmware uruchom:
+
+```bash
+bash node/tests/run_host_tests.sh
+```
+
+11. Nie wdrażaj firmware z pominięciem walidacji board revision.
+12. Aktualizuj sekcję „Stan implementacji” i status etapu w tym dokumencie, ale
+    nie przepisuj historii ADR.
+
+## 9. Następna konkretna praca
+
+### Audyt odpowiedzialności 2026-10-06
+
+Kierunek zależności i właściciele stanu pozostają poprawne. `sensor-core` nie
+zna I/O, `sensor-protocol` zależy tylko od typów wartości `sensor-core`, a
+`sensor-host` składa oba z adapterami. Firmware zachowuje jednego właściciela
+sensora na core 0 oraz journala i protokołu na core 1. Nie znaleziono drugiego
+właściciela cursora, sensora ani aktywnej transakcji.
+
+Rozmiar pliku nie jest sam w sobie powodem do tworzenia kolejnej klasy.
+`ChannelAgent` ma 552 linie kodu produkcyjnego, a dalszą część stanowią testy;
+`NodeSession` ma jedną spójną odpowiedzialność: pilnuje cursorów, trwałości i
+recovery jednego node. Oba pozostają na miejscu.
+
+Obowiązują natomiast dwie granice rozbudowy:
+
+- przed dodaniem Time Service, Health albo Configuration do arbitra powstaje
+  `ChannelScheduler`, który posiada kolejki, priorytety, fairness, retry budget
+  i admission. Wykonawca kanału nadal posiada dokładnie jeden
+  `TransactionCore` i wykonuje jedną wybraną pracę;
+- `LifecycleServiceHandler` może nadal wspólnie obsługiwać korelację,
+  idempotency i bounded cache dla obecnych dwóch operacji systemowych. Przed
+  dodaniem następnej operacji systemowej routing oraz jej polityka
+  post-transmit muszą przejść do osobnego handlera usług systemowych.
+
+Bufory ramek i firmware są statycznie ograniczone. Hostowe `VecDeque` i
+dekodowane `Vec<SampleAxes>` korzystają z heapu, lecz ich rozmiary są ograniczone
+przez politykę i kontrakt wire. Host v2 nie jest więc całkowicie allocation-free;
+na Raspberry Pi jest to świadoma własność, którą trzeba zmierzyć w teście
+obciążeniowym zamiast opisywać jako gwarancję pamięci statycznej.
+
+Nazwy `Start`/`Stop` w bieżącym Lifecycle oznaczają start/stop akwizycji node.
+Nie są tym samym co przyszłe `start_recording`/`stop_recording` hosta. Przed
+wystawieniem Operations API nazwy typów domenowych trzeba ujednoznacznić do
+`StartAcquisition`/`StopAcquisition`; numery messages na wire mogą pozostać bez
+zmian.
+
+`MeasurementJournal`, ścieżka delivery i izolowany endpoint transportu są gotowe
+oraz opisane w
+[MEASUREMENT-JOURNAL.md](MEASUREMENT-JOURNAL.md),
+[DELIVERY-SESSION.md](DELIVERY-SESSION.md) oraz
+[MEASUREMENT-HANDLER.md](MEASUREMENT-HANDLER.md) i
+[PROTOCOL-V3-TRANSPORT-ENDPOINT.md](PROTOCOL-V3-TRANSPORT-ENDPOINT.md).
+
+ADR-0009, `MeasurementJournal`, typowany wynik `GAP` w Rust/C++ oraz
+`DeliverySession` domykają źródłową sekwencję, dokładne luki, retransmisję i
+kontrolowane przepełnienie retencji. Stary ciągły `SampleJournal` został usunięty.
+Bounded sample/gap ingress core 0 → core 1 oraz mailbox command/result core 1 ↔
+core 0 są gotowe jako czysta logika. Mailbox opisuje
+[CORE-OPERATION-MAILBOX.md](CORE-OPERATION-MAILBOX.md). Czysta kompozycja
+`SensorRuntime`, mailboxa, ingress i właściciela journala jest gotowa oraz
+opisana w
+[NODE-V2-RUNTIME-COMPOSITION.md](NODE-V2-RUNTIME-COMPOSITION.md). Pozostałe
+operacje są zapisane jako braki w dokumencie mailboxa i będą dodawane pionowymi
+fragmentami. Nie adaptujemy starego grant/burst/commit.
+
+Brak opisany w
+[ACQUISITION-QUALITY-AND-DIAGNOSTICS.md](ACQUISITION-QUALITY-AND-DIAGNOSTICS.md)
+jest domknięty w czystej logice. `FifoReadOutcome` wydziela wynik pojedynczego
+serwisu FIFO zamiast odczytywania późniejszego snapshotu counters.
+`AcquisitionEngine` emituje `SensorOverflow`, `SensorReadUncertain` i
+`InvalidTiming` przez `MeasurementIngressSink`. `SensorRuntime` z lifecycle
+`Idle`, `Recording`, `Stopping`, `Maintenance`, `Faulted` oraz niezależnym profilem
+`Production`/`Diagnostic` jest gotowy i przetestowany razem z mailboxem. Jest
+używany przez obrazy A/B i integracyjny `main_v2`; legacy `main.cpp` nadal
+korzysta ze starej ścieżki.
+
+Lifecycle Service ma zgodne kodeki C++/Rust, routing przez dispatcher, jedną
+aktywną operację i bounded cache terminalnych wyników. Ponowienie tego samego
+`operation_id` nie duplikuje wykonania, konflikt treści jest odrzucany, a
+`Stop/InProgress` jest uzgadniany aż do wyniku terminalnego.
+
+`Core1ProtocolRuntime`, `node_v2::DataPlane` i `node_v2::RuntimeComposition` są
+gotowe oraz przetestowane. Kompozycja ma jeden jawny composition root, a
+tymczasowy `RuntimeCapacityProfile` centralizuje wartości potrzebne do builda i
+pilnuje budżetu ingress/journala przez `static_assert`.
+
+Odroczone przejście do bootloadera po RS485 jest gotowe. Operacja jest dozwolona
+wyłącznie z Maintenance, a restart następuje dopiero po zakończeniu transmisji
+odpowiedzi. Odpowiedzialność pozostaje poza `SensorRuntime`, w osobnym system
+operation routerze core 0 i koordynatorze core 1.
+
+Ogólny kontrakt post-transmit jest już gotowy w dispatcherze, response outbox i
+`TransportEndpoint`. Zachowuje token do zakończenia TX, zatwierdza go po
+`tx_completed` i anuluje po błędzie kodowania lub timeout.
+
+`PrepareFirmwareUpdate` jest gotowe jako osobna operacja systemowa. Core 0
+dopuszcza ją wyłącznie w `Maintenance`; timeout odpowiedzi nie ustawia akcji, a
+potwierdzony TX uzbraja jednokrotny `EnterBootloader`. Osobny obraz
+`sensor_system_node_v2_integration` pozostaje diagnostycznym obrazem bez A/B.
+Produkcyjne obrazy slotów A/B składają ten sam runtime protocol 5 i są źródłem
+paczki update.
+
+Aktualny build integracyjny board rev 2 ma 128404 B BSS wobec 289772 B starego
+obrazu direct. To punkt pomiarowy, a nie zamrożony budżet.
+
+Fizyczne scenariusze migracji wykonane wyłącznie przez RS485 potwierdziły wejście
+z aplikacji legacy `0.4.1` do bootloadera protocol 2, zapis całego obrazu do
+nieaktywnego slotu, automatyczny rollback po braku potwierdzenia oraz poprawną
+promocję obrazu protocol 5 `0.5.4`. Host zatwierdził trial dopiero po zgodności
+hardware ID, board revision, protokołu, capability i wersji firmware. Runtime v2
+używa jawnego stosu core 1 o rozmiarze 8 KiB w głównym SRAM.
+
+Kolejna aktualizacja `0.5.4` → `0.5.5` potwierdziła wejście do bootloadera przez
+Lifecycle Service protocol 5, pełny zapis 153088 B z kontrolą CRC, handshake
+capabilities schema 2 i trial confirm. USB zapewniało jedynie zasilanie.
+
+Klient Lifecycle Service jest gotowy w czystej logice. Zachowuje jeden
+`operation_id` przez wiele wire `transaction_id`, odróżnia application `Busy`
+od lifecycle `InProgress`, respektuje quarantine po timeout i fail-closed
+odrzuca odpowiedź z innym ID. Profil recording handshake wymaga Lifecycle.
+Pierwszy pion `ChannelAgent` jest gotowy w czystej logice. Ma jedną kolejkę
+ograniczaną przez politykę oraz jeden `TransactionCore`; wykonuje Identity/Capabilities
+handshake i Lifecycle dla wielu node, obraca node bez nakładania transakcji i
+zachowuje retry przez timeout/quarantine. `ChannelPort` i `ChannelEndpoint`
+składają stałe bufory, stream decoder, częściowy write, drain TX i zegar timeoutu.
+Adapter przeszedł fizyczny HIL jednej linii. Naprawa `ChannelPort` eliminuje
+ponowne dekodowanie zużytych bajtów po timeoutcie pomiędzy fragmentami ramki.
+
+Measurement Service jest włączony do tego samego arbitra. `MeasurementTransfer`
+zachowuje pełny `SampleChunk`, w tym `config_revision` i timing evidence.
+`DurableMeasurementSink` blokuje przesunięcie durable/release przy błędzie
+storage. Capture WAL, recovery, segmentacja i walidacja są gotowe; checkpoint
+retencji, bounded writer, handoff coordinatora, threaded executor i
+parser-independent runtime startup oraz tracked parser profilu są gotowe.
+
+Następne fragmenty mają stałą kolejność zależności:
+
+1. **Gotowe:** proces `sensor-host run` wokół `HostCoordinator`, sygnały,
+   okresowy health, globalna reakcja storage i raport końcowego shutdownu.
+2. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
+   awarię jednej linii, opóźniony storage oraz globalny storage fault.
+3. Uruchomić Raspberry Pi kolejno z 1, 4 i 8 kanałami. Zmierzyć RTT, turnaround,
+   decode errors, retry, RSS, CPU, I/O wait, fsync latency, backlog i TimeSync.
+4. Powtórzyć HIL z wieloma node na jednym kanale, długim przewodem,
+   kontrolowanymi zakłóceniami, restartem procesu hosta i utratą zasilania.
+5. Dokończyć ścieżkę Archive: zbudować blokowy compactor/uploader na gotowym
+   indeksie pokrycia i checkpointach, a następnie powtórzyć benchmark na M.2.
+6. Na końcu dostroić wyłącznie profile pojemności na podstawie pomiarów i
+   dobudować Operations API; nie zmieniać przy tym domeny ani formatu Capture.
+
+Fizycznie zatwierdzony obraz protocol 5 ma wersję `0.5.6`, capabilities schema
+2 i reklamuje Time Service. Migracja `0.5.4` → `0.5.5` przeszła w całości po RS485: fail-closed identity,
+ograniczony do dokładnej wersji mostek schema 1, Idle → Maintenance, wejście do
+bootloadera, zapis i CRC 153088 B, start trial oraz confirm po pełnym handshake.
+Następnie cykl Measurement zebrał 256 kolejnych próbek bez gap i zakończył się
+w Maintenance. Każda następna paczka trial musi otrzymać unikalną wersję, aby
+host nie mógł pomylić nowego obrazu z rollbackiem do poprzedniego slotu.
+Aktualizacja `0.5.5` → `0.5.6` również przeszła po RS485 przez Lifecycle
+`prepare-update`, zapis nieaktywnego slotu, trial i exact-version confirm.
+
+Ostateczny profil pojemności wymaga pomiarów HIL przy docelowym ODR, obciążeniu
+core 1, retransmisjach i najdłuższej przerwie w odpytywaniu node. Wartości
+startowe pozostaną stałymi kompozycji, aby strojenie nie przebudowywało domeny.

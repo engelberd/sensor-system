@@ -1,5 +1,9 @@
 # Projekt deterministycznego czasu próbek DRDY
 
+> **Legacy:** dokument zachowuje sprawdzone wnioski z application protocol 4 i
+> starego formatu HDF5. Jest materiałem wejściowym dla etapu synchronizacji v2,
+> a nie aktualną specyfikacją wire protocol.
+
 Status: zaimplementowany i zweryfikowany offline; rollout sprzętowy oczekuje
 Zakres: firmware noda, protokół RS485 i recorder HDF5
 Poza zakresem: programowanie urządzenia, operacje na portach i usługach produkcyjnych

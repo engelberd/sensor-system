@@ -1,5 +1,8 @@
 # Host data architecture
 
+> **Legacy:** dokument opisuje moduły działającego hosta Python. Nie określa
+> zależności ani drzewa kodu `host_v2`.
+
 ## Purpose
 
 The host has two deliberately different persistence products:

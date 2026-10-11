@@ -2,6 +2,11 @@
 
 ## Source of truth
 
+- Architecture work starts at `docs/README.md`; current progress and the next
+  implementation gate are in `docs/architecture/IMPLEMENTATION-ROADMAP.md`.
+- `docs/legacy/` documents the Python host, old wire protocol and historical
+  rollouts. Use it for migration evidence and test scenarios, never as the
+  specification for `host_v2`.
 - Keep one product line on `main`; do not create per-host or per-board branches.
 - Hardware-dependent pins belong in `node/config/board_profile.h` and are selected at build time.
 - `board_revision` is immutable hardware identity: `2` is the installed wiring

@@ -1,5 +1,9 @@
 # HDF5 sample, file, validation and archive policy
 
+> **Legacy:** dokument opisuje obecną implementację HDF5 starego hosta. Dla
+> `host_v2` podział Capture/Archive/Derived pozostaje, ale fizyczny format
+> Capture nie został jeszcze wybrany.
+
 ## Product boundaries
 
 The system uses three different products. They must not be silently converted
@@ -31,22 +35,26 @@ a new sample.
 
 ## Capture file split and publication
 
-- Default window: **600 seconds**, aligned to half-open UTC intervals
-  `[start, end)`. This is the production default in `host/configs/common.json`.
-- Route by acquisition UTC, not host receive time. A sample whose timing interval
-  overlaps a boundary receives `BOUNDARY_UNCERTAIN` but is stored only once.
-- Samples without a defensible UTC assignment go to `unresolved/`; they are not
-  eligible for automatic daily archiving.
+- Default target window: **600 seconds**, configurable as a product/installation
+  setting rather than a constant in recorder code.
+- A window starts with its first real accepted sample and closes at a real sample
+  boundary after reaching the target acquisition duration. It is not aligned to
+  a full UTC minute or second.
+- Store the estimated time and uncertainty of the actual first and last sample.
+  Never infer a sample timestamp from a filename or an artificial file boundary.
+- Samples without a defensible UTC assignment remain valid raw source data with
+  time marked `Unknown/Invalid`; they are not silently discarded or assigned a
+  fabricated boundary time.
 - Write only to `*.capture.h5.partial`. A completed window is flushed, fsynced,
   marked `complete=true`, closed, and atomically renamed to `*.capture.h5`.
 - A graceful stop leaves the current UTC window partial so the next recorder can
   resume it. Startup truncates only an uncommitted raw tail and publishes stale,
   already-ended windows.
 
-The 10-minute split limits the corruption/recovery blast radius and keeps
-verification bounded without making daily archives depend on hundreds of tiny
-files. Change it only as a product-wide setting after testing restart recovery,
-dashboard discovery, and archive compaction.
+The approximate 10-minute split limits the corruption/recovery blast radius and
+keeps verification bounded. The actual duration and sample count are recorded.
+Changing the target remains a configuration decision tested with restart
+recovery, data discovery and archive compaction.
 
 ## Locking and active-file rules
 
@@ -129,8 +137,9 @@ the default warning threshold is 1000 ppm and can be overridden at the CLI.
   the following day. This leaves more than three 10-minute windows for late
   routing and finalization.
 - Archive name: `sensor-<label>_YYYY-MM-DD.archive.h5`.
-- Compact only complete UTC-assigned Capture files whose window starts on the
-  requested UTC day. Reject duplicates and identity/configuration conflicts.
+- Select samples for a requested UTC day from their reconstructed sample time,
+  independently of Capture file boundaries. A rolling Capture may contribute
+  to adjacent daily Archives without duplicating a sample identity.
 - Publish the HDF5 atomically, then publish `<file>.sha256` atomically.
 - Keep Capture for at least 30 days. Deletion is a separate idempotent operation
   allowed only after Archive validation and confirmed replication. The current

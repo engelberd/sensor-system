@@ -1,6 +1,6 @@
 # ADR 0001: Separate Capture and Archive data products
 
-- Status: accepted
+- Status: amended by ADR 0006 and ADR 0007
 - Date: 2026-08-02
 
 ## Context
@@ -19,14 +19,16 @@ time support.
 
 The system has three explicit data products:
 
-1. **Capture HDF5 v1** is a crash-safe technical journal retained for 30 days.
-2. **Archive HDF5 v1** is a compact, validated source record retained long-term.
+1. **Capture** is a crash-safe technical journal with configurable retention.
+2. **Archive** is a compact, validated source record retained long-term.
 3. **Derived data** contains resampled or cross-sensor-aligned results and is
    reproducible from Archive data.
 
-Capture and Archive files contain one physical sensor. Files are partitioned by
-UTC time for storage, while continuity is defined by stream segments and sample
-sequence, never by filenames.
+Capture and Archive files contain one physical sensor. Continuity is defined by
+stream segments and sample sequence, never by filenames. Capture uses rolling,
+configurable acquisition windows according to ADR 0006; hourly Archive products
+partition samples by reconstructed UTC independently of Capture boundaries, as
+frozen later in the Archive publication policy.
 
 Firmware output samples are stored losslessly as signed values in an `int32`
 container. Conversion to `m/s^2` is performed by readers using recorded range,
@@ -48,8 +50,9 @@ Archive file is validated and a future storage policy confirms replication.
   Archive v1 is declared production, incompatible changes require a new major
   schema version.
 
-The operational policy, validation gate, locking rules, and concrete Archive v1
-layout are specified in [HDF5-DATA-POLICY.md](../HDF5-DATA-POLICY.md).
+The existing Python host's HDF5 implementation is documented in
+[legacy HDF5 policy](../legacy/current-host/HDF5-DATA-POLICY.md). It is an input
+to migration tests, not a required storage mechanism for `host_v2`.
 
 ## Rejected alternatives
 
