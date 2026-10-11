@@ -28,6 +28,23 @@ pub fn validate_capture_chain(
 ) -> Result<CaptureExportSummary, CaptureExportError> {
     let capture_directory = capture_directory.as_ref();
     let ordinals = discover_ordinals(capture_directory)?;
+    validate_capture_ordinals(capture_directory, &ordinals)
+}
+
+/// Validates the complete published prefix while leaving a recoverable,
+/// unsealed WAL tail visible to the caller as a separate operational fact.
+pub fn validate_sealed_capture_chain(
+    capture_directory: impl AsRef<Path>,
+) -> Result<CaptureExportSummary, CaptureExportError> {
+    let capture_directory = capture_directory.as_ref();
+    let ordinals = discover_manifest_ordinals(capture_directory)?;
+    validate_capture_ordinals(capture_directory, &ordinals)
+}
+
+fn validate_capture_ordinals(
+    capture_directory: &Path,
+    ordinals: &[u64],
+) -> Result<CaptureExportSummary, CaptureExportError> {
     if ordinals.is_empty() {
         return Err(CaptureExportError::NoWindows);
     }
@@ -78,6 +95,10 @@ pub fn validate_capture_chain(
         first_cursor: first.first_cursor.get(),
         end_exclusive: last.end_exclusive.get(),
     })
+}
+
+fn discover_manifest_ordinals(directory: &Path) -> Result<Vec<u64>, CaptureExportError> {
+    discover_named_ordinals(directory, ".manifest")
 }
 
 /// Streams one boot-scoped Capture directory into analysis-friendly CSV files.
@@ -267,6 +288,10 @@ fn create_writer(path: PathBuf) -> Result<BufWriter<File>, CaptureExportError> {
 }
 
 fn discover_ordinals(directory: &Path) -> Result<Vec<u64>, CaptureExportError> {
+    discover_named_ordinals(directory, ".wal")
+}
+
+fn discover_named_ordinals(directory: &Path, suffix: &str) -> Result<Vec<u64>, CaptureExportError> {
     let mut ordinals = Vec::new();
     for entry in fs::read_dir(directory).map_err(CaptureExportError::Io)? {
         let entry = entry.map_err(CaptureExportError::Io)?;
@@ -275,7 +300,7 @@ fn discover_ordinals(directory: &Path) -> Result<Vec<u64>, CaptureExportError> {
         };
         let Some(number) = name
             .strip_prefix("window-")
-            .and_then(|value| value.strip_suffix(".wal"))
+            .and_then(|value| value.strip_suffix(suffix))
         else {
             continue;
         };
@@ -382,5 +407,21 @@ mod tests {
         assert_eq!(interpolate_device_time(100, 110, 3, 2).unwrap(), 110);
         assert_eq!(interpolate_device_time(100, 100, 1, 0).unwrap(), 100);
         assert!(interpolate_device_time(100, 101, 1, 0).is_err());
+    }
+
+    #[test]
+    fn sealed_discovery_excludes_an_unpublished_wal_tail() {
+        let root =
+            std::env::temp_dir().join(format!("capture-export-sealed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("window-00000000000000000000.wal"), b"").unwrap();
+        fs::write(root.join("window-00000000000000000000.manifest"), b"").unwrap();
+        fs::write(root.join("window-00000000000000000001.wal"), b"").unwrap();
+
+        assert_eq!(discover_ordinals(&root).unwrap(), vec![0, 1]);
+        assert_eq!(discover_manifest_ordinals(&root).unwrap(), vec![0]);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

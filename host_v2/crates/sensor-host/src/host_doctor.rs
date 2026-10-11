@@ -11,7 +11,7 @@ use std::time::Duration;
 use nix::unistd::{access, AccessFlags};
 use serde_json::{json, Value};
 
-use crate::capture_export::validate_capture_chain;
+use crate::capture_export::validate_sealed_capture_chain;
 use crate::channel_endpoint::{MonotonicClock, SystemMonotonicClock};
 use crate::discovery::InstallationDiscoveryPlan;
 use crate::discovery_executor::{execute_installation_discovery, DiscoveryExecutionPolicy};
@@ -607,6 +607,7 @@ fn inspect_status_document(
             "host boot mismatch: status={status_boot} current={current_boot_hex}"
         ));
     }
+    let phase = required_str(process.get("phase"), "process.phase")?;
     let updated_us = required_u64(
         process.get("updated_monotonic_us"),
         "process.updated_monotonic_us",
@@ -621,7 +622,11 @@ fn inspect_status_document(
     let age_us = now_us - updated_us;
     if age_us > duration_us(max_age) {
         findings.push(DoctorFinding::new(
-            DoctorSeverity::Error,
+            if matches!(phase, "recording" | "degraded" | "starting" | "stopping") {
+                DoctorSeverity::Error
+            } else {
+                DoctorSeverity::Warning
+            },
             "status.stale",
             format!(
                 "age_ms={} maximum_ms={}",
@@ -637,7 +642,6 @@ fn inspect_status_document(
         ));
     }
 
-    let phase = required_str(process.get("phase"), "process.phase")?;
     findings.push(DoctorFinding::new(
         match phase {
             "recording" => DoctorSeverity::Ok,
@@ -986,10 +990,26 @@ fn inspect_capture_tree(root: &Path, findings: &mut Vec<DoctorFinding>) {
     let mut windows = 0_u64;
     let mut samples = 0_u64;
     for stream in &streams {
-        match validate_capture_chain(stream) {
+        match validate_sealed_capture_chain(stream) {
             Ok(summary) => {
                 windows = windows.saturating_add(summary.window_count);
                 samples = samples.saturating_add(summary.sample_count);
+                match unsealed_wal_count(stream) {
+                    Ok(0) => {}
+                    Ok(count) => findings.push(DoctorFinding::new(
+                        DoctorSeverity::Warning,
+                        "deep.capture-unsealed",
+                        format!("{}: unsealed_wal_files={count}", stream.display()),
+                    )),
+                    Err(error) => {
+                        findings.push(DoctorFinding::new(
+                            DoctorSeverity::Error,
+                            "deep.capture",
+                            error,
+                        ));
+                        return;
+                    }
+                }
             }
             Err(error) => {
                 findings.push(DoctorFinding::new(
@@ -1009,6 +1029,27 @@ fn inspect_capture_tree(root: &Path, findings: &mut Vec<DoctorFinding>) {
             streams.len()
         ),
     ));
+}
+
+fn unsealed_wal_count(stream: &Path) -> Result<u64, String> {
+    let mut count = 0_u64;
+    for entry in fs::read_dir(stream).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".wal") else {
+            continue;
+        };
+        if stem.starts_with("window-") && !stream.join(format!("{stem}.manifest")).is_file() {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
 }
 
 fn inspect_time_tree(root: &Path, findings: &mut Vec<DoctorFinding>) {
@@ -1226,14 +1267,16 @@ mod tests {
         fs::create_dir_all(&stream).unwrap();
         fs::write(stream.join("window-1.manifest"), b"x").unwrap();
         fs::write(stream.join("time.wal"), b"x").unwrap();
+        fs::write(stream.join("window-2.wal"), b"x").unwrap();
         assert_eq!(
             discover_parent_directories(&root, |name| name.ends_with(".manifest")).unwrap(),
             BTreeSet::from([stream.clone()])
         );
         assert_eq!(
             discover_files(&root, |name| name.ends_with(".wal")).unwrap(),
-            vec![stream.join("time.wal")]
+            vec![stream.join("time.wal"), stream.join("window-2.wal")]
         );
+        assert_eq!(unsealed_wal_count(&stream).unwrap(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
