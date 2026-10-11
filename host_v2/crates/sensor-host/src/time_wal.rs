@@ -93,6 +93,32 @@ impl FromStr for HostClockId {
     }
 }
 
+impl fmt::Display for HostClockId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.bytes();
+        write!(
+            formatter,
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            bytes[0],
+            bytes[1],
+            bytes[2],
+            bytes[3],
+            bytes[4],
+            bytes[5],
+            bytes[6],
+            bytes[7],
+            bytes[8],
+            bytes[9],
+            bytes[10],
+            bytes[11],
+            bytes[12],
+            bytes[13],
+            bytes[14],
+            bytes[15]
+        )
+    }
+}
+
 const fn decode_hex(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -631,6 +657,7 @@ mod tests {
                 0xee, 0xff
             ]
         );
+        assert_eq!(parsed.to_string(), "00112233-4455-6677-8899-aabbccddeeff");
         assert!(matches!(
             "00000000-0000-0000-0000-000000000000".parse::<HostClockId>(),
             Err(HostClockIdError::ZeroUuid)

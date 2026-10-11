@@ -208,7 +208,7 @@ fn status_document(
         "process": {
             "pid": identity.process_id,
             "instance_id": identity.process_instance_id,
-            "host_boot_id": host_clock_id_hex(identity.host_boot_id),
+            "host_boot_id": identity.host_boot_id.to_string(),
             "phase": publication.phase.label(),
             "started_unix_ms": identity.started_unix_ms,
             "updated_unix_ms": publication.updated_unix_ms,
@@ -438,15 +438,6 @@ fn age_ms(now_us: u64, value: Option<u64>) -> Option<u64> {
 
 fn hardware_id_hex(bytes: [u8; 8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn host_clock_id_hex(id: HostClockId) -> String {
-    let bytes = id.bytes();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-    )
 }
 
 pub fn unix_time_ms() -> Result<u64, RuntimeStatusError> {

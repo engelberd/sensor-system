@@ -601,7 +601,7 @@ fn inspect_status_document(
     let status_boot = required_str(process.get("host_boot_id"), "process.host_boot_id")?;
     let current_boot =
         HostClockId::read_current_linux_boot_id().map_err(|error| error.to_string())?;
-    let current_boot_hex = bytes_hex(&current_boot.bytes());
+    let current_boot_hex = current_boot.to_string();
     if status_boot != current_boot_hex {
         return Err(format!(
             "host boot mismatch: status={status_boot} current={current_boot_hex}"
