@@ -23,8 +23,9 @@ Gotowe są:
 
 Warstwa operatora nadal pochodzi w większości ze starego hosta. Obecny
 `hostctl doctor` oczekuje starego schematu `channel.port`, dashboard czyta stare
-pliki statusu i HDF5, a proces v2 publikuje metryki tylko jako tekst na stdout.
-Usługa v2 nie jest jeszcze zainstalowana i uruchamiana automatycznie.
+pliki statusu i HDF5. Proces v2 publikuje już wersjonowany Runtime Status v1,
+ale `hostctl` i dashboard jeszcze go nie czytają. Usługa v2 nie jest jeszcze
+zainstalowana i uruchamiana automatycznie.
 
 ## 2. Docelowe doświadczenie operatora
 
@@ -72,7 +73,7 @@ usługi albo przez przyszłe Operations API.
 
 ## 4. Kolejność implementacji
 
-### Etap 1 — kontrakt statusu hosta v2 — implementacja gotowa, Pi gate otwarty
+### Etap 1 — kontrakt statusu hosta v2 — ukończony
 
 Najpierw `sensor-host` zacznie publikować wersjonowany snapshot JSON w
 `/run/sensor-system/host-v2-status.json`. Zapis będzie atomowy, ograniczony
@@ -100,8 +101,22 @@ zmiany tempa akwizycji.
 Implementacja publikuje schema 1 atomowym `rename`, eksportuje health, storage,
 metryki kanałów, identity oraz cursory i świeżość per node. Błąd publikacji po
 starcie uruchamia kontrolowany Stop. Testy jednostkowe i pełny workspace Rust
-przechodzą. Do zamknięcia gate pozostaje fizyczny przebieg na Raspberry Pi i
-porównanie z baseline sześciu kanałów.
+przechodzą.
+
+Gate na Raspberry Pi 5 z liniami A, B, C, D, G i H przeszedł 60 sekund oraz
+powtórny 30-sekundowy przebieg po poprawce projekcji shutdownu. Oba zakończyły
+się czystym Stop i walidacją wszystkich sześciu drzew Capture, bez gapów,
+timeoutów, błędów dekodowania, retry, reconnect i backpressure. Końcowy status
+ma sześć kanałów `stopped`, sześć node, sześć trwałych strumieni czasu, spójne
+cursory i nie pozostawia pliku tymczasowego. Narzut pozostał na poziomie
+baseline: maksymalne RSS `2592 KiB`, a CPU wyniosło `0.54 s` dla 60 sekund i
+`0.35 s` dla 30 sekund pracy.
+
+Pierwsze podejście do przebiegu wykryło pojedynczy `NodeDeadline` kanału A po
+udanym discovery; kolejny discovery i oba przebiegi produkcyjne były czyste.
+Runtime Status poprawnie zachował tę próbę jako `faulted`. Odporność startu na
+chwilowo nieobecny node pozostaje jawnym wymaganiem Etapu 3 i kwalifikacji z
+Etapu 7.
 
 ### Etap 2 — natywny `hostctl doctor` dla v2
 
@@ -289,8 +304,8 @@ testu 24/7:
 
 ## 6. Decyzja o najbliższej pracy
 
-Najbliższą implementacją jest **Etap 1: wersjonowany snapshot statusu v2**.
-Jest wspólnym, małym kontraktem dla `doctor`, systemd health i dashboardu.
-Po jego ukończeniu wykonujemy kolejno Etap 2 i Etap 3. Dopiero na stabilnym
-statusie oraz lifecycle procesu podłączamy dashboard, dzięki czemu UI nie
-tworzy własnego modelu stanu systemu.
+Etap 1 jest zamknięty. Najbliższą implementacją jest **Etap 2: natywny
+`hostctl doctor` dla v2**. Odczyta ten sam kontrakt, którego później użyją
+systemd health i dashboard. Po ukończeniu `doctor` wykonujemy Etap 3. Dopiero na
+stabilnym statusie oraz lifecycle procesu podłączamy dashboard, dzięki czemu UI
+nie tworzy własnego modelu stanu systemu.

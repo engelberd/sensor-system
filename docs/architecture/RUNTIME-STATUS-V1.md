@@ -27,6 +27,8 @@ Testy ręczne mogą zapisywać status obok swoich artefaktów.
 - maksymalny rozmiar dokumentu wynosi 4 MiB;
 - status jest odświeżany z częstotliwością istniejącego `metrics_interval_ms`;
 - terminalny snapshot `stopped` albo `faulted` pozostaje po zakończeniu procesu;
+- terminalne fazy kanałów i liczniki kroków pochodzą z raportów rzeczywistego
+  join/shutdownu; cursory i świeżość node są ostatnią obserwacją z granicy Stop;
 - po awarii procesu ostatni status może nadal mówić `recording`; konsument musi
   sprawdzić świeżość, PID, `instance_id` i stan usługi systemd.
 
@@ -104,4 +106,3 @@ workera RS485.
 
 Snapshot jest podstawą obserwacji. Historia zdarzeń pozostaje w journald, a
 trwałe dane pomiarowe w Capture i Time WAL.
-
