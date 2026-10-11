@@ -50,6 +50,7 @@ set(ADXL355_SLOT_A_OFFSET     0x00040000)
 set(ADXL355_SLOT_A_SIZE       0x001E0000)
 set(ADXL355_SLOT_B_OFFSET     0x00220000)
 set(ADXL355_SLOT_B_SIZE       0x001E0000)
+set(ADXL355_FLASH_SIZE        0x00400000)
 
 set(SENSOR_SYSTEM_NODE_INCLUDE_DIRS
     ${CMAKE_CURRENT_LIST_DIR}
@@ -62,12 +63,12 @@ set(SENSOR_SYSTEM_NODE_INCLUDE_DIRS
     ${CMAKE_CURRENT_LIST_DIR}/controller
     ${CMAKE_CURRENT_LIST_DIR}/diagnostics
     ${CMAKE_CURRENT_LIST_DIR}/interfaces
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3
     ${CMAKE_CURRENT_LIST_DIR}/storage
     ${CMAKE_CURRENT_LIST_DIR}/transport
 )
 
-set(SENSOR_SYSTEM_NODE_APP_SOURCES
-    ${CMAKE_CURRENT_LIST_DIR}/main.cpp
+set(SENSOR_SYSTEM_NODE_APP_COMMON_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/adxl355/adxl355_driver.cpp
     ${CMAKE_CURRENT_LIST_DIR}/acquisition/acquisition_engine.cpp
     ${CMAKE_CURRENT_LIST_DIR}/controller/node_controller.cpp
@@ -77,12 +78,20 @@ set(SENSOR_SYSTEM_NODE_APP_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/common/device_identity.cpp
     ${CMAKE_CURRENT_LIST_DIR}/diagnostics/diagnostic_store.cpp
     ${CMAKE_CURRENT_LIST_DIR}/diagnostics/persistent_diagnostic_store.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/observer/tinyusb_cdc_port.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/dispatcher.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/time.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/framing.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/identity.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/lifecycle.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/measurement.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/crc16.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/frame_decoder.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/frame_encoder.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/rs485_port.cpp
     ${CMAKE_CURRENT_LIST_DIR}/boot/boot_metadata.cpp
     ${CMAKE_CURRENT_LIST_DIR}/boot_shared/boot_runtime_api.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/boot_shared/boot_runtime_logic.cpp
     ${CMAKE_CURRENT_LIST_DIR}/boot_shared/boot_shared_metadata_io.cpp
 )
 
@@ -145,15 +154,30 @@ function(sensor_system_node_configure_common_target target)
     )
 endfunction()
 
-function(sensor_system_node_add_app_target target flash_offset flash_size output_name)
-    add_executable(${target} ${SENSOR_SYSTEM_NODE_APP_SOURCES})
+function(sensor_system_node_add_app_target target flash_offset flash_size output_name uf2_output app_main app_slot)
+    add_executable(${target} ${app_main} ${SENSOR_SYSTEM_NODE_APP_COMMON_SOURCES})
     sensor_system_node_configure_common_target(${target})
+    target_compile_definitions(${target} PRIVATE
+        PICO_STDIO_USB_ENABLE_IRQ_BACKGROUND_TASK=0
+        PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=0
+        PICO_STDIO_USB_ENABLE_RESET_VIA_VENDOR_INTERFACE=0
+        SENSOR_SYSTEM_APP_SLOT=${app_slot}
+    )
     sensor_system_node_configure_flash_region(${target} ${flash_offset} ${flash_size})
 
     set_target_properties(${target} PROPERTIES OUTPUT_NAME ${output_name})
     pico_enable_stdio_usb(${target} 1)
     pico_enable_stdio_uart(${target} 0)
-    pico_add_extra_outputs(${target})
+    # Slot images are delivered as raw .bin files through the A/B updater. With
+    # picotool 2.3.0, producing UF2 from an ELF linked above flash base can be
+    # misdetected as RP2040 (picotool issue #339). Avoid generating an unused
+    # and ambiguous slot UF2; the factory and standalone images start at base.
+    pico_add_bin_output(${target})
+    pico_add_dis_output(${target})
+    pico_add_map_output(${target})
+    if(uf2_output)
+        pico_add_uf2_output(${target})
+    endif()
 endfunction()
 
 add_executable(sensor_system_node_bootloader ${SENSOR_SYSTEM_NODE_BOOTLOADER_SOURCES})
@@ -164,14 +188,39 @@ pico_enable_stdio_usb(sensor_system_node_bootloader 0)
 pico_enable_stdio_uart(sensor_system_node_bootloader 0)
 pico_add_extra_outputs(sensor_system_node_bootloader)
 
-sensor_system_node_add_app_target(sensor_system_node_slot_a ${ADXL355_SLOT_A_OFFSET} ${ADXL355_SLOT_A_SIZE} sensor-system-node-slot-a)
-sensor_system_node_add_app_target(sensor_system_node_slot_b ${ADXL355_SLOT_B_OFFSET} ${ADXL355_SLOT_B_SIZE} sensor-system-node-slot-b)
+sensor_system_node_add_app_target(sensor_system_node_slot_a ${ADXL355_SLOT_A_OFFSET} ${ADXL355_SLOT_A_SIZE} sensor-system-node-slot-a FALSE ${CMAKE_CURRENT_LIST_DIR}/main_v2.cpp 1)
+sensor_system_node_add_app_target(sensor_system_node_slot_b ${ADXL355_SLOT_B_OFFSET} ${ADXL355_SLOT_B_SIZE} sensor-system-node-slot-b FALSE ${CMAKE_CURRENT_LIST_DIR}/main_v2.cpp 2)
+target_compile_definitions(sensor_system_node_slot_a PRIVATE PICO_CORE1_STACK_SIZE=0)
+target_compile_definitions(sensor_system_node_slot_b PRIVATE PICO_CORE1_STACK_SIZE=0)
 
 # Standalone diagnostic image without the A/B boot chain.
 # This keeps the old "single app" bring-up path available so we can
 # isolate whether failures come from the bootloader handoff or from the
 # application itself / external hardware.
-sensor_system_node_add_app_target(sensor_system_node_direct ${ADXL355_BOOT_OFFSET} ${ADXL355_METADATA_OFFSET} sensor-system-node-direct)
+sensor_system_node_add_app_target(sensor_system_node_direct ${ADXL355_BOOT_OFFSET} ${ADXL355_FLASH_SIZE} sensor-system-node-direct TRUE ${CMAKE_CURRENT_LIST_DIR}/main.cpp 0)
+
+# Standalone protocol-5 integration image for direct bench diagnostics. The A/B
+# targets above use the same main_v2 composition at their slot link addresses.
+set(SENSOR_SYSTEM_NODE_V2_INTEGRATION_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/main_v2.cpp
+    ${SENSOR_SYSTEM_NODE_APP_COMMON_SOURCES})
+add_executable(sensor_system_node_v2_integration
+    ${SENSOR_SYSTEM_NODE_V2_INTEGRATION_SOURCES})
+sensor_system_node_configure_common_target(sensor_system_node_v2_integration)
+target_compile_definitions(sensor_system_node_v2_integration PRIVATE
+    PICO_STDIO_USB_ENABLE_IRQ_BACKGROUND_TASK=0
+    PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=0
+    PICO_STDIO_USB_ENABLE_RESET_VIA_VENDOR_INTERFACE=0
+    PICO_CORE1_STACK_SIZE=0
+    SENSOR_SYSTEM_APP_SLOT=0
+)
+sensor_system_node_configure_flash_region(
+    sensor_system_node_v2_integration ${ADXL355_BOOT_OFFSET} ${ADXL355_FLASH_SIZE})
+set_target_properties(sensor_system_node_v2_integration PROPERTIES
+    OUTPUT_NAME sensor-system-node-v2-integration)
+pico_enable_stdio_usb(sensor_system_node_v2_integration 1)
+pico_enable_stdio_uart(sensor_system_node_v2_integration 0)
+pico_add_extra_outputs(sensor_system_node_v2_integration)
 
 add_custom_command(
     OUTPUT
@@ -251,6 +300,7 @@ if (PICOTOOL_EXECUTABLE)
             ${CMAKE_CURRENT_BINARY_DIR}/sensor-system-node-factory.uf2
             -t uf2
             -o ${ADXL355_FLASH_BASE}
+            --family rp2350-arm-s
         COMMAND
             ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/sensor-system-node-factory-uf2.stamp
         BYPRODUCTS

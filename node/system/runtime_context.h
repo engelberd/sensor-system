@@ -8,10 +8,11 @@ enum RuntimeSystemAction : uint8_t {
     RuntimeSystemActionEnterBootloader = 2,
 };
 
-template <typename AcquisitionT, typename TransportT>
+template <typename AcquisitionT, typename TransportT, typename ObserverT>
 struct RuntimeContext {
     AcquisitionT* acquisition = nullptr;
     TransportT* transport = nullptr;
+    ObserverT* observer = nullptr;
 
     volatile bool core1_ready = false;
     volatile bool stop_requested = false;

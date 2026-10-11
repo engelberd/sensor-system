@@ -4,32 +4,6 @@
 #include "boot_shared/boot_shared_metadata_io.h"
 
 namespace boot {
-namespace {
-
-bool confirm_trial_success_in_metadata(BootMetadata& metadata) {
-    if (metadata.trial_armed == 0u || metadata.trial_slot == SlotId::None) {
-        return false;
-    }
-
-    if (!boot_slot_is_bootable(metadata, metadata.trial_slot)) {
-        return false;
-    }
-
-    metadata.active_slot = metadata.trial_slot;
-    metadata.boot_slot = metadata.trial_slot;
-
-    SlotMetadata& sm = boot_slot_metadata(metadata, metadata.trial_slot);
-    ++sm.confirmed_boots;
-
-    metadata.trial_slot = SlotId::None;
-    metadata.trial_armed = 0u;
-    metadata.trial_attempted = 0u;
-    metadata.last_error = 0u;
-
-    return true;
-}
-
-} // namespace
 
 bool app_sync_boot_settings(uint8_t node_id) {
     BootMetadata metadata{};
@@ -44,16 +18,38 @@ bool app_sync_boot_settings(uint8_t node_id) {
 }
 
 bool app_confirm_boot_success() {
+    return app_confirm_current_trial() == TrialBootConfirmResult::Confirmed;
+}
+
+SlotId app_current_slot() {
+#if SENSOR_SYSTEM_APP_SLOT == 1
+    return SlotId::A;
+#elif SENSOR_SYSTEM_APP_SLOT == 2
+    return SlotId::B;
+#else
+    return SlotId::None;
+#endif
+}
+
+TrialBootState app_trial_boot_state() {
     BootMetadata metadata{};
     if (!app_boot_metadata_load(metadata)) {
-        return false;
+        return TrialBootState::Unavailable;
     }
+    return classify_trial_boot(metadata, app_current_slot());
+}
 
-    if (!confirm_trial_success_in_metadata(metadata)) {
-        return false;
+TrialBootConfirmResult app_confirm_current_trial() {
+    BootMetadata metadata{};
+    if (!app_boot_metadata_load(metadata)) {
+        return TrialBootConfirmResult::InvalidMetadata;
     }
-
-    return app_boot_metadata_save(metadata);
+    const TrialBootConfirmResult result =
+        confirm_trial_boot_in_metadata(metadata, app_current_slot());
+    if (result != TrialBootConfirmResult::Confirmed) return result;
+    return app_boot_metadata_save(metadata)
+        ? TrialBootConfirmResult::Confirmed
+        : TrialBootConfirmResult::InvalidMetadata;
 }
 
 bool app_request_enter_bootloader() {

@@ -6,6 +6,7 @@
 
 #include "acquisition/acquisition_engine.h"
 #include "boot_shared/boot_runtime_api.h"
+#include "controller/command_result.h"
 #include "common/device_identity.h"
 #include "config/board_profile.h"
 #include "common/node_types.h"
@@ -15,35 +16,28 @@
 #include "diagnostics/diagnostic_store.h"
 #include "interfaces/i_data_plane.h"
 #include "interfaces/i_temperature_sensor.h"
+#include "interfaces/i_transport_diagnostics.h"
 #include "pico/time.h"
 #include "storage/stored_sample.h"
 #include "transport/command_payloads.h"
 #include "transport/command_types.h"
 #include "transport/frame_types.h"
-#include "transport/rs485_port.h"
 #include "transport/status_codes.h"
 
 template <size_t BufferCapacity>
 class NodeController {
 public:
-    enum class DeferredAction : uint8_t {
-        None = 0,
-        Restart,
-        EnterBootloader,
-        ApplyBaudRate
-    };
-
     NodeController(ConfigManager& config,
                    AcquisitionEngine<BufferCapacity>& acquisition,
                    ITemperatureSensor& temperature_sensor,
                    IDataPlane& data_plane,
-                   Rs485Port* rs485_port = nullptr,
+                   ITransportDiagnostics* transport_diagnostics = nullptr,
                    DiagnosticStore* diagnostics = nullptr)
         : config_(config),
           acquisition_(acquisition),
           temperature_sensor_(temperature_sensor),
           data_plane_(data_plane),
-          rs485_port_(rs485_port),
+          transport_diagnostics_(transport_diagnostics),
           diagnostics_(diagnostics) {
     }
 
@@ -98,24 +92,12 @@ public:
         }
     }
 
-    DeferredAction take_deferred_action() {
-        const DeferredAction action = deferred_action_;
-        deferred_action_ = DeferredAction::None;
-        return action;
-    }
-
-    uint32_t take_deferred_baudrate() {
-        const uint32_t baudrate = deferred_baudrate_;
-        deferred_baudrate_ = 0;
-        return baudrate;
-    }
-
-    StatusCode handle_command(uint8_t command,
-                              uint8_t source,
-                              const uint8_t* payload,
-                              size_t payload_len,
-                              uint8_t* response,
-                              size_t& response_len) {
+    CommandResult handle_command(uint8_t command,
+                                 uint8_t source,
+                                 const uint8_t* payload,
+                                 size_t payload_len,
+                                 uint8_t* response,
+                                 size_t& response_len) {
         response_len = 0;
 
         switch (static_cast<CommandType>(command)) {
@@ -380,8 +362,8 @@ private:
         context.fifo_no_data = stats.fifo_no_data;
         context.sensor_errors = stats.sensor_errors;
         context.dropped_samples = stats.dropped_samples;
-        context.rx_overflow_count = (rs485_port_ != nullptr)
-            ? rs485_port_->rx_overflow_count()
+        context.rx_overflow_count = (transport_diagnostics_ != nullptr)
+            ? transport_diagnostics_->rx_overflow_count()
             : 0u;
         context.packet_overwrite_count = dp.packet_overwrite_count;
         context.debug_gpio_int1_edges = stats.gpio_int1_edges;
@@ -551,7 +533,7 @@ private:
         return StatusCode::Ok;
     }
 
-    StatusCode handle_restart(uint8_t* out, size_t& out_len) {
+    CommandResult handle_restart(uint8_t* out, size_t& out_len) {
         if (diagnostics_ != nullptr) {
             diagnostics_->record_fault(
                 DiagnosticSeverity::Warn,
@@ -559,18 +541,27 @@ private:
                 current_fault_context(0, 0)
             );
         }
-        deferred_action_ = DeferredAction::Restart;
-        return build_simple_ok(static_cast<uint8_t>(CommandType::Restart), out, out_len);
+        const StatusCode status = build_simple_ok(
+            static_cast<uint8_t>(CommandType::Restart),
+            out,
+            out_len
+        );
+        return CommandResult{
+            status,
+            DeferredCommandEffect{DeferredCommandEffectType::Restart, 0}
+        };
     }
 
-    StatusCode handle_enter_bootloader(uint8_t* out, size_t& out_len) {
+    CommandResult handle_enter_bootloader(uint8_t* out, size_t& out_len) {
         if (!boot::app_request_enter_bootloader()) {
-            return build_error_response(
-                static_cast<uint8_t>(CommandType::EnterBootloader),
-                StatusCode::StorageError,
-                out,
-                out_len
-            );
+            return CommandResult{
+                build_error_response(
+                    static_cast<uint8_t>(CommandType::EnterBootloader),
+                    StatusCode::StorageError,
+                    out,
+                    out_len
+                )
+            };
         }
 
         if (diagnostics_ != nullptr) {
@@ -580,12 +571,18 @@ private:
                 current_fault_context(0, 0)
             );
         }
-        deferred_action_ = DeferredAction::EnterBootloader;
-        return build_simple_ok(
+        const StatusCode status = build_simple_ok(
             static_cast<uint8_t>(CommandType::EnterBootloader),
             out,
             out_len
         );
+        return CommandResult{
+            status,
+            DeferredCommandEffect{
+                DeferredCommandEffectType::EnterBootloader,
+                0
+            }
+        };
     }
 
     StatusCode handle_get_version(uint8_t* out, size_t& out_len) {
@@ -968,28 +965,32 @@ private:
         );
     }
 
-    StatusCode handle_set_baudrate(const uint8_t* payload,
-                                   size_t len,
-                                   uint8_t* out,
-                                   size_t& out_len) {
+    CommandResult handle_set_baudrate(const uint8_t* payload,
+                                      size_t len,
+                                      uint8_t* out,
+                                      size_t& out_len) {
         if (payload == nullptr || len < sizeof(SetBaudRateCommandPayload)) {
-            return build_error_response(
-                static_cast<uint8_t>(CommandType::SetBaudRate),
-                StatusCode::InvalidParam,
-                out,
-                out_len
-            );
+            return CommandResult{
+                build_error_response(
+                    static_cast<uint8_t>(CommandType::SetBaudRate),
+                    StatusCode::InvalidParam,
+                    out,
+                    out_len
+                )
+            };
         }
 
         const auto* cmd =
             reinterpret_cast<const SetBaudRateCommandPayload*>(payload);
         if (!is_valid_baudrate(cmd->baudrate)) {
-            return build_error_response(
-                static_cast<uint8_t>(CommandType::SetBaudRate),
-                StatusCode::InvalidParam,
-                out,
-                out_len
-            );
+            return CommandResult{
+                build_error_response(
+                    static_cast<uint8_t>(CommandType::SetBaudRate),
+                    StatusCode::InvalidParam,
+                    out,
+                    out_len
+                )
+            };
         }
 
         DeviceConfig config = config_.current();
@@ -998,13 +999,18 @@ private:
         ++config_revision_;
         config_effective_sample_seq_ = acquisition_.stats().next_sample_seq;
 
-        deferred_baudrate_ = cmd->baudrate;
-        deferred_action_ = DeferredAction::ApplyBaudRate;
-        return build_simple_ok(
+        const StatusCode status = build_simple_ok(
             static_cast<uint8_t>(CommandType::SetBaudRate),
             out,
             out_len
         );
+        return CommandResult{
+            status,
+            DeferredCommandEffect{
+                DeferredCommandEffectType::ApplyRs485BaudRate,
+                cmd->baudrate
+            }
+        };
     }
 
     StatusCode handle_save_config(uint8_t* out, size_t& out_len) {
@@ -1193,8 +1199,8 @@ private:
         resp.fifo_samples_read = st.fifo_samples_read;
         resp.fifo_int1_events = st.fifo_int1_events;
         resp.fifo_drdy_events = st.fifo_drdy_events;
-        resp.rx_overflow_count = (rs485_port_ != nullptr)
-            ? rs485_port_->rx_overflow_count()
+        resp.rx_overflow_count = (transport_diagnostics_ != nullptr)
+            ? transport_diagnostics_->rx_overflow_count()
             : 0;
         resp.packet_overwrite_count = data_plane_.state().packet_overwrite_count;
         resp.last_sample_seq = st.last_sample_seq;
@@ -1232,7 +1238,7 @@ private:
 
     StatusCode handle_get_temperature(uint8_t* out, size_t& out_len) {
         TemperatureSample t{};
-        const auto st = temperature_sensor_.read_temperature(t);
+        const auto st = acquisition_.read_temperature(temperature_sensor_, t);
         if (st != SensorStatus::Ok) {
             ++temperature_error_streak_;
             if (diagnostics_ != nullptr && ((temperature_error_streak_ & (temperature_error_streak_ - 1u)) == 0u)) {
@@ -1630,11 +1636,9 @@ private:
     AcquisitionEngine<BufferCapacity>& acquisition_;
     ITemperatureSensor& temperature_sensor_;
     IDataPlane& data_plane_;
-    Rs485Port* rs485_port_ = nullptr;
+    ITransportDiagnostics* transport_diagnostics_ = nullptr;
     DiagnosticStore* diagnostics_ = nullptr;
     SensorStatus init_status_ = SensorStatus::NotInitialized;
-    DeferredAction deferred_action_ = DeferredAction::None;
-    uint32_t deferred_baudrate_ = 0;
     uint32_t temperature_error_streak_ = 0;
     uint32_t config_revision_ = 0;
     uint64_t config_effective_sample_seq_ = 0;

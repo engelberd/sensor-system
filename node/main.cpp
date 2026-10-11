@@ -17,6 +17,11 @@
 #include "controller/node_controller.h"
 #include "diagnostics/diagnostic_store.h"
 #include "diagnostics/persistent_diagnostic_store.h"
+#include "observer/config_usb_observer_identity_source.h"
+#include "observer/observer_snapshot_sink.h"
+#include "processing/sample_sink_fanout.h"
+#include "observer/tinyusb_cdc_port.h"
+#include "observer/usb_observer_endpoint.h"
 #include "runtime/core0_acquisition_loop.h"
 #include "runtime/core1_transport_loop.h"
 #include "storage/acquisition_buffer.h"
@@ -34,12 +39,14 @@ static constexpr uint32_t SENSOR_SPI_BAUD = 5 * 1000 * 1000;
 static constexpr uint32_t RS485_BAUD = 115200;
 static constexpr size_t ACQ_BUFFER_CAPACITY = 8192;
 static constexpr size_t PACKET_QUEUE_CAPACITY = 128;
+static constexpr size_t OBSERVER_SNAPSHOT_CAPACITY = 32;
 
 using DataPlaneT = DataPlane<PACKET_QUEUE_CAPACITY, 32>;
 using AcquisitionT = AcquisitionEngine<ACQ_BUFFER_CAPACITY>;
 using ControllerT = NodeController<ACQ_BUFFER_CAPACITY>;
-using TransportT = Transport<ACQ_BUFFER_CAPACITY, ControllerT>;
-using RuntimeT = RuntimeContext<AcquisitionT, TransportT>;
+using TransportT = Transport<ControllerT, Rs485Port>;
+using ObserverT = UsbObserverEndpoint<OBSERVER_SNAPSHOT_CAPACITY>;
+using RuntimeT = RuntimeContext<AcquisitionT, TransportT, ObserverT>;
 
 static RuntimeT* g_runtime = nullptr;
 
@@ -161,7 +168,9 @@ int main() {
         boot_epoch,
         BoardProfile::kTimestampingV2Enabled
     );
-    static AcquisitionT acquisition(driver, acq_buffer, &data_plane, &diagnostics);
+    static ObserverSnapshotSink<OBSERVER_SNAPSHOT_CAPACITY> observer_snapshot;
+    static SampleSinkFanout sample_sinks(data_plane, observer_snapshot);
+    static AcquisitionT acquisition(driver, acq_buffer, &sample_sinks, &diagnostics);
 
     static Rs485Port rs485_port(
         RS485_UART,
@@ -200,6 +209,26 @@ int main() {
     }
 
     const auto cfg = config_manager.current();
+
+    UsbObserverIdentity observer_identity{};
+    observer_identity.hardware_id = read_device_hardware_id();
+    observer_identity.firmware_major = FW_VERSION_MAJOR;
+    observer_identity.firmware_minor = FW_VERSION_MINOR;
+    observer_identity.firmware_patch = FW_VERSION_PATCH;
+    observer_identity.product_protocol_version = PROTOCOL_VERSION;
+    observer_identity.board_revision = BoardProfile::kRevision;
+    observer_identity.timestamping_enabled = BoardProfile::kTimestampingV2Enabled;
+
+    static ConfigUsbObserverIdentitySource observer_identity_source(
+        config_manager,
+        observer_identity
+    );
+    static TinyUsbCdcPort usb_port;
+    static ObserverT usb_observer(
+        usb_port,
+        observer_snapshot,
+        observer_identity_source
+    );
     const uint32_t output_odr_millihz =
         (static_cast<uint32_t>(cfg.odr_hz) * 1000u) /
         DecimatingFilterX2::kDecimationFactor;
@@ -221,7 +250,8 @@ int main() {
     );
 
     static RuntimeT runtime{};
-    runtime.acquisition = controller_ready ? &acquisition : nullptr;
+    runtime.acquisition = nullptr;
+    runtime.observer = &usb_observer;
     runtime.core1_ready = false;
     runtime.stop_requested = false;
     runtime.requested_action = RuntimeSystemActionNone;
@@ -266,13 +296,24 @@ int main() {
         ? boot::app_sync_boot_settings(config_manager.current().node_id)
         : false;
 
-    printf("boot.sync() -> %s, boot.confirm() -> %s\n",
-           boot_settings_synced ? "ok" : "skip/fail",
-           boot_confirmed ? "confirmed" :
-               (controller_ready ? "not_pending" : "blocked_not_ready"));
+    (void)boot_confirmed;
+    (void)boot_settings_synced;
 
-    printf("core0=acquisition, core1=transport\n");
-    set_status_led(controller_ready);
+    const SensorStatus runtime_prepare_status = controller_ready
+        ? acquisition.prepare_for_runtime()
+        : SensorStatus::NotInitialized;
+    const bool runtime_ready =
+        controller_ready && runtime_prepare_status == SensorStatus::Ok;
+    if (controller_ready && !runtime_ready) {
+        diagnostics.record_fault(
+            DiagnosticSeverity::Critical,
+            DiagnosticEventCode::SensorConfigFailed,
+            DiagnosticFaultContext{}
+        );
+    }
+
+    runtime.acquisition = runtime_ready ? &acquisition : nullptr;
+    set_status_led(runtime_ready);
 
     run_core0_acquisition_loop(runtime);
 

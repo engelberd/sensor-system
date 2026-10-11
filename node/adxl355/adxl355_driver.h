@@ -32,6 +32,11 @@ public:
         size_t max_samples,
         size_t& samples_read
     ) override;
+    FifoReadOutcome read_fifo_batch(
+        AccelSample* samples,
+        SampleDeviceTime* times,
+        size_t max_samples
+    ) override;
 
     bool supports_fifo() const override;
     bool supports_sample_timestamps() const override;

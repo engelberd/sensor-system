@@ -33,23 +33,6 @@ bool Rs485Port::init() {
         set_driver_enable(false);
     }
 
-    dma_tx_channel_ = dma_claim_unused_channel(true);
-
-    dma_channel_config tx_cfg = dma_channel_get_default_config(dma_tx_channel_);
-    channel_config_set_transfer_data_size(&tx_cfg, DMA_SIZE_8);
-    channel_config_set_read_increment(&tx_cfg, true);
-    channel_config_set_write_increment(&tx_cfg, false);
-    channel_config_set_dreq(&tx_cfg, uart_get_dreq(uart_, true));
-
-    dma_channel_configure(
-        dma_tx_channel_,
-        &tx_cfg,
-        &uart_get_hw(uart_)->dr,
-        nullptr,
-        0,
-        false
-    );
-
     initialized_ = true;
     tx_in_progress_ = false;
     tx_completed_flag_ = false;
@@ -58,19 +41,36 @@ bool Rs485Port::init() {
     return true;
 }
 
-bool Rs485Port::start_tx_dma(const uint8_t* data, size_t size) {
+bool Rs485Port::start_tx(const uint8_t* data, size_t size) {
     if (!initialized_ || data == nullptr || size == 0 || tx_in_progress_) {
         return false;
     }
 
     tx_completed_flag_ = false;
+    tx_in_progress_ = true;
     set_driver_enable(true);
 
-    dma_channel_set_read_addr(dma_tx_channel_, data, false);
-    dma_channel_set_trans_count(dma_tx_channel_, size, true);
+    for (size_t i = 0; i < size; ++i) {
+        uart_putc_raw(uart_, data[i]);
+    }
 
-    tx_in_progress_ = true;
+    uart_tx_wait_blocking(uart_);
+    set_driver_enable(false);
+    // Some RS485 paths echo local TX into RX; drop that before command parsing resumes.
+    drain_rx();
+
+    tx_in_progress_ = false;
+    tx_completed_flag_ = true;
     return true;
+}
+
+void Rs485Port::abort_tx() {
+    if (!initialized_) return;
+    uart_tx_wait_blocking(uart_);
+    set_driver_enable(false);
+    drain_rx();
+    tx_in_progress_ = false;
+    tx_completed_flag_ = false;
 }
 
 bool Rs485Port::tx_busy() const {
@@ -162,10 +162,6 @@ void Rs485Port::set_driver_enable(bool enabled) {
 
 void Rs485Port::finish_tx_if_done() {
     if (!tx_in_progress_) {
-        return;
-    }
-
-    if (dma_channel_is_busy(dma_tx_channel_)) {
         return;
     }
 

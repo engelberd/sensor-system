@@ -163,7 +163,8 @@ For field updates, use the packaged manifest instead of a raw `.bin`:
 
 ```bash
 ./hostctl update --port /dev/sensor-system-rs485 --node 1 \
-  --image node/build/releases/sensor-system-node-vX.Y.Z/sensor-system-node-vX.Y.Z-update-package.json
+  --image node/build/releases/sensor-system-node-vX.Y.Z/sensor-system-node-vX.Y.Z-update-package.json \
+  --no-verify-app
 ```
 
 The host uses a longer timeout for update operations because the bootloader
@@ -183,6 +184,29 @@ This does:
 - uploads the image
 - leaves metadata armed for a trial boot into the new slot
 
+For a protocol-5 image, complete the trial over the same RS485 connection after
+the upload. The command first validates hardware identity, board revision,
+protocol and advertised trial-confirm support, then sends the idempotent
+confirmation:
+
+```bash
+cargo run --release --manifest-path host_v2/Cargo.toml --bin sensor-hil -- \
+  confirm-trial /dev/sensor-system-rs485 1 0011223344556677 2 0.5.6 115200
+```
+
+Replace the hardware ID and `0.5.6` with the values expected from the uploaded
+package. The exact firmware-version check prevents an older protocol-5 image
+after rollback from being mistaken for the new trial. Every released image
+must therefore receive a new firmware version. A v2 trial restarts after 30
+seconds without confirmation, allowing the bootloader to roll back on its next
+decision. Run the command promptly after upload; USB is not involved.
+
+`--no-verify-app` only disables the legacy protocol-4 ping in the uploader.
+Verification is still mandatory and is performed by `sensor-hil confirm-trial`
+against protocol 5. The command tolerates the bootloader maintenance window and
+will not confirm a mismatched hardware ID, board revision, protocol or firmware
+version.
+
 You can also use the low-level maintenance tool directly:
 
 ```bash
@@ -198,14 +222,15 @@ The update flow is A/B with rollback-oriented metadata:
 - the currently known-good image remains in `active_slot`
 - the new image is written to the other slot
 - boot metadata arms a trial boot into the new slot
-- if the new image confirms itself, it becomes the new `active_slot`
+- after local health and a protocol-5 host handshake, an explicit RS485 confirm
+  promotes the new image to `active_slot`
 - if it fails to come up cleanly, bootloader rolls back to the previously active slot
 
 The decision logic lives in:
 
-- [boot/boot_decision.cpp](/home/anone/pico-projects/node/boot/boot_decision.cpp:1)
-- [boot/boot_update_engine.cpp](/home/anone/pico-projects/node/boot/boot_update_engine.cpp:1)
-- [boot/boot_update_server.cpp](/home/anone/pico-projects/node/boot/boot_update_server.cpp:1)
+- `boot/boot_decision.cpp`
+- `boot/boot_update_engine.cpp`
+- `boot/boot_update_server.cpp`
 
 ## Boot Handoff
 

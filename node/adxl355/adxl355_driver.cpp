@@ -194,12 +194,9 @@ SensorStatus Adxl355Driver::read_average_sample(AccelSample& avg, size_t count) 
 SensorStatus Adxl355Driver::read_fifo_samples(AccelSample* samples,
                                               size_t max_samples,
                                               size_t& samples_read) {
-    return read_fifo_samples_timed(
-        samples,
-        nullptr,
-        max_samples,
-        samples_read
-    );
+    const FifoReadOutcome outcome = read_fifo_batch(samples, nullptr, max_samples);
+    samples_read = outcome.samples_read;
+    return outcome.status;
 }
 
 SensorStatus Adxl355Driver::read_fifo_samples_timed(
@@ -208,7 +205,17 @@ SensorStatus Adxl355Driver::read_fifo_samples_timed(
     size_t max_samples,
     size_t& samples_read
 ) {
-    samples_read = 0;
+    const FifoReadOutcome outcome = read_fifo_batch(samples, times, max_samples);
+    samples_read = outcome.samples_read;
+    return outcome.status;
+}
+
+FifoReadOutcome Adxl355Driver::read_fifo_batch(
+    AccelSample* samples,
+    SampleDeviceTime* times,
+    size_t max_samples
+) {
+    FifoReadOutcome outcome{};
     if (times != nullptr) {
         for (size_t i = 0; i < max_samples; ++i) {
             times[i] = {};
@@ -224,24 +231,28 @@ SensorStatus Adxl355Driver::read_fifo_samples_timed(
 
     if (!initialized_) {
         diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NotInitialized);
-        return SensorStatus::NotInitialized;
+        outcome.status = SensorStatus::NotInitialized;
+        return outcome;
     }
 
     if (samples == nullptr || max_samples == 0) {
         diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidParam);
-        return SensorStatus::InvalidParam;
+        outcome.status = SensorStatus::InvalidParam;
+        return outcome;
     }
 
     uint8_t fifo_entries = 0;
     SensorStatus st = read_fifo_entries(fifo_entries);
     if (st != SensorStatus::Ok) {
         diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-        return st;
+        outcome.status = st;
+        return outcome;
     }
 
     if (fifo_entries < 3) {
         diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
-        return SensorStatus::NoData;
+        outcome.status = SensorStatus::NoData;
+        return outcome;
     }
 
     const size_t available_samples = fifo_entries / 3;
@@ -250,7 +261,8 @@ SensorStatus Adxl355Driver::read_fifo_samples_timed(
 
     if (to_read == 0) {
         diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
-        return SensorStatus::NoData;
+        outcome.status = SensorStatus::NoData;
+        return outcome;
     }
 
     const size_t bytes_to_read = to_read * 9;
@@ -264,8 +276,32 @@ SensorStatus Adxl355Driver::read_fifo_samples_timed(
             TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
         );
         diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-        return st;
+        outcome.status = st;
+        outcome.continuity = InputContinuity::Broken;
+        outcome.break_reason = SensorReadBreakReason::TransportUncertain;
+        return outcome;
     }
+
+    size_t samples_read = 0;
+    const auto invalid_fifo_outcome = [&](SensorStatus status) {
+        const uint32_t discarded =
+            static_cast<uint32_t>(to_read - samples_read);
+        diag_.last_fifo_discarded_samples =
+            static_cast<uint8_t>(discarded);
+        (void)consume_fifo_timestamps(to_read, times, samples_read);
+        invalidate_timing_binding(
+            TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
+        );
+        diag_.last_fifo_read_status = static_cast<uint8_t>(status);
+
+        FifoReadOutcome invalid{};
+        invalid.status = status;
+        invalid.samples_read = samples_read;
+        invalid.discarded_input_samples = discarded;
+        invalid.continuity = InputContinuity::Broken;
+        invalid.break_reason = SensorReadBreakReason::InvalidFifoData;
+        return invalid;
+    };
 
     for (size_t i = 0; i < to_read; ++i) {
         const size_t base = i * 9;
@@ -276,68 +312,32 @@ SensorStatus Adxl355Driver::read_fifo_samples_timed(
 
         st = decode_fifo_entry(&buffer[base + 0], x_entry);
         if (st != SensorStatus::Ok) {
-            diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
-            (void)consume_fifo_timestamps(to_read, times, samples_read);
-            invalidate_timing_binding(
-                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
-            );
-            diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-            return st;
+            return invalid_fifo_outcome(st);
         }
 
         st = decode_fifo_entry(&buffer[base + 3], y_entry);
         if (st != SensorStatus::Ok) {
-            diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
-            (void)consume_fifo_timestamps(to_read, times, samples_read);
-            invalidate_timing_binding(
-                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
-            );
-            diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-            return st;
+            return invalid_fifo_outcome(st);
         }
 
         st = decode_fifo_entry(&buffer[base + 6], z_entry);
         if (st != SensorStatus::Ok) {
-            diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
-            (void)consume_fifo_timestamps(to_read, times, samples_read);
-            invalidate_timing_binding(
-                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
-            );
-            diag_.last_fifo_read_status = static_cast<uint8_t>(st);
-            return st;
+            return invalid_fifo_outcome(st);
         }
 
         if (x_entry.is_empty || y_entry.is_empty || z_entry.is_empty) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_EMPTY_ENTRY;
-            diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
-            (void)consume_fifo_timestamps(to_read, times, samples_read);
-            invalidate_timing_binding(
-                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
-            );
-            diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::NoData);
-            return SensorStatus::NoData;
+            return invalid_fifo_outcome(SensorStatus::NoData);
         }
 
         if (!x_entry.is_x_axis) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
-            diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
-            (void)consume_fifo_timestamps(to_read, times, samples_read);
-            invalidate_timing_binding(
-                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
-            );
-            diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
-            return SensorStatus::InvalidSample;
+            return invalid_fifo_outcome(SensorStatus::InvalidSample);
         }
 
         if (y_entry.is_x_axis || z_entry.is_x_axis) {
             diag_.flags |= SENSOR_DIAG_FLAG_FIFO_AXIS_MISMATCH;
-            diag_.last_fifo_discarded_samples = static_cast<uint8_t>(to_read - samples_read);
-            (void)consume_fifo_timestamps(to_read, times, samples_read);
-            invalidate_timing_binding(
-                TIMING_QUALITY_INVALID | TIMING_QUALITY_INCOMPLETE_SAMPLE
-            );
-            diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::InvalidSample);
-            return SensorStatus::InvalidSample;
+            return invalid_fifo_outcome(SensorStatus::InvalidSample);
         }
 
         samples[i].x = x_entry.value;
@@ -348,7 +348,9 @@ SensorStatus Adxl355Driver::read_fifo_samples_timed(
 
     (void)consume_fifo_timestamps(to_read, times, samples_read);
     diag_.last_fifo_read_status = static_cast<uint8_t>(SensorStatus::Ok);
-    return SensorStatus::Ok;
+    outcome.status = SensorStatus::Ok;
+    outcome.samples_read = samples_read;
+    return outcome;
 }
 
 bool Adxl355Driver::supports_fifo() const {

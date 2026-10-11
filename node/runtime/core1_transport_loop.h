@@ -11,6 +11,10 @@ inline void run_core1_transport_loop(Context& ctx) {
             ctx.transport->update();
         }
 
+        if (ctx.observer != nullptr) {
+            ctx.observer->update();
+        }
+
         tight_loop_contents();
     }
 }

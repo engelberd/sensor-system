@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "common/fifo_read_outcome.h"
 #include "common/sensor_types.h"
 #include "timing/sample_timing.h"
 
@@ -33,6 +34,11 @@ public:
         }
         return status;
     }
+    virtual FifoReadOutcome read_fifo_batch(
+        AccelSample* samples,
+        SampleDeviceTime* times,
+        size_t max_samples
+    ) = 0;
     virtual SensorStatus read_fifo_entries(uint8_t& entries) = 0;
 
     virtual bool supports_fifo() const = 0;

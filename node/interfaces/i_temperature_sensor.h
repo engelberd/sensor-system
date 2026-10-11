@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sensor_types.h"
+#include "common/sensor_types.h"
 
 /*
 ============================================================

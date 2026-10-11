@@ -17,8 +17,6 @@ public:
     void set_reset_cause(DiagnosticResetCause cause);
     DiagnosticResetCause reset_cause() const;
 
-    void set_live_usb_enabled(bool enabled);
-    bool live_usb_enabled() const;
     void set_persistent_store(PersistentDiagnosticStore* store);
     void set_boot_counter(uint32_t boot_counter);
     void set_firmware_version(uint32_t firmware_version);
@@ -49,17 +47,13 @@ public:
 
 private:
     static uint32_t current_time_ms();
-    static const char* severity_name(DiagnosticSeverity severity);
-    static const char* event_name(DiagnosticEventCode code);
     static bool should_store_event(DiagnosticSeverity severity, DiagnosticEventCode code);
     static bool should_capture_snapshot(DiagnosticSeverity severity, DiagnosticEventCode code);
     static bool can_coalesce_with(const DiagnosticEvent& stored, const DiagnosticEvent& candidate);
 
     void record_internal(DiagnosticSeverity severity,
                          DiagnosticEventCode code,
-                         const DiagnosticFaultContext* fault_context,
-                         DiagnosticEvent& emitted_event,
-                         bool& should_log_usb);
+                         const DiagnosticFaultContext* fault_context);
 
 private:
     mutable critical_section_t cs_{};
@@ -73,8 +67,6 @@ private:
     DiagnosticResetCause reset_cause_ = DiagnosticResetCause::Unknown;
     DiagnosticFaultSnapshot last_fault_{};
     bool has_fault_snapshot_ = false;
-    bool live_usb_enabled_ = true;
-    DiagnosticSeverity usb_threshold_ = DiagnosticSeverity::Info;
     PersistentDiagnosticStore* persistent_store_ = nullptr;
     uint32_t boot_counter_ = 0;
     uint32_t firmware_version_ = 0;

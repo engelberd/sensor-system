@@ -3,11 +3,11 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "hardware/dma.h"
 #include "hardware/uart.h"
+#include "interfaces/i_transport_diagnostics.h"
 #include "pico/stdlib.h"
 
-class Rs485Port {
+class Rs485Port : public ITransportDiagnostics {
 public:
     Rs485Port(uart_inst_t* uart,
               uint tx_pin,
@@ -17,7 +17,8 @@ public:
 
     bool init();
 
-    bool start_tx_dma(const uint8_t* data, size_t size);
+    bool start_tx(const uint8_t* data, size_t size);
+    void abort_tx();
     bool tx_busy() const;
     bool tx_completed() const;
     void clear_tx_completed();
@@ -26,7 +27,7 @@ public:
 
     bool read_byte(uint8_t& byte);
     void drain_rx();
-    uint32_t rx_overflow_count() const;
+    uint32_t rx_overflow_count() const override;
 
     void set_baudrate(uint32_t baudrate);
     uint32_t baudrate() const;
@@ -42,7 +43,6 @@ private:
     uint32_t baudrate_;
     int de_pin_;
 
-    int dma_tx_channel_ = -1;
     bool initialized_ = false;
 
     bool tx_in_progress_ = false;

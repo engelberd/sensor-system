@@ -8,5 +8,5 @@ static constexpr uint8_t HOST_NODE_ID = 0xFE;
 static constexpr uint8_t BROADCAST_NODE_ID = 0xFF;
 
 static constexpr uint8_t FW_VERSION_MAJOR = 0;
-static constexpr uint8_t FW_VERSION_MINOR = 4;
-static constexpr uint8_t FW_VERSION_PATCH = 1;
+static constexpr uint8_t FW_VERSION_MINOR = 5;
+static constexpr uint8_t FW_VERSION_PATCH = 6;

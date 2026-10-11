@@ -1,7 +1,5 @@
 #include "diagnostics/diagnostic_store.h"
 
-#include <cstdio>
-
 #include "diagnostics/persistent_diagnostic_store.h"
 #include "pico/time.h"
 
@@ -30,19 +28,6 @@ DiagnosticResetCause DiagnosticStore::reset_cause() const {
     return cause;
 }
 
-void DiagnosticStore::set_live_usb_enabled(bool enabled) {
-    critical_section_enter_blocking(&cs_);
-    live_usb_enabled_ = enabled;
-    critical_section_exit(&cs_);
-}
-
-bool DiagnosticStore::live_usb_enabled() const {
-    critical_section_enter_blocking(const_cast<critical_section_t*>(&cs_));
-    const bool enabled = live_usb_enabled_;
-    critical_section_exit(const_cast<critical_section_t*>(&cs_));
-    return enabled;
-}
-
 void DiagnosticStore::set_persistent_store(PersistentDiagnosticStore* store) {
     critical_section_enter_blocking(&cs_);
     persistent_store_ = store;
@@ -67,55 +52,17 @@ void DiagnosticStore::record(DiagnosticSeverity severity,
                              uint64_t sample_seq,
                              int32_t arg0,
                              int32_t arg1) {
-    DiagnosticEvent emitted{};
-    bool should_log_usb = false;
     DiagnosticFaultContext context{};
     context.sample_seq = sample_seq;
     context.arg0 = arg0;
     context.arg1 = arg1;
-    record_internal(severity, code, &context, emitted, should_log_usb);
-    if (should_log_usb) {
-        std::printf(
-            "[DIAG][%lu ms][%s][%s] event_id=%lu seq=%llu arg0=%ld arg1=%ld\n",
-            static_cast<unsigned long>(emitted.time_ms),
-            severity_name(severity),
-            event_name(code),
-            static_cast<unsigned long>(emitted.event_id),
-            static_cast<unsigned long long>(sample_seq),
-            static_cast<long>(arg0),
-            static_cast<long>(arg1)
-        );
-    }
+    record_internal(severity, code, &context);
 }
 
 void DiagnosticStore::record_fault(DiagnosticSeverity severity,
                                    DiagnosticEventCode code,
                                    const DiagnosticFaultContext& context) {
-    DiagnosticEvent emitted{};
-    bool should_log_usb = false;
-    record_internal(severity, code, &context, emitted, should_log_usb);
-    if (should_log_usb) {
-        std::printf(
-            "[DIAG][%lu ms][%s][%s] event_id=%lu seq=%llu last_progress_ms=%lu fifo_no_data=%lu sensor_errors=%lu dropped=%lu rx_overflow=%lu packet_overwrite=%lu gpio_int1_edges=%lu gpio_drdy_edges=%lu debug_cfg=0x%08lx debug_irq=0x%08lx arg0=%ld arg1=%ld\n",
-            static_cast<unsigned long>(emitted.time_ms),
-            severity_name(severity),
-            event_name(code),
-            static_cast<unsigned long>(emitted.event_id),
-            static_cast<unsigned long long>(context.sample_seq),
-            static_cast<unsigned long>(context.last_progress_ms),
-            static_cast<unsigned long>(context.fifo_no_data),
-            static_cast<unsigned long>(context.sensor_errors),
-            static_cast<unsigned long>(context.dropped_samples),
-            static_cast<unsigned long>(context.rx_overflow_count),
-            static_cast<unsigned long>(context.packet_overwrite_count),
-            static_cast<unsigned long>(context.debug_gpio_int1_edges),
-            static_cast<unsigned long>(context.debug_gpio_drdy_edges),
-            static_cast<unsigned long>(context.debug_config_snapshot),
-            static_cast<unsigned long>(context.debug_irq_snapshot),
-            static_cast<long>(context.arg0),
-            static_cast<long>(context.arg1)
-        );
-    }
+    record_internal(severity, code, &context);
 }
 
 DiagnosticInfoSnapshot DiagnosticStore::info() const {
@@ -130,7 +77,7 @@ DiagnosticInfoSnapshot DiagnosticStore::info() const {
     snapshot.event_capacity = static_cast<uint16_t>(kEventCapacity);
     snapshot.stored_event_count = static_cast<uint16_t>(count_);
     snapshot.reset_cause = static_cast<uint8_t>(reset_cause_);
-    snapshot.live_usb_enabled = live_usb_enabled_ ? 1u : 0u;
+    snapshot.live_usb_enabled = 0u;
     critical_section_exit(const_cast<critical_section_t*>(&cs_));
     return snapshot;
 }
@@ -213,74 +160,6 @@ uint32_t DiagnosticStore::current_time_ms() {
     return static_cast<uint32_t>(time_us_64() / 1000u);
 }
 
-const char* DiagnosticStore::severity_name(DiagnosticSeverity severity) {
-    switch (severity) {
-        case DiagnosticSeverity::Debug:
-            return "DEBUG";
-        case DiagnosticSeverity::Info:
-            return "INFO";
-        case DiagnosticSeverity::Warn:
-            return "WARN";
-        case DiagnosticSeverity::Error:
-            return "ERROR";
-        case DiagnosticSeverity::Critical:
-            return "CRITICAL";
-        default:
-            return "UNKNOWN";
-    }
-}
-
-const char* DiagnosticStore::event_name(DiagnosticEventCode code) {
-    switch (code) {
-        case DiagnosticEventCode::Boot:
-            return "BOOT";
-        case DiagnosticEventCode::ControllerInitOk:
-            return "CONTROLLER_INIT_OK";
-        case DiagnosticEventCode::ControllerInitFailed:
-            return "CONTROLLER_INIT_FAILED";
-        case DiagnosticEventCode::Rs485InitFailed:
-            return "RS485_INIT_FAILED";
-        case DiagnosticEventCode::TransportInitFailed:
-            return "TRANSPORT_INIT_FAILED";
-        case DiagnosticEventCode::SensorInitFailed:
-            return "SENSOR_INIT_FAILED";
-        case DiagnosticEventCode::SensorCheckFailed:
-            return "SENSOR_CHECK_FAILED";
-        case DiagnosticEventCode::SensorConfigFailed:
-            return "SENSOR_CONFIG_FAILED";
-        case DiagnosticEventCode::SensorOffsetsFailed:
-            return "SENSOR_OFFSETS_FAILED";
-        case DiagnosticEventCode::FifoOverrun:
-            return "FIFO_OVERRUN";
-        case DiagnosticEventCode::FifoStatusReadError:
-            return "FIFO_STATUS_READ_ERROR";
-        case DiagnosticEventCode::FifoRepeatedNoData:
-            return "FIFO_REPEATED_NO_DATA";
-        case DiagnosticEventCode::SensorReadError:
-            return "SENSOR_READ_ERROR";
-        case DiagnosticEventCode::InvalidSample:
-            return "INVALID_SAMPLE";
-        case DiagnosticEventCode::AcquisitionRecovered:
-            return "ACQUISITION_RECOVERED";
-        case DiagnosticEventCode::TemperatureReadFailed:
-            return "TEMPERATURE_READ_FAILED";
-        case DiagnosticEventCode::TemperatureReadRecovered:
-            return "TEMPERATURE_READ_RECOVERED";
-        case DiagnosticEventCode::RuntimeConfigApplyFailed:
-            return "RUNTIME_CONFIG_APPLY_FAILED";
-        case DiagnosticEventCode::RuntimeConfigApplied:
-            return "RUNTIME_CONFIG_APPLIED";
-        case DiagnosticEventCode::RestartCommand:
-            return "RESTART_COMMAND";
-        case DiagnosticEventCode::EnterBootloaderCommand:
-            return "ENTER_BOOTLOADER_COMMAND";
-        case DiagnosticEventCode::DiagnosticsCleared:
-            return "DIAGNOSTICS_CLEARED";
-        default:
-            return "UNKNOWN_EVENT";
-    }
-}
-
 bool DiagnosticStore::should_store_event(DiagnosticSeverity severity, DiagnosticEventCode code) {
     if (severity_at_least(severity, DiagnosticSeverity::Warn)) {
         return true;
@@ -327,9 +206,7 @@ bool DiagnosticStore::can_coalesce_with(const DiagnosticEvent& stored, const Dia
 
 void DiagnosticStore::record_internal(DiagnosticSeverity severity,
                                       DiagnosticEventCode code,
-                                      const DiagnosticFaultContext* fault_context,
-                                      DiagnosticEvent& emitted_event,
-                                      bool& should_log_usb) {
+                                      const DiagnosticFaultContext* fault_context) {
     const uint32_t now_ms = current_time_ms();
     critical_section_enter_blocking(&cs_);
 
@@ -423,7 +300,5 @@ void DiagnosticStore::record_internal(DiagnosticSeverity severity,
         persistent_record_written_ = persistent_store_->save(persistent);
     }
 
-    should_log_usb = live_usb_enabled_ && severity_at_least(severity, usb_threshold_);
-    emitted_event = event;
     critical_section_exit(&cs_);
 }

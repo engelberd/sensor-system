@@ -5,15 +5,17 @@
 #include <cstring>
 
 #include "common/protocol_ids.h"
+#include "controller/command_result.h"
 #include "interfaces/i_data_plane.h"
 #include "pico/stdlib.h"
 #include "system/runtime_context.h"
 #include "transport/frame_decoder.h"
 #include "transport/frame_encoder.h"
 #include "transport/frame_layout.h"
-#include "transport/rs485_port.h"
+#include "transport/command_payloads.h"
+#include "transport/command_types.h"
 
-template <size_t BufferCapacity, typename ControllerT>
+template <typename ControllerT, typename PortT>
 class Transport {
 public:
     static constexpr size_t MAX_FRAME_SIZE =
@@ -23,7 +25,7 @@ public:
     static constexpr size_t RESPONSE_PAYLOAD_BUFFER_SIZE = FRAME_MAX_PAYLOAD_SIZE;
     static constexpr size_t MAX_PENDING_RESPONSES = 4;
 
-    Transport(Rs485Port& port,
+    Transport(PortT& port,
               ControllerT& controller,
               IDataPlane& data_plane,
               volatile uint8_t* requested_action = nullptr,
@@ -66,8 +68,6 @@ private:
         BurstData
     };
 
-    using DeferredActionT = typename ControllerT::DeferredAction;
-
     void handle_tx_completion() {
         if (tx_kind_ == TxKind::None) {
             return;
@@ -86,9 +86,8 @@ private:
         if (tx_kind_ == TxKind::BurstData) {
             data_plane_.on_packet_transmitted();
         } else if (tx_kind_ == TxKind::Response) {
-            execute_deferred_action(active_response_action_, active_response_baudrate_);
-            active_response_action_ = DeferredActionT::None;
-            active_response_baudrate_ = 0;
+            execute_deferred_effect(active_response_effect_);
+            active_response_effect_ = {};
         }
 
         tx_kind_ = TxKind::None;
@@ -164,14 +163,14 @@ private:
         return true;
     }
 
-    void execute_deferred_action(DeferredActionT action, uint32_t deferred_baudrate) {
-        if (action == DeferredActionT::None) {
+    void execute_deferred_effect(const DeferredCommandEffect& effect) {
+        if (effect.type == DeferredCommandEffectType::None) {
             return;
         }
 
-        if (action == DeferredActionT::ApplyBaudRate) {
-            if (deferred_baudrate != 0) {
-                port_.set_baudrate(deferred_baudrate);
+        if (effect.type == DeferredCommandEffectType::ApplyRs485BaudRate) {
+            if (effect.value != 0) {
+                port_.set_baudrate(effect.value);
             }
             return;
         }
@@ -180,9 +179,9 @@ private:
             return;
         }
 
-        if (action == DeferredActionT::EnterBootloader) {
+        if (effect.type == DeferredCommandEffectType::EnterBootloader) {
             *requested_action_ = RuntimeSystemActionEnterBootloader;
-        } else if (action == DeferredActionT::Restart) {
+        } else if (effect.type == DeferredCommandEffectType::Restart) {
             *requested_action_ = RuntimeSystemActionRestart;
         }
     }
@@ -220,7 +219,7 @@ private:
             return;
         }
 
-        const StatusCode st = controller_.handle_command(
+        const CommandResult result = controller_.handle_command(
             cmd,
             frame.source,
             frame.payload,
@@ -228,6 +227,7 @@ private:
             response_payload,
             response_payload_len
         );
+        const StatusCode st = result.status;
 
         if (response_payload_len == 0 && st == StatusCode::NoData) {
             return;
@@ -252,8 +252,7 @@ private:
                 frame.sequence,
                 response_payload,
                 response_payload_len,
-                controller_.take_deferred_action(),
-                controller_.take_deferred_baudrate())) {
+                result.deferred_effect)) {
             (void)st;
         }
     }
@@ -263,8 +262,7 @@ private:
                         uint32_t sequence,
                         const uint8_t* payload,
                         size_t payload_len,
-                        DeferredActionT deferred_action,
-                        uint32_t deferred_baudrate) {
+                        DeferredCommandEffect deferred_effect) {
         if (payload == nullptr || payload_len == 0) {
             return false;
         }
@@ -290,8 +288,7 @@ private:
         }
 
         slot.frame_len = frame_len;
-        slot.deferred_action = deferred_action;
-        slot.deferred_baudrate = deferred_baudrate;
+        slot.deferred_effect = deferred_effect;
         pending_response_tail_ =
             (pending_response_tail_ + 1) % MAX_PENDING_RESPONSES;
         ++pending_response_count_;
@@ -334,8 +331,7 @@ private:
         slot.sequence = frame.sequence;
         slot.time_sync_payload = response;
         slot.late_time_sync = true;
-        slot.deferred_action = DeferredActionT::None;
-        slot.deferred_baudrate = 0;
+        slot.deferred_effect = {};
         pending_response_tail_ =
             (pending_response_tail_ + 1) % MAX_PENDING_RESPONSES;
         ++pending_response_count_;
@@ -372,13 +368,11 @@ private:
                     return;
                 }
             }
-            if (port_.start_tx_dma(slot.frame, slot.frame_len)) {
+            if (port_.start_tx(slot.frame, slot.frame_len)) {
                 tx_kind_ = TxKind::Response;
-                active_response_action_ = slot.deferred_action;
-                active_response_baudrate_ = slot.deferred_baudrate;
+                active_response_effect_ = slot.deferred_effect;
                 slot.frame_len = 0;
-                slot.deferred_action = DeferredActionT::None;
-                slot.deferred_baudrate = 0;
+                slot.deferred_effect = {};
                 slot.late_time_sync = false;
                 slot.destination = 0;
                 slot.source = 0;
@@ -422,7 +416,7 @@ private:
             return;
         }
 
-        if (port_.start_tx_dma(tx_frame_buffer_, frame_len)) {
+        if (port_.start_tx(tx_frame_buffer_, frame_len)) {
             tx_kind_ = TxKind::BurstData;
         }
     }
@@ -451,7 +445,7 @@ private:
     }
 
 private:
-    Rs485Port& port_;
+    PortT& port_;
     ControllerT& controller_;
     IDataPlane& data_plane_;
     volatile uint8_t* requested_action_ = nullptr;
@@ -469,8 +463,7 @@ private:
     struct PendingResponseSlot {
         uint8_t frame[TX_FRAME_BUFFER_SIZE]{};
         size_t frame_len = 0;
-        DeferredActionT deferred_action = DeferredActionT::None;
-        uint32_t deferred_baudrate = 0;
+        DeferredCommandEffect deferred_effect{};
         bool late_time_sync = false;
         uint8_t destination = 0;
         uint8_t source = 0;
@@ -482,8 +475,7 @@ private:
     size_t pending_response_head_ = 0;
     size_t pending_response_tail_ = 0;
     size_t pending_response_count_ = 0;
-    DeferredActionT active_response_action_ = DeferredActionT::None;
-    uint32_t active_response_baudrate_ = 0;
+    DeferredCommandEffect active_response_effect_{};
     uint64_t boot_epoch_ = 0;
     bool time_sync_enabled_ = false;
 };
