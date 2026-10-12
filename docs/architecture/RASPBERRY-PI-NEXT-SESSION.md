@@ -36,8 +36,9 @@ brak zmian w nieśledzonych plikach `hardware/`.
   odizolowana jako `faulted`, a jej port nie jest zajęty przez recorder.
 - Read-only dashboard hosta v2 korzysta z Runtime Status v1 i bounded journald,
   nie otwiera RS485 ani aktywnego Capture WAL. Lokalna jednostka
-  `sensor-system-dashboard.service` udostępnia go na `127.0.0.1:8090`; zdalny
-  podgląd wymaga tunelu SSH przez prywatną sieć administracyjną.
+  `sensor-system-dashboard.service` udostępnia go wyłącznie na adresie
+  Tailscale Raspberry Pi `100.88.176.26:8090`; nie nasłuchuje na publicznym ani
+  lokalnym interfejsie LAN.
 - E i F nie są fizycznie podłączone.
 - Na Pi istnieją lokalne, nieśledzone profile debug. Nie dodawaj ich do Git.
 
