@@ -10,7 +10,11 @@ Rdzeń akwizycji nie jest już głównym ryzykiem. Sześć fizycznych linii RS48
 przeszło 60-sekundowy przebieg oraz 30-sekundowy przebieg po restarcie procesu.
 W obu testach Capture i Time WAL zachowały ciągłość, nie wystąpiły gapy,
 timeouty, błędy dekodowania, retry ani backpressure. Node A, B, C, D, G i H
-pracują z firmware `0.5.6`; E i F nie są jeszcze podłączone.
+otrzymały firmware `0.5.6`; E i F nie są jeszcze podłączone. Obecnie B, C, D,
+G i H pracują pod usługą systemd, a A jest odizolowana po
+`Faulted/InvalidSample` i czeka na kontrolowany reset oraz aktualizację do
+`0.5.7` opisaną w
+[RASPBERRY-PI-NEXT-SESSION.md](RASPBERRY-PI-NEXT-SESSION.md).
 
 Gotowe są:
 
@@ -22,9 +26,9 @@ Gotowe są:
 - przykład usługi systemd dla rejestratora.
 
 Warstwa operatora nadal pochodzi w większości ze starego hosta. Natywny
-`hostctl doctor` czyta już profil i Runtime Status v1, natomiast dashboard nadal
-czyta stare pliki statusu i HDF5. Usługa v2 nie jest jeszcze zainstalowana i
-uruchamiana automatycznie.
+`hostctl doctor` czyta już profil i Runtime Status v1, a recorder v2 jest
+zainstalowany i uruchamiany automatycznie przez systemd. Dashboard nadal czyta
+stare pliki statusu i HDF5.
 
 ## 2. Docelowe doświadczenie operatora
 
@@ -174,7 +178,7 @@ błędem dla fazy aktywnej i ostrzeżeniem dla zatrzymanego procesu. Pozostałe
 ostrzeżenia instalacji są zgodne z roadmapą: usługa systemd nie jest jeszcze
 zainstalowana, a katalog checkpoint powstanie przy uruchomieniu retencji.
 
-### Etap 3 — automatyczne procesy na Raspberry Pi — w realizacji
+### Etap 3 — automatyczny recorder na Raspberry Pi ukończony, dashboard otwarty
 
 Powstanie instalowalna konfiguracja systemd dla:
 
@@ -392,7 +396,13 @@ testu 24/7:
 
 ## 6. Decyzja o najbliższej pracy
 
-Etapy 1 i 2 są zamknięte. Najbliższą implementacją jest **Etap 3: automatyczne
-procesy na Raspberry Pi**. Systemd użyje istniejących kontraktów statusu i
-doctor, bez dodawania drugiego modelu stanu. Po ustabilizowaniu lifecycle usługi
-podłączamy dashboard w trybie obserwacji.
+Status runtime, `doctor` i automatyczny recorder systemd są zamknięte. Bieżącą
+bramką jest kontrolowany reset A, aktualizacja `0.5.6` → `0.5.7` po RS485,
+exact-version trial confirm i odczyt trwałego rekordu przez pasywny Diagnostics
+Service. Dokładny handoff zawiera
+[RASPBERRY-PI-NEXT-SESSION.md](RASPBERRY-PI-NEXT-SESSION.md).
+
+Po rozpoznaniu i naprawie `InvalidSample` kontynuujemy dwie jawne ścieżki:
+częściowy bootstrap/późniejsze dołączanie kanału oraz dashboard w trybie
+obserwacji. Nie tworzymy w tym celu drugiego modelu stanu ani osobnej ścieżki
+RS485.
