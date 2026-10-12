@@ -256,6 +256,23 @@ pracy degraded wyłącznie przez fault `line-a`. Do zamknięcia bramki pozostaje
 częściowy bootstrap oraz późniejsze dołączenie brakującego kanału bez restartu
 procesu. To jest odpowiedzialność koordynatora kanałów, a nie systemd.
 
+Po dodaniu zdalnej ścieżki ratunkowej node B, C, D, G i H zostały zaktualizowane
+po RS485 do `0.5.7` i każdy przeszedł exact-version trial confirm. Na B
+fizycznie potwierdzono read-only Diagnostics Service oraz `RestartNode`: host
+otrzymał odpowiedź przed restartem, a node wrócił z nowym `boot_epoch` i tą
+samą tożsamością. Pięć kanałów ponownie pracuje pod systemd; A pozostaje
+odizolowane na `0.5.6` do pierwszego rzeczywistego zaniku zasilania. Od `0.5.7`
+`Faulted` zachowuje zarówno restart, jak i wejście do bootloadera po RS485.
+
+Test ujawnił dwa braki narzędzia serwisowego. `hostctl update --enter auto`
+nadal próbuje legacy command `0x03`, a jego kontrola zajętości i inventory używa
+legacy kształtu `host/system_config.json`, co dla konfiguracji v2 kończy się
+`KeyError: port`. Bezpieczna procedura przejściowa wykonuje najpierw
+`sensor-hil prepare-update`, a następnie uploader z `--enter none`, jawnym
+`--board-revision` i zatrzymaną usługą. Integracja tej sekwencji z jednym
+poleceniem `hostctl` jest następnym zadaniem operatorskim; nie zmienia kontraktu
+firmware.
+
 Instalator/deployer ustawi użytkownika i grupy, katalogi, prawa, konfigurację,
 limity journald oraz zależność od właściwego mountpointu danych. `ExecStartPre`
 wykona szybką walidację, ale nie będzie otwierał magistral drugi raz. SIGTERM

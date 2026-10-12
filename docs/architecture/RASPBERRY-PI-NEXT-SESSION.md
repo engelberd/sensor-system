@@ -54,9 +54,15 @@ Capture przed awarią został zweryfikowany. Nie było błędów RS485 ani stora
 Błąd ujawnił dopiero wymuszony drain FIFO podczas `Stop`. Zainstalowany firmware
 0.5.6 odrzuca `prepare-update` w stanie `Faulted`; jest to ostatnia wersja bez
 zdalnej ścieżki ratunkowej. Firmware 0.5.7 dopuszcza wejście do bootloadera oraz
-jawny restart także z `Faulted`. Dla obecnego A potrzebny jest jednorazowy
-zdalny restart jego zasilania, jeśli pozwala na to kontroler USB. Trwały rekord
-diagnostyczny pozostaje w flash.
+jawny restart także z `Faulted`. Inwentaryzacja Raspberry Pi potwierdziła, że
+USB noda nie jest do niego podłączone; widoczny jest tylko konwerter RS485.
+Obecne A odzyska się więc przy najbliższym rzeczywistym zaniku zasilania.
+Trwały rekord diagnostyczny pozostaje w flash.
+
+Node B, C, D, G i H działają już na `0.5.7` i mają zdalne `RestartNode`,
+Diagnostics oraz wejście do bootloadera z `Faulted`. Każdy przeszedł upload A/B
+i exact-version trial confirm. Usługa ponownie nagrywa pięć zdrowych kanałów w
+stanie degraded przez A.
 
 ## Najbliższa procedura
 
@@ -70,15 +76,26 @@ Po jednorazowym restarcie zasilania A:
      /dev/sensor-system-line-a 1 115200
    ```
 
-3. Wgraj przygotowaną paczkę A/B po RS485:
+3. Przełącz aplikację do bootloadera przez Lifecycle V3, a następnie wgraj
+   przygotowaną paczkę A/B po RS485:
 
    ```bash
+   host_v2/target/release/sensor-hil prepare-update \
+     /dev/sensor-system-line-a 1 8d626ee02dcea999 2 115200
+
    ./hostctl update \
+     --enter none \
      --port /dev/sensor-system-line-a \
      --node 1 \
+     --board-revision 2 \
      --image node/build/releases/sensor-system-node-v0.5.7/sensor-system-node-v0.5.7-update-package.json \
-     --no-verify-app
+     --no-verify-app \
+     --force-busy
    ```
+
+   `--force-busy` jest tutaj dozwolone wyłącznie po potwierdzeniu, że usługa nie
+   posiada portu A. Automatyczne wejście updatera i parser inventory wymagają
+   jeszcze migracji z legacy konfiguracji do v2.
 
 4. Natychmiast potwierdź dokładny trial boot:
 
