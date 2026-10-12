@@ -23,10 +23,15 @@ use sensor_host::measurement_transfer::{MeasurementTransfer, PersistenceKind, Re
 use sensor_host::node_session::NodeSession;
 use sensor_host::transaction::{DurationMicros, ResponseDisposition, TimerEvent, TransactionCore};
 use sensor_protocol::{
-    decode_stream_state_success, FirmwareVersion, Frame, FrameError, IdentityContractError,
-    NodeCapabilities, NodeIdentity, ObservabilityProfile, OutputRateCode, RuntimeOperation,
-    RuntimeResultCode, RuntimeState, SampleChunk, ServiceId, StreamState, FEATURE_SAMPLE_JOURNAL,
-    FEATURE_TRIAL_BOOT_CONFIRMATION, GET_STREAM_STATE_MESSAGE_ID,
+    decode_diagnostic_events, decode_diagnostic_info, decode_fault_snapshot,
+    decode_persistent_diagnostic_record, decode_stream_state_success, encode_read_events_request,
+    DiagnosticEvent, FaultSnapshot, FirmwareVersion, Frame, FrameError, IdentityContractError,
+    NodeCapabilities, NodeIdentity, ObservabilityProfile, OutputRateCode,
+    PersistentDiagnosticRecord, RuntimeOperation, RuntimeResultCode, RuntimeState, SampleChunk,
+    ServiceId, StreamState, DIAGNOSTICS_SERVICE_ID, FEATURE_SAMPLE_JOURNAL,
+    FEATURE_TRIAL_BOOT_CONFIRMATION, GET_DIAGNOSTIC_INFO_MESSAGE_ID, GET_FAULT_SNAPSHOT_MESSAGE_ID,
+    GET_PERSISTENT_DIAGNOSTIC_RECORD_MESSAGE_ID, GET_STREAM_STATE_MESSAGE_ID,
+    READ_DIAGNOSTIC_EVENTS_MESSAGE_ID,
 };
 
 const DEFAULT_BAUD_RATE: u32 = 115_200;
@@ -200,7 +205,269 @@ fn run() -> Result<(), HilError> {
                 Duration::from_millis(interval_ms),
             )
         }
+        Command::Diagnostics {
+            device,
+            node_address,
+            hardware_id,
+            board_revision,
+            baud_rate,
+        } => run_diagnostics(
+            SerialPortConfig::rs485(device, baud_rate),
+            HandshakeRequirements::recording_node(
+                hardware_id,
+                node_address,
+                board_revision,
+                FEATURE_SAMPLE_JOURNAL,
+            ),
+        ),
     }
+}
+
+fn run_diagnostics(
+    config: SerialPortConfig,
+    requirements: HandshakeRequirements,
+) -> Result<(), HilError> {
+    let mut port = SerialChannelPort::open(&config).map_err(HilError::Port)?;
+    let clock = SystemMonotonicClock::new();
+    let timeout = DurationMicros::new(250_000).map_err(HilError::Transaction)?;
+    let quarantine = DurationMicros::new(50_000).map_err(HilError::Transaction)?;
+    let mut transactions = TransactionCore::new(process_session_seed(), quarantine);
+
+    let identity_frame = inspect_request(
+        &mut port,
+        &clock,
+        &mut transactions,
+        identity_request(requirements.node_address, timeout),
+    )?;
+    let identity = NodeIdentity::decode(identity_frame.payload())
+        .map_err(HilError::Identity)?
+        .require_local_protocol()
+        .map_err(HilError::Identity)?;
+    if identity.hardware_id != requirements.hardware_id
+        || identity.node_address != requirements.node_address
+        || identity.board_revision != requirements.board_revision
+    {
+        return Err(HilError::UnexpectedInspectionResponse);
+    }
+    let capabilities_frame = inspect_request(
+        &mut port,
+        &clock,
+        &mut transactions,
+        capabilities_request(requirements.node_address, timeout),
+    )?;
+    let capabilities =
+        NodeCapabilities::decode(capabilities_frame.payload()).map_err(HilError::Identity)?;
+    if !capabilities.supports_service(ServiceId::Diagnostics) {
+        return Err(HilError::DiagnosticsUnavailable);
+    }
+
+    let info_frame = inspect_request(
+        &mut port,
+        &clock,
+        &mut transactions,
+        diagnostics_request(
+            requirements.node_address,
+            GET_DIAGNOSTIC_INFO_MESSAGE_ID,
+            timeout,
+        ),
+    )?;
+    let info = decode_diagnostic_info(info_frame.payload()).map_err(HilError::Diagnostics)?;
+    println!(
+        "diagnostics: node={} firmware={}.{}.{} stored_events={}/{} dropped_events={} event_range=[{},{}) last_error_id={} last_error={}",
+        identity.node_address,
+        identity.firmware.major,
+        identity.firmware.minor,
+        identity.firmware.patch,
+        info.stored_event_count,
+        info.event_capacity,
+        info.dropped_event_count,
+        info.first_event_id,
+        info.next_event_id,
+        info.last_error_event_id,
+        format_diagnostic_event_code(info.last_error_code),
+    );
+
+    let fault_frame = inspect_request(
+        &mut port,
+        &clock,
+        &mut transactions,
+        diagnostics_request(
+            requirements.node_address,
+            GET_FAULT_SNAPSHOT_MESSAGE_ID,
+            timeout,
+        ),
+    )?;
+    match decode_fault_snapshot(fault_frame.payload()).map_err(HilError::Diagnostics)? {
+        Some(snapshot) => print_fault_snapshot("fault", snapshot),
+        None => println!("fault: none"),
+    }
+
+    let persistent_frame = inspect_request(
+        &mut port,
+        &clock,
+        &mut transactions,
+        diagnostics_request(
+            requirements.node_address,
+            GET_PERSISTENT_DIAGNOSTIC_RECORD_MESSAGE_ID,
+            timeout,
+        ),
+    )?;
+    match decode_persistent_diagnostic_record(persistent_frame.payload())
+        .map_err(HilError::Diagnostics)?
+    {
+        Some(record) => print_persistent_diagnostic_record(record),
+        None => println!("persistent_fault: none"),
+    }
+
+    let mut start_event_id = info.first_event_id;
+    while start_event_id < info.next_event_id {
+        let request_payload =
+            encode_read_events_request(start_event_id, 16).map_err(HilError::Diagnostics)?;
+        let page_frame = inspect_request_with_payload(
+            &mut port,
+            &clock,
+            &mut transactions,
+            diagnostics_request(
+                requirements.node_address,
+                READ_DIAGNOSTIC_EVENTS_MESSAGE_ID,
+                timeout,
+            ),
+            &request_payload,
+        )?;
+        let page = decode_diagnostic_events(page_frame.payload()).map_err(HilError::Diagnostics)?;
+        if page.events.is_empty() {
+            break;
+        }
+        for event in &page.events {
+            print_diagnostic_event(event);
+        }
+        let Some(next) = page
+            .events
+            .last()
+            .map(|event| event.event_id.saturating_add(1))
+        else {
+            break;
+        };
+        if next <= start_event_id {
+            return Err(HilError::DiagnosticsInvariant);
+        }
+        start_event_id = next;
+    }
+    Ok(())
+}
+
+fn diagnostics_request(
+    node_address: u8,
+    message: u8,
+    timeout: DurationMicros,
+) -> sensor_host::transaction::RequestSpec {
+    sensor_host::transaction::RequestSpec {
+        node_address,
+        service: DIAGNOSTICS_SERVICE_ID,
+        request_message: message,
+        response_message: message,
+        timeout,
+        timeout_recovery: sensor_host::transaction::TimeoutRecovery::RetrySafe,
+    }
+}
+
+fn format_diagnostic_event_code(code: u16) -> &'static str {
+    match code {
+        1 => "Boot",
+        2 => "ControllerInitOk",
+        3 => "ControllerInitFailed",
+        4 => "Rs485InitFailed",
+        5 => "TransportInitFailed",
+        16 => "SensorInitFailed",
+        17 => "SensorCheckFailed",
+        18 => "SensorConfigFailed",
+        19 => "SensorOffsetsFailed",
+        32 => "FifoOverrun",
+        33 => "FifoStatusReadError",
+        34 => "FifoRepeatedNoData",
+        35 => "SensorReadError",
+        36 => "InvalidSample",
+        37 => "AcquisitionRecovered",
+        48 => "TemperatureReadFailed",
+        49 => "TemperatureReadRecovered",
+        64 => "RuntimeConfigApplyFailed",
+        65 => "RuntimeConfigApplied",
+        80 => "RestartCommand",
+        81 => "EnterBootloaderCommand",
+        82 => "DiagnosticsCleared",
+        _ => "Unknown",
+    }
+}
+
+fn print_fault_snapshot(label: &str, snapshot: FaultSnapshot) {
+    println!(
+        "{label}: event_id={} time_ms={} code={}({}) severity={} reset_cause={} sample_seq={} last_progress_ms={} fifo_no_data={} sensor_errors={} dropped_samples={} rx_overflow={} packet_overwrite={} int1_edges={} drdy_edges={} config=0x{:08x} irq=0x{:08x} arg0={} arg1={}",
+        snapshot.event_id,
+        snapshot.time_ms,
+        snapshot.event_code,
+        format_diagnostic_event_code(snapshot.event_code),
+        snapshot.severity,
+        snapshot.reset_cause,
+        snapshot.sample_seq,
+        snapshot.last_progress_ms,
+        snapshot.fifo_no_data,
+        snapshot.sensor_errors,
+        snapshot.dropped_samples,
+        snapshot.rx_overflow_count,
+        snapshot.packet_overwrite_count,
+        snapshot.debug_gpio_int1_edges,
+        snapshot.debug_gpio_drdy_edges,
+        snapshot.debug_config_snapshot,
+        snapshot.debug_irq_snapshot,
+        snapshot.arg0,
+        snapshot.arg1,
+    );
+}
+
+fn print_persistent_diagnostic_record(record: PersistentDiagnosticRecord) {
+    println!(
+        "persistent_fault: generation={} boot_counter={} firmware={}.{}.{} event_id={} time_ms={} code={}({}) severity={} repeat={} reset_cause={} sample_seq={} last_progress_ms={} fifo_no_data={} sensor_errors={} dropped_samples={} rx_overflow={} packet_overwrite={} int1_edges={} drdy_edges={} config=0x{:08x} irq=0x{:08x} arg0={} arg1={}",
+        record.generation,
+        record.boot_counter,
+        (record.firmware_version >> 16) & 0xff,
+        (record.firmware_version >> 8) & 0xff,
+        record.firmware_version & 0xff,
+        record.event_id,
+        record.time_ms,
+        record.event_code,
+        format_diagnostic_event_code(record.event_code),
+        record.severity,
+        record.repeat_count,
+        record.reset_cause,
+        record.sample_seq,
+        record.last_progress_ms,
+        record.fifo_no_data,
+        record.sensor_errors,
+        record.dropped_samples,
+        record.rx_overflow_count,
+        record.packet_overwrite_count,
+        record.debug_gpio_int1_edges,
+        record.debug_gpio_drdy_edges,
+        record.debug_config_snapshot,
+        record.debug_irq_snapshot,
+        record.arg0,
+        record.arg1,
+    );
+}
+
+fn print_diagnostic_event(event: &DiagnosticEvent) {
+    println!(
+        "event: id={} time_ms={} code={}({}) severity={} repeat={} sample_seq={} arg0={} arg1={}",
+        event.event_id,
+        event.time_ms,
+        event.event_code,
+        format_diagnostic_event_code(event.event_code),
+        event.severity,
+        event.repeat_count,
+        event.sample_seq,
+        event.arg0,
+        event.arg1,
+    );
 }
 
 fn run_time_probe(
@@ -1399,10 +1666,20 @@ fn inspect_request(
     transactions: &mut TransactionCore,
     request: sensor_host::transaction::RequestSpec,
 ) -> Result<Frame, HilError> {
+    inspect_request_with_payload(port, clock, transactions, request, &[])
+}
+
+fn inspect_request_with_payload(
+    port: &mut SerialChannelPort,
+    clock: &SystemMonotonicClock,
+    transactions: &mut TransactionCore,
+    request: sensor_host::transaction::RequestSpec,
+    payload: &[u8],
+) -> Result<Frame, HilError> {
     let prepared = transactions
         .prepare(request)
         .map_err(HilError::Transaction)?;
-    let frame = prepared.request_frame(&[]).map_err(HilError::Frame)?;
+    let frame = prepared.request_frame(payload).map_err(HilError::Frame)?;
     if let Err(error) = port.transmit(&frame) {
         transactions
             .cancel_transmit()
@@ -1510,6 +1787,13 @@ enum Command {
         interval_ms: u64,
         baud_rate: u32,
     },
+    Diagnostics {
+        device: PathBuf,
+        node_address: u8,
+        hardware_id: HardwareId,
+        board_revision: u8,
+        baud_rate: u32,
+    },
 }
 
 fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
@@ -1529,6 +1813,9 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
         .first()
         .is_some_and(|value| value == "prepare-update");
     let time_probe = arguments.first().is_some_and(|value| value == "time-probe");
+    let diagnostics = arguments
+        .first()
+        .is_some_and(|value| value == "diagnostics");
     if (!identify
         && !handshake
         && !confirm
@@ -1536,7 +1823,8 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
         && !capture_cycle
         && !safe_stop
         && !prepare_update
-        && !time_probe)
+        && !time_probe
+        && !diagnostics)
         || (identify && !(arguments.len() == 3 || arguments.len() == 4))
         || (handshake && !(arguments.len() == 5 || arguments.len() == 6))
         || (confirm && !(arguments.len() == 6 || arguments.len() == 7))
@@ -1545,6 +1833,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
         || (safe_stop && !(arguments.len() == 5 || arguments.len() == 6))
         || (prepare_update && !(arguments.len() == 5 || arguments.len() == 6))
         || (time_probe && !(arguments.len() >= 5 && arguments.len() <= 8))
+        || (diagnostics && !(arguments.len() == 5 || arguments.len() == 6))
     {
         return Err(HilError::Usage);
     }
@@ -1691,6 +1980,23 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
             baud_rate,
         });
     }
+    if diagnostics {
+        let baud_rate = arguments
+            .get(5)
+            .map(|value| value.parse::<u32>().map_err(|_| HilError::InvalidBaudRate))
+            .transpose()?
+            .unwrap_or(DEFAULT_BAUD_RATE);
+        if baud_rate == 0 {
+            return Err(HilError::InvalidBaudRate);
+        }
+        return Ok(Command::Diagnostics {
+            device: PathBuf::from(&arguments[1]),
+            node_address,
+            hardware_id,
+            board_revision,
+            baud_rate,
+        });
+    }
     if safe_stop || prepare_update {
         let baud_rate = arguments
             .get(5)
@@ -1830,7 +2136,7 @@ fn record_cycle_limit() -> Duration {
 
 fn print_usage() {
     println!(
-        "usage: sensor-hil identify <device> <node-address> [baud-rate]\n       sensor-hil handshake <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil time-probe <device> <node-address> <hardware-id-hex> <board-revision> [observation-count] [interval-ms] [baud-rate]\n       sensor-hil confirm-trial <device> <node-address> <hardware-id-hex> <board-revision> <expected-firmware> [baud-rate]\n       sensor-hil record-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil capture-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output-directory> <window-duration-us> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil safe-stop <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil prepare-update <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]"
+        "usage: sensor-hil identify <device> <node-address> [baud-rate]\n       sensor-hil handshake <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil diagnostics <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil time-probe <device> <node-address> <hardware-id-hex> <board-revision> [observation-count] [interval-ms] [baud-rate]\n       sensor-hil confirm-trial <device> <node-address> <hardware-id-hex> <board-revision> <expected-firmware> [baud-rate]\n       sensor-hil record-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil capture-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output-directory> <window-duration-us> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil safe-stop <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil prepare-update <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]"
     );
 }
 
@@ -1899,6 +2205,9 @@ enum HilError {
         decode_errors: u32,
     },
     UnexpectedInspectionResponse,
+    DiagnosticsUnavailable,
+    DiagnosticsInvariant,
+    Diagnostics(sensor_protocol::DiagnosticsWireError),
     Identity(IdentityContractError),
     Frame(sensor_protocol::FrameError),
     Transaction(sensor_host::transaction::TransactionError),
@@ -2049,6 +2358,13 @@ impl fmt::Display for HilError {
             Self::UnexpectedInspectionResponse => {
                 formatter.write_str("identity inspection received an unexpected response")
             }
+            Self::DiagnosticsUnavailable => {
+                formatter.write_str("node does not advertise Diagnostics Service")
+            }
+            Self::DiagnosticsInvariant => {
+                formatter.write_str("Diagnostics event pagination did not advance")
+            }
+            Self::Diagnostics(error) => write!(formatter, "Diagnostics decode failed: {error}"),
             Self::Identity(error) => write!(formatter, "identity inspection failed: {error}"),
             Self::Frame(error) => write!(formatter, "cannot build inspection frame: {error}"),
             Self::Transaction(error) => write!(formatter, "invalid timing policy: {error}"),
@@ -2127,6 +2443,27 @@ mod tests {
                 board_revision: 2,
                 observation_count: 8,
                 interval_ms: 250,
+                baud_rate: 115_200,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_read_only_diagnostics_command() {
+        let arguments = vec![
+            "diagnostics".to_owned(),
+            "/dev/ttyUSB0".to_owned(),
+            "7".to_owned(),
+            "0102030405060708".to_owned(),
+            "2".to_owned(),
+            "115200".to_owned(),
+        ];
+        assert!(matches!(
+            parse_arguments(&arguments),
+            Ok(Command::Diagnostics {
+                node_address: 7,
+                board_revision: 2,
                 baud_rate: 115_200,
                 ..
             })

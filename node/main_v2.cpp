@@ -171,6 +171,12 @@ int main() {
     diagnostics.set_persistent_store(&persistent_diagnostics);
     diagnostics.set_boot_counter(
         boot_metadata_loaded ? boot_metadata.boot_counter : 0u);
+    diagnostics.set_firmware_version(
+        (static_cast<uint32_t>(FW_VERSION_MAJOR) << 16) |
+        (static_cast<uint32_t>(FW_VERSION_MINOR) << 8) |
+        static_cast<uint32_t>(FW_VERSION_PATCH));
+    static ProtocolV3::DiagnosticsServiceHandler<DiagnosticStore>
+        diagnostics_service(diagnostics);
 
     static node_v2::DataPlane data_plane(config_manager.generation());
     static AcquisitionBuffer<node_v2::Profile::kAcquisitionBufferSamples>
@@ -229,7 +235,8 @@ int main() {
         {256, 100000, 1000},
         {node_v2::Profile::kIngressDrainBudgetPerPoll},
         &boot_control,
-        &boot_control);
+        &boot_control,
+        &diagnostics_service);
 
     const bool runtime_ready =
         config_loaded && sensor_status == SensorStatus::Ok && rs485_ready &&

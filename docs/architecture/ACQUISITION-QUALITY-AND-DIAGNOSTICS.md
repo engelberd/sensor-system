@@ -1,9 +1,10 @@
 # Akwizycja, jakość danych i diagnostyka node
 
-- Status: model i kompozycja `main_v2` działają fizycznie; deferred zapis
-  diagnostyki i budżetowana telemetria pozostają otwarte
+- Status: model, kompozycja `main_v2` i read-only Diagnostics Service v3 są
+  zaimplementowane; deferred zapis diagnostyki i budżetowana telemetria
+  pozostają otwarte
 - Decyzja: [ADR-0010](../adr/0010-ordered-quality-events-and-service-observability.md)
-- Ostatnia aktualizacja: 2026-09-30
+- Ostatnia aktualizacja: 2026-10-12
 
 ## Podział odpowiedzialności
 
@@ -73,6 +74,24 @@ dokładnym `Gap::IngressOverflow`.
 Profil określa ilość obserwacji. Nie włącza ani nie wyłącza dowodów jakości
 danych.
 
+## Diagnostics Service v3
+
+Firmware `0.5.7` reklamuje opcjonalny serwis `Diagnostics` i udostępnia cztery
+operacje tylko do odczytu:
+
+- zwarty stan bufora zdarzeń i ostatni kod błędu;
+- bieżący fault snapshot z RAM;
+- ostatni trwały rekord diagnostyczny z flash;
+- stronicowany odczyt maksymalnie 16 zdarzeń na odpowiedź.
+
+Serwis nie wykonuje `Start`, `Stop`, resetu ani przejścia lifecycle. Działa
+również w stanie `Faulted`, dzięki czemu host może najpierw zebrać dowód awarii,
+a dopiero potem zdecydować o restarcie lub aktualizacji. Każda odpowiedź ma
+stały, ograniczony format; odczyt historii jest stronicowany i nie może
+zapełnić magistrali nieograniczonym dumpem. Narzędzie `sensor-hil diagnostics`
+wykonuje najpierw fail-closed Identity/Capabilities handshake, a następnie
+odczytuje snapshot, rekord trwały i dostępne strony zdarzeń.
+
 `Maintenance` jest stanem lifecycle, a nie trzecim profilem obserwowalności. W
 Maintenance akwizycja jest zatrzymana, więc można uruchomić self-test, pełny dump
 lub deferred flash writer zgodnie z osobnym budżetem operacji serwisowej.
@@ -98,9 +117,10 @@ lub deferred flash writer zgodnie z osobnym budżetem operacji serwisowej.
    `Production`/`Diagnostic`.
 4. Gotowe: runtime, ingress, journal i executor mailboxa są podłączone w
    `main_v2` używanym przez obrazy A/B protocol 5.
-5. Przenieść persistent diagnostics do deferred writera uruchamianego po
+5. Gotowe: bounded read-only Diagnostics Service v3 i klient HIL.
+6. Przenieść persistent diagnostics do deferred writera uruchamianego po
    zatrzymaniu albo w kontrolowanym oknie serwisowym.
-6. Dodać profile Production/Diagnostic do service telemetry i sprawdzić ich
+7. Dodać profile Production/Diagnostic do service telemetry i sprawdzić ich
    koszt benchmarkiem na RP2350.
 
 ## Kryteria ukończenia

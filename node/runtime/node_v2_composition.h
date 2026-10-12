@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "protocol_v3/dispatcher.h"
+#include "protocol_v3/diagnostics.h"
 #include "runtime/core0_sensor_runtime.h"
 #include "runtime/core1_protocol_runtime.h"
 #include "runtime/node_v2_runtime_types.h"
@@ -59,7 +60,8 @@ public:
                        runtime::Core1ProtocolPolicy core1_policy = {
                            Profile::kIngressDrainBudgetPerPoll},
                        runtime::IFirmwareUpdateControl* firmware_update_control = nullptr,
-                       runtime::ITrialBootControl* trial_boot_control = nullptr)
+                       runtime::ITrialBootControl* trial_boot_control = nullptr,
+                       ProtocolV3::IDiagnosticsServiceHandler* diagnostics_handler = nullptr)
         : data_plane_(data_plane),
           sensor_runtime_(acquisition, data_plane.sink()),
           core0_(sensor_runtime_, mailbox_, fault_latch_),
@@ -68,7 +70,8 @@ public:
           core1_measurement_(data_plane.queue(), boot_epoch, fault_latch_),
           lifecycle_(mailbox_, system_mailbox_, system_action_),
           dispatcher_(identity, capabilities,
-                      &core1_measurement_.handler(), &lifecycle_),
+                      &core1_measurement_.handler(), &lifecycle_,
+                      diagnostics_handler),
           endpoint_(port, dispatcher_, transport_policy),
           core1_(core1_measurement_, lifecycle_, endpoint_, observer,
                  core1_policy),

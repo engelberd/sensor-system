@@ -217,18 +217,22 @@ Ostatnie okno tej sesji ma 32680 ciągłych próbek i nie zawiera sztucznego
 zdarzenia końca, ponieważ Stop nie został przyjęty. Node nadal odpowiada na
 Identity i handshake, zachował ten sam `boot_epoch`, a jego journal raportuje
 `produced=192597` przy trwałym końcu Capture `192586`; jedenaście końcowych
-próbek trzeba odzyskać przed restartem lub aktualizacją noda.
+próbek pochodzi ze stanowiska testowego i decyzją operatora może zostać
+porzucone przed restartem lub aktualizacją noda. Nie jest to precedens dla
+produkcji: docelowo host przed kontrolowanym resetem wykonuje ograniczoną próbę
+drainu, a gdy danych nie da się odzyskać, zapisuje jawny gap lub continuity
+break bez blokowania pozostałych kanałów.
 
-Firmware 0.5.6 zapisuje lokalny fault snapshot, ale protokół v3 reklamuje i
-udostępnia obecnie tylko Identity, Measurement, Time i Lifecycle. Diagnostics
-nie jest jeszcze osiągalne po RS485, więc zachowanego snapshotu nie można
-odczytać bez dodania tej usługi. Z kodu wynika, że `InvalidSample` oznacza w tym
-miejscu albo naruszenie kolejności osi FIFO ADXL355, albo nieważne powiązanie
-FIFO z timestampami DRDY. Dodatkowo regularny `AcquisitionEngine::update()`
-odrzuca wynik serwisowania FIFO; błąd staje się stanem runtime dopiero podczas
-`finish_recording()`. Przed resetem A potrzebne są zatem: bezpieczny drain
-pozostałości journalu bez operacji Start, read-only Diagnostics Service v3 oraz
-propagacja bieżącego błędu akwizycji do health/runtime.
+Firmware 0.5.6 zapisał lokalny fault snapshot, lecz nie udostępniał go po
+RS485. Firmware 0.5.7 dodaje osobny, read-only Diagnostics Service v3 dostępny
+również w `Faulted` oraz klient `sensor-hil diagnostics`. Z kodu wynika, że
+`InvalidSample` oznacza w tym miejscu albo naruszenie kolejności osi FIFO
+ADXL355, albo nieważne powiązanie FIFO z timestampami DRDY. Regularny
+`AcquisitionEngine::update()` nadal odrzuca wynik serwisowania FIFO; błąd staje
+się stanem runtime dopiero podczas `finish_recording()`. Po odczytaniu trwałego
+rekordu z A następnym przyrostem będzie propagacja bieżącego błędu akwizycji do
+health/runtime oraz prosta, ograniczona polityka odzyskania danych przed
+restartem.
 
 Kolejny przyrost izoluje teraz błąd aktywacji do fizycznego kanału. Ten sam
 realny `Faulted/InvalidSample` na `line-a` uruchomił pięć pozostałych kanałów,

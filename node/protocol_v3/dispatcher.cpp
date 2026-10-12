@@ -3,6 +3,7 @@
 #include "protocol_v3/measurement_handler.h"
 #include "protocol_v3/lifecycle.h"
 #include "protocol_v3/lifecycle_handler.h"
+#include "protocol_v3/diagnostics.h"
 #include "protocol_v3/time.h"
 
 namespace ProtocolV3 {
@@ -34,9 +35,37 @@ DispatchResult ApplicationDispatcher::dispatch_at(
     if (request.service == kLifecycleServiceId) {
         return dispatch_lifecycle(request, response);
     }
+    if (request.service == kDiagnosticsServiceId) {
+        return dispatch_diagnostics(request, response);
+    }
 
     set_error(ResponseStatus::UnsupportedService, response);
     return {true, {}};
+}
+
+DispatchResult ApplicationDispatcher::dispatch_diagnostics(
+    const Frame& request, Frame& response) {
+    if (!capabilities_.supports_service(ServiceId::Diagnostics)) {
+        set_error(ResponseStatus::UnsupportedService, response);
+        return {true, {}, {}};
+    }
+    if (diagnostics_handler_ == nullptr) {
+        set_error(ResponseStatus::InternalError, response);
+        return {true, {}, {}};
+    }
+    const DiagnosticsHandlerResult handled = diagnostics_handler_->handle(
+        request.message,
+        request.payload,
+        request.payload_size,
+        response.payload,
+        sizeof(response.payload));
+    if (handled.payload_size == 0 ||
+        handled.payload_size > sizeof(response.payload)) {
+        set_error(ResponseStatus::InternalError, response);
+        return {true, {}, {}};
+    }
+    response.payload_size = handled.payload_size;
+    return {true, {}, {}};
 }
 
 bool ApplicationDispatcher::prepare_transmission(

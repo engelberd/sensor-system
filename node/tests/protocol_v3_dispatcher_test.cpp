@@ -5,6 +5,7 @@
 
 #include "measurement/delivery_session.h"
 #include "protocol_v3/dispatcher.h"
+#include "protocol_v3/diagnostics.h"
 #include "protocol_v3/lifecycle.h"
 #include "protocol_v3/lifecycle_handler.h"
 #include "protocol_v3/measurement.h"
@@ -243,6 +244,42 @@ void test_lifecycle_request_is_routed_to_mailbox_and_reconciled() {
     assert(result.code == runtime::SensorRuntimeResultCode::Ok);
     assert(result.state == runtime::SensorRuntimeState::Recording);
 }
+
+class FakeDiagnosticsHandler final : public IDiagnosticsServiceHandler {
+public:
+    DiagnosticsHandlerResult handle(
+        uint8_t message, const uint8_t*, size_t request_size,
+        uint8_t* output, size_t capacity) override {
+        assert(message == kGetDiagnosticInfoMessageId);
+        assert(request_size == 0);
+        assert(capacity >= 2);
+        output[0] = static_cast<uint8_t>(ResponseStatus::Ok);
+        output[1] = 0x5a;
+        return {2};
+    }
+};
+
+void test_diagnostics_requires_capability_and_routes_read_only_handler() {
+    FakeDiagnosticsHandler diagnostics;
+    Frame response{};
+    ApplicationDispatcher unavailable(
+        identity(), capabilities(), nullptr, nullptr, &diagnostics);
+    assert(unavailable.dispatch(
+        request(kDiagnosticsServiceId, kGetDiagnosticInfoMessageId), response));
+    assert(response.payload_size == 1);
+    assert(response.payload[0] ==
+           static_cast<uint8_t>(ResponseStatus::UnsupportedService));
+
+    NodeCapabilities caps = capabilities();
+    caps.service_flags |= service_capability_bit(ServiceId::Diagnostics);
+    ApplicationDispatcher dispatcher(
+        identity(), caps, nullptr, nullptr, &diagnostics);
+    assert(dispatcher.dispatch(
+        request(kDiagnosticsServiceId, kGetDiagnosticInfoMessageId), response));
+    assert(response.payload_size == 2);
+    assert(response.payload[0] == static_cast<uint8_t>(ResponseStatus::Ok));
+    assert(response.payload[1] == 0x5a);
+}
 }  // namespace
 
 int main() {
@@ -252,5 +289,6 @@ int main() {
     test_measurement_response_is_settled_by_queue_owner();
     test_measurement_capability_and_handler_must_agree();
     test_lifecycle_request_is_routed_to_mailbox_and_reconciled();
+    test_diagnostics_requires_capability_and_routes_read_only_handler();
     return 0;
 }

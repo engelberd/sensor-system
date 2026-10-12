@@ -19,6 +19,7 @@ void test_ab_image_reports_only_implemented_behavior() {
     static_assert((capabilities.feature_flags &
                    ProtocolV3::kFeatureRemoteFirmwareUpdate) != 0);
     assert(capabilities.supports_service(ProtocolV3::ServiceId::Time));
+    assert(capabilities.supports_service(ProtocolV3::ServiceId::Diagnostics));
     assert(ProtocolV3::validate(capabilities) ==
            ProtocolV3::IdentityCodecStatus::Ok);
 }
@@ -34,6 +35,7 @@ void test_standalone_image_does_not_claim_ab_services() {
     static_assert((capabilities.feature_flags &
                    ProtocolV3::kFeatureRemoteFirmwareUpdate) == 0);
     assert(capabilities.supports_service(ProtocolV3::ServiceId::Time));
+    assert(capabilities.supports_service(ProtocolV3::ServiceId::Diagnostics));
     assert(ProtocolV3::validate(capabilities) ==
            ProtocolV3::IdentityCodecStatus::Ok);
 }

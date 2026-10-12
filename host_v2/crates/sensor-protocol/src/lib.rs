@@ -2,6 +2,7 @@
 
 pub mod adxl355;
 pub mod application;
+pub mod diagnostics_wire;
 pub mod framing;
 pub mod identity;
 pub mod lifecycle_wire;
@@ -12,6 +13,7 @@ pub mod version;
 
 pub use adxl355::{Adxl355Odr, Adxl355SampleCode, Adxl355SampleCodeError};
 pub use application::{ApplicationContractError, ResponseStatus, ServiceId};
+pub use diagnostics_wire::*;
 pub use framing::{
     crc32c, Frame, FrameError, FrameRole, StreamDecoder, BROADCAST_ADDRESS, CRC_BYTES,
     FRAMING_VERSION, HEADER_BYTES, HOST_ADDRESS, MAX_COBS_BODY_BYTES, MAX_PAYLOAD_BYTES,

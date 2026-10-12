@@ -59,6 +59,7 @@ compile_and_run tests/boot_runtime_logic_test.cpp \
 compile_and_run tests/protocol_v3_framing_test.cpp protocol_v3/framing.cpp
 compile_and_run tests/protocol_v3_identity_test.cpp protocol_v3/identity.cpp
 compile_and_run tests/protocol_v3_time_test.cpp protocol_v3/time.cpp
+compile_and_run tests/protocol_v3_diagnostics_handler_test.cpp
 compile_and_run tests/node_v2_capabilities_test.cpp protocol_v3/identity.cpp
 compile_and_run tests/protocol_v3_lifecycle_test.cpp protocol_v3/lifecycle.cpp
 compile_and_run tests/protocol_v3_dispatcher_test.cpp \

@@ -7,6 +7,7 @@ namespace ProtocolV3 {
 
 class IMeasurementServiceHandler;
 class ILifecycleServiceHandler;
+class IDiagnosticsServiceHandler;
 
 struct ResponseCompletion {
     bool required = false;
@@ -49,10 +50,12 @@ public:
     ApplicationDispatcher(
         NodeIdentity identity, NodeCapabilities capabilities,
         IMeasurementServiceHandler* measurement_handler = nullptr,
-        ILifecycleServiceHandler* lifecycle_handler = nullptr)
+        ILifecycleServiceHandler* lifecycle_handler = nullptr,
+        IDiagnosticsServiceHandler* diagnostics_handler = nullptr)
         : identity_(identity), capabilities_(capabilities),
           measurement_handler_(measurement_handler),
-          lifecycle_handler_(lifecycle_handler) {}
+          lifecycle_handler_(lifecycle_handler),
+          diagnostics_handler_(diagnostics_handler) {}
 
     ApplicationDispatcher(const ApplicationDispatcher&) = delete;
     ApplicationDispatcher& operator=(const ApplicationDispatcher&) = delete;
@@ -81,11 +84,13 @@ private:
         const Frame& request, Frame& response, uint64_t node_receive_us) const;
     DispatchResult dispatch_measurement(const Frame& request, Frame& response);
     DispatchResult dispatch_lifecycle(const Frame& request, Frame& response);
+    DispatchResult dispatch_diagnostics(const Frame& request, Frame& response);
 
     NodeIdentity identity_{};
     NodeCapabilities capabilities_{};
     IMeasurementServiceHandler* measurement_handler_ = nullptr;
     ILifecycleServiceHandler* lifecycle_handler_ = nullptr;
+    IDiagnosticsServiceHandler* diagnostics_handler_ = nullptr;
 };
 
 }  // namespace ProtocolV3
