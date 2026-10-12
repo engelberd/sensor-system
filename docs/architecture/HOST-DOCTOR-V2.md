@@ -24,8 +24,10 @@ Domyślny status znajduje się w
   systemd, Runtime Status oraz synchronizację zegara;
 - `--deep` wymaga nieaktywnej usługi i dowodu, że żaden skonfigurowany port nie
   jest otwarty przez inny proces. Dopiero wtedy wykonuje discovery po RS485,
-  próbę `write + fsync + rename + directory fsync` oraz pełny odczyt i
-  walidację istniejących Capture i Time WAL;
+  próbę `write + fsync + rename + directory fsync`, walidację zapieczętowanych
+  prefiksów Capture i pełny odczyt Time WAL. Niezapieczętowany WAL z rekordami
+  pozostaje widocznym ostrzeżeniem; pusty plik zawierający sam nagłówek nie jest
+  utratą próbek;
 - `--offline` i `--deep` wzajemnie się wykluczają.
 
 Doctor nie zatrzymuje recordera i nie przejmuje zajętego portu. Głęboki test

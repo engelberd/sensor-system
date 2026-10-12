@@ -21,11 +21,10 @@ Gotowe są:
 - lokalny profil systemu Raspberry Pi ze stabilnymi nazwami portów;
 - przykład usługi systemd dla rejestratora.
 
-Warstwa operatora nadal pochodzi w większości ze starego hosta. Obecny
-`hostctl doctor` oczekuje starego schematu `channel.port`, dashboard czyta stare
-pliki statusu i HDF5. Proces v2 publikuje już wersjonowany Runtime Status v1,
-ale `hostctl` i dashboard jeszcze go nie czytają. Usługa v2 nie jest jeszcze
-zainstalowana i uruchamiana automatycznie.
+Warstwa operatora nadal pochodzi w większości ze starego hosta. Natywny
+`hostctl doctor` czyta już profil i Runtime Status v1, natomiast dashboard nadal
+czyta stare pliki statusu i HDF5. Usługa v2 nie jest jeszcze zainstalowana i
+uruchamiana automatycznie.
 
 ## 2. Docelowe doświadczenie operatora
 
@@ -118,7 +117,7 @@ Runtime Status poprawnie zachował tę próbę jako `faulted`. Odporność start
 chwilowo nieobecny node pozostaje jawnym wymaganiem Etapu 3 i kwalifikacji z
 Etapu 7.
 
-### Etap 2 — natywny `hostctl doctor` dla v2 — implementacja gotowa, Pi gate otwarty
+### Etap 2 — natywny `hostctl doctor` dla v2 — ukończony
 
 `./hostctl doctor` rozpozna profil v2 i wykona dwie klasy kontroli.
 
@@ -149,15 +148,31 @@ Przy tej zmianie `hostctl` przestanie wymagać starego środowiska Python przed
 rozpoznaniem polecenia. Natywne komendy v2 będą działały nawet bez legacy venv.
 
 Kryterium ukończenia: `hostctl doctor` działa na Raspberry Pi z sześcioma
-obecnymi liniami, poprawnie oznacza E/F jako wyłączone, wykrywa celowo zepsuty
-port, brak praw, stary status i mało miejsca, nie przerywając rejestracji.
+obecnymi liniami, nie oczekuje niekonfigurowanych jeszcze E/F, wykrywa celowo
+zepsuty port, brak praw, stary status i mało miejsca, nie przerywając
+rejestracji.
 
 Implementacja jest oddzielnym modułem domenowym i binarium `sensor-doctor`.
 `hostctl` wybiera je przed kontrolą legacy Python venv. Dostępne są stabilne
 findings, JSON schema 1 i kody wyjścia `0/1/2`. Tryb domyślny nie otwiera
 RS485; `--deep` sprawdza stan usługi oraz właścicieli deskryptorów w `/proc`
-przed discovery. Do zamknięcia etapu pozostaje gate na Raspberry Pi, w tym
-kontrolowane przypadki starego statusu, złego portu i naruszonej rezerwy.
+przed discovery.
+
+Gate na Raspberry Pi 5 potwierdził tryb offline i odczyt świeżego statusu w
+trakcie 45-sekundowego nagrania na sześciu liniach. Doctor nie zwiększył
+liczników błędów, timeoutów, retry ani backpressure, a recorder zakończył się
+czystym Stop. Równoległy `--deep` odmówił discovery i wskazał PID właściciela
+wszystkich sześciu portów. Po zatrzymaniu deep discovery zweryfikowało sześć
+node, test `fsync/rename` przeszedł, 12 strumieni Capture objęło 91 okien i
+942219 próbek, a 12 Time WAL zawierało 648 poprawnych rekordów. Pusty,
+niezapieczętowany WAL z poprzedniego testu został poprawnie rozpoznany jako sam
+nagłówek bez próbek.
+
+Kontrolowane profile potwierdziły kod `2` i właściwy finding dla brakującego
+portu, braku praw oraz rezerwy większej od wolnego miejsca. Stary status jest
+błędem dla fazy aktywnej i ostrzeżeniem dla zatrzymanego procesu. Pozostałe
+ostrzeżenia instalacji są zgodne z roadmapą: usługa systemd nie jest jeszcze
+zainstalowana, a katalog checkpoint powstanie przy uruchomieniu retencji.
 
 ### Etap 3 — automatyczne procesy na Raspberry Pi
 
@@ -311,8 +326,7 @@ testu 24/7:
 
 ## 6. Decyzja o najbliższej pracy
 
-Etap 1 jest zamknięty. Najbliższą implementacją jest **Etap 2: natywny
-`hostctl doctor` dla v2**. Odczyta ten sam kontrakt, którego później użyją
-systemd health i dashboard. Po ukończeniu `doctor` wykonujemy Etap 3. Dopiero na
-stabilnym statusie oraz lifecycle procesu podłączamy dashboard, dzięki czemu UI
-nie tworzy własnego modelu stanu systemu.
+Etapy 1 i 2 są zamknięte. Najbliższą implementacją jest **Etap 3: automatyczne
+procesy na Raspberry Pi**. Systemd użyje istniejących kontraktów statusu i
+doctor, bez dodawania drugiego modelu stanu. Po ustabilizowaniu lifecycle usługi
+podłączamy dashboard w trybie obserwacji.
