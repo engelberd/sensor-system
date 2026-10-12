@@ -581,7 +581,12 @@ impl RunCommandError {
                 sensor_host::host_process::LinuxHostProcessStartError::RuntimeProfile(_)
                 | sensor_host::host_process::LinuxHostProcessStartError::Planning(_) => 78,
                 sensor_host::host_process::LinuxHostProcessStartError::HostClock(_) => 69,
-                sensor_host::host_process::LinuxHostProcessStartError::Runtime(_) => 70,
+                // A composed runtime startup failure is deterministic for the
+                // current node/storage state. Retrying it in a service loop
+                // cannot repair that state and repeatedly touches every bus.
+                // Faults after a successful start use `Execution` below and
+                // remain restartable.
+                sensor_host::host_process::LinuxHostProcessStartError::Runtime(_) => 78,
             },
             Self::Signal(_) | Self::Clock(_) => 70,
             Self::Execution { .. } => 1,

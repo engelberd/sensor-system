@@ -200,6 +200,16 @@ błędów. Doctor odczytany sekundę po starcie pokazuje kursory oczekujące na
 pierwszy StreamState jako ostrzeżenia, zachowując błąd dla częściowego lub
 regresywnego porządku poza tym dozwolonym stanem przejściowym.
 
+Fizyczny rollback ujawnił właściwą otwartą bramkę startu: `line-a` weszła w
+`Faulted/InvalidSample`, odrzuciła Stop, a ponowna aktywacja poprawnie nie
+udawała sukcesu. Błąd złożenia runtime był jednak początkowo restartowany przez
+systemd. Został przeklasyfikowany na trwały błąd startu (`EX_CONFIG=78`), więc
+jednostka zatrzyma się do interwencji zamiast ponownie obciążać wszystkie
+magistrale. Następny przyrost Etapu 3 ma izolować taki kanał podczas kompozycji,
+uruchomić pozostałe kanały jako degraded i zachować jawny fault w Runtime
+Status. Powrót kanału bez restartu procesu pozostaje kolejną częścią tej samej
+bramki, a nie zadaniem systemd.
+
 Instalator/deployer ustawi użytkownika i grupy, katalogi, prawa, konfigurację,
 limity journald oraz zależność od właściwego mountpointu danych. `ExecStartPre`
 wykona szybką walidację, ale nie będzie otwierał magistral drugi raz. SIGTERM
