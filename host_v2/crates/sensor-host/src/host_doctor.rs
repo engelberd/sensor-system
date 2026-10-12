@@ -777,27 +777,16 @@ fn inspect_status_document(
                     ),
                 ));
             }
-            match status_node.get("cursors").and_then(Value::as_object) {
-                Some(cursors) => {
-                    let released = cursors.get("released").and_then(Value::as_u64);
-                    let durable = cursors.get("durable").and_then(Value::as_u64);
-                    let received = cursors.get("received").and_then(Value::as_u64);
-                    let produced = cursors.get("produced").and_then(Value::as_u64);
-                    if !matches!(
-                        (released, durable, received, produced),
-                        (Some(released), Some(durable), Some(received), Some(produced))
-                            if released <= durable && durable <= received && received <= produced
-                    ) {
-                        findings.push(DoctorFinding::new(
-                            DoctorSeverity::Error,
-                            "status.cursor-order",
-                            format!("{}/node-{}", channel.name(), node.node_address()),
-                        ));
-                    }
-                }
-                None => findings.push(DoctorFinding::new(
+            match inspect_cursor_snapshot(status_node.get("cursors")) {
+                CursorSnapshotState::Valid => {}
+                CursorSnapshotState::Pending => findings.push(DoctorFinding::new(
+                    DoctorSeverity::Warning,
+                    "status.cursors-pending",
+                    format!("{}/node-{}", channel.name(), node.node_address()),
+                )),
+                CursorSnapshotState::Invalid => findings.push(DoctorFinding::new(
                     DoctorSeverity::Error,
-                    "status.cursors-missing",
+                    "status.cursor-order",
                     format!("{}/node-{}", channel.name(), node.node_address()),
                 )),
             }
@@ -823,6 +812,30 @@ fn inspect_status_document(
         format!("schema={schema} system={system_name}"),
     ));
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CursorSnapshotState {
+    Valid,
+    Pending,
+    Invalid,
+}
+
+fn inspect_cursor_snapshot(value: Option<&Value>) -> CursorSnapshotState {
+    let Some(cursors) = value.and_then(Value::as_object) else {
+        return CursorSnapshotState::Invalid;
+    };
+    let values = ["released", "durable", "received", "produced"]
+        .map(|name| cursors.get(name).and_then(Value::as_u64));
+    match values {
+        [None, None, None, None] => CursorSnapshotState::Pending,
+        [Some(released), Some(durable), Some(received), Some(produced)]
+            if released <= durable && durable <= received && received <= produced =>
+        {
+            CursorSnapshotState::Valid
+        }
+        _ => CursorSnapshotState::Invalid,
+    }
 }
 
 fn inspect_deep(
@@ -1298,5 +1311,39 @@ mod tests {
         );
         assert_eq!(unsealed_wal_summary(&stream).unwrap(), (1, 0));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cursor_snapshot_distinguishes_startup_from_broken_order() {
+        let pending = serde_json::json!({
+            "released": null, "durable": null, "received": null, "produced": null
+        });
+        let valid = serde_json::json!({
+            "released": 10, "durable": 11, "received": 12, "produced": 13
+        });
+        let partial = serde_json::json!({
+            "released": 10, "durable": null, "received": 12, "produced": 13
+        });
+        let regressed = serde_json::json!({
+            "released": 10, "durable": 9, "received": 12, "produced": 13
+        });
+
+        assert_eq!(
+            inspect_cursor_snapshot(Some(&pending)),
+            CursorSnapshotState::Pending
+        );
+        assert_eq!(
+            inspect_cursor_snapshot(Some(&valid)),
+            CursorSnapshotState::Valid
+        );
+        assert_eq!(
+            inspect_cursor_snapshot(Some(&partial)),
+            CursorSnapshotState::Invalid
+        );
+        assert_eq!(
+            inspect_cursor_snapshot(Some(&regressed)),
+            CursorSnapshotState::Invalid
+        );
+        assert_eq!(inspect_cursor_snapshot(None), CursorSnapshotState::Invalid);
     }
 }
