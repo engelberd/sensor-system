@@ -822,13 +822,20 @@ enum CursorSnapshotState {
 }
 
 fn inspect_cursor_snapshot(value: Option<&Value>) -> CursorSnapshotState {
+    if value.is_some_and(Value::is_null) {
+        return CursorSnapshotState::Pending;
+    }
     let Some(cursors) = value.and_then(Value::as_object) else {
         return CursorSnapshotState::Invalid;
     };
     let values = ["released", "durable", "received", "produced"]
         .map(|name| cursors.get(name).and_then(Value::as_u64));
     match values {
-        [None, None, None, None] => CursorSnapshotState::Pending,
+        [Some(released), Some(durable), Some(received), None]
+            if released <= durable && durable <= received =>
+        {
+            CursorSnapshotState::Pending
+        }
         [Some(released), Some(durable), Some(received), Some(produced)]
             if released <= durable && durable <= received && received <= produced =>
         {
@@ -1315,8 +1322,8 @@ mod tests {
 
     #[test]
     fn cursor_snapshot_distinguishes_startup_from_broken_order() {
-        let pending = serde_json::json!({
-            "released": null, "durable": null, "received": null, "produced": null
+        let awaiting_stream_state = serde_json::json!({
+            "released": 10, "durable": 11, "received": 12, "produced": null
         });
         let valid = serde_json::json!({
             "released": 10, "durable": 11, "received": 12, "produced": 13
@@ -1329,7 +1336,11 @@ mod tests {
         });
 
         assert_eq!(
-            inspect_cursor_snapshot(Some(&pending)),
+            inspect_cursor_snapshot(Some(&Value::Null)),
+            CursorSnapshotState::Pending
+        );
+        assert_eq!(
+            inspect_cursor_snapshot(Some(&awaiting_stream_state)),
             CursorSnapshotState::Pending
         );
         assert_eq!(
