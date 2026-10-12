@@ -207,6 +207,29 @@ systemd. Został przeklasyfikowany na trwały błąd startu (`EX_CONFIG=78`), wi
 jednostka zatrzyma się do interwencji zamiast ponownie obciążać wszystkie
 magistrale.
 
+Dokładna analiza zdarzenia `line-a` wykazała, że nie była to awaria RS485 ani
+storage. Przez ponad cztery minuty kanał pracował bez timeoutów, błędów ramek,
+retry, reconnect i backpressure. Dopiero wymuszony drain FIFO wykonywany przez
+`Stop` zwrócił `TransitionFailed/Faulted/InvalidSample`. Dwanaście
+zapieczętowanych okien Capture jest poprawnych: 192575 próbek, zero gapów i
+jedenaście oczekiwanych `ProcessingReset` pomiędzy wcześniejszymi sesjami.
+Ostatnie okno tej sesji ma 32680 ciągłych próbek i nie zawiera sztucznego
+zdarzenia końca, ponieważ Stop nie został przyjęty. Node nadal odpowiada na
+Identity i handshake, zachował ten sam `boot_epoch`, a jego journal raportuje
+`produced=192597` przy trwałym końcu Capture `192586`; jedenaście końcowych
+próbek trzeba odzyskać przed restartem lub aktualizacją noda.
+
+Firmware 0.5.6 zapisuje lokalny fault snapshot, ale protokół v3 reklamuje i
+udostępnia obecnie tylko Identity, Measurement, Time i Lifecycle. Diagnostics
+nie jest jeszcze osiągalne po RS485, więc zachowanego snapshotu nie można
+odczytać bez dodania tej usługi. Z kodu wynika, że `InvalidSample` oznacza w tym
+miejscu albo naruszenie kolejności osi FIFO ADXL355, albo nieważne powiązanie
+FIFO z timestampami DRDY. Dodatkowo regularny `AcquisitionEngine::update()`
+odrzuca wynik serwisowania FIFO; błąd staje się stanem runtime dopiero podczas
+`finish_recording()`. Przed resetem A potrzebne są zatem: bezpieczny drain
+pozostałości journalu bez operacji Start, read-only Diagnostics Service v3 oraz
+propagacja bieżącego błędu akwizycji do health/runtime.
+
 Kolejny przyrost izoluje teraz błąd aktywacji do fizycznego kanału. Ten sam
 realny `Faulted/InvalidSample` na `line-a` uruchomił pięć pozostałych kanałów,
 opublikował `process=degraded`, `health=degraded` i `line-a=faulted`, bez
