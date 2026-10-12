@@ -285,10 +285,12 @@ int main() {
             restart_for_trial_rollback();
         }
         runtime::DeferredSystemActionKind action{};
-        if (composition.system_action().try_consume(action) &&
-            action == runtime::DeferredSystemActionKind::EnterBootloader) {
+        if (composition.system_action().try_consume(action)) {
             sleep_ms(20);
-            run_system_action(RuntimeSystemActionEnterBootloader);
+            run_system_action(
+                action == runtime::DeferredSystemActionKind::EnterBootloader
+                    ? RuntimeSystemActionEnterBootloader
+                    : RuntimeSystemActionRestart);
         }
         tight_loop_contents();
     }

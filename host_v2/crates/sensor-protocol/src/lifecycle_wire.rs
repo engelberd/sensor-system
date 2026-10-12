@@ -11,6 +11,7 @@ pub const EXIT_MAINTENANCE_MESSAGE_ID: u8 = 5;
 pub const SET_OBSERVABILITY_MESSAGE_ID: u8 = 6;
 pub const PREPARE_FIRMWARE_UPDATE_MESSAGE_ID: u8 = 7;
 pub const CONFIRM_TRIAL_BOOT_MESSAGE_ID: u8 = 8;
+pub const RESTART_NODE_MESSAGE_ID: u8 = 9;
 pub const LIFECYCLE_OPERATION_REQUEST_BYTES: usize = 4;
 pub const LIFECYCLE_PROFILE_REQUEST_BYTES: usize = 5;
 pub const LIFECYCLE_RESPONSE_BYTES: usize = 9;
@@ -26,6 +27,7 @@ pub enum RuntimeOperation {
     SetObservabilityProfile = 5,
     PrepareFirmwareUpdate = 6,
     ConfirmTrialBoot = 7,
+    RestartNode = 8,
 }
 
 impl RuntimeOperation {
@@ -39,6 +41,7 @@ impl RuntimeOperation {
             Self::SetObservabilityProfile => SET_OBSERVABILITY_MESSAGE_ID,
             Self::PrepareFirmwareUpdate => PREPARE_FIRMWARE_UPDATE_MESSAGE_ID,
             Self::ConfirmTrialBoot => CONFIRM_TRIAL_BOOT_MESSAGE_ID,
+            Self::RestartNode => RESTART_NODE_MESSAGE_ID,
         }
     }
 
@@ -52,6 +55,7 @@ impl RuntimeOperation {
             SET_OBSERVABILITY_MESSAGE_ID => Ok(Self::SetObservabilityProfile),
             PREPARE_FIRMWARE_UPDATE_MESSAGE_ID => Ok(Self::PrepareFirmwareUpdate),
             CONFIRM_TRIAL_BOOT_MESSAGE_ID => Ok(Self::ConfirmTrialBoot),
+            RESTART_NODE_MESSAGE_ID => Ok(Self::RestartNode),
             _ => Err(LifecycleWireError::UnknownMessage(value)),
         }
     }
@@ -379,6 +383,24 @@ mod tests {
                 .unwrap()
                 .operation,
             RuntimeOperation::ConfirmTrialBoot
+        );
+    }
+
+    #[test]
+    fn restart_is_a_plain_correlated_operation() {
+        let encoded = encode_lifecycle_request(RuntimeCommand {
+            operation_id: 0xaabb_ccdd,
+            operation: RuntimeOperation::RestartNode,
+            requested_profile: ObservabilityProfile::Production,
+        })
+        .unwrap();
+        assert_eq!(encoded.message, RESTART_NODE_MESSAGE_ID);
+        assert_eq!(encoded.payload_size, LIFECYCLE_OPERATION_REQUEST_BYTES);
+        assert_eq!(
+            decode_lifecycle_request(encoded.message, &encoded.payload[..4])
+                .unwrap()
+                .operation,
+            RuntimeOperation::RestartNode
         );
     }
 }

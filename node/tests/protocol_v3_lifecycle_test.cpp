@@ -81,6 +81,23 @@ LifecycleHandlerResult call_confirm_trial(
         response_capacity);
 }
 
+LifecycleHandlerResult call_restart(
+    Handler& handler,
+    uint32_t operation_id,
+    uint8_t* response,
+    size_t response_capacity) {
+    uint8_t request[kLifecycleOperationRequestBytes]{};
+    assert(encode_restart_node_request(
+               operation_id, request, sizeof(request)) ==
+           LifecycleCodecStatus::Ok);
+    return handler.handle(
+        kRestartNodeMessageId,
+        request,
+        sizeof(request),
+        response,
+        response_capacity);
+}
+
 void test_codec_round_trip_and_validation() {
     const runtime::SensorRuntimeCommand command{
         0x12345678u,
@@ -311,6 +328,53 @@ void test_rejected_update_never_creates_post_transmit_action() {
     assert(system_action.peek() == runtime::DeferredSystemActionKind::None);
 }
 
+void test_faulted_update_and_restart_arm_distinct_post_transmit_actions() {
+    Mailbox mailbox;
+    SystemMailbox system_mailbox;
+    runtime::DeferredSystemAction system_action;
+    Handler handler(mailbox, system_mailbox, system_action);
+    uint8_t response[kMaxPayloadBytes]{};
+
+    (void)call_prepare_update(handler, 70, response, sizeof(response));
+    runtime::SystemOperationCommand command{};
+    assert(system_mailbox.try_receive_command(command));
+    assert(command.operation == runtime::SystemOperation::PrepareFirmwareUpdate);
+    assert(system_mailbox.try_send_result({
+        70,
+        runtime::SensorRuntimeResultCode::Ok,
+        runtime::SensorRuntimeState::Faulted,
+        runtime::ObservabilityProfile::Production,
+        SensorStatus::InvalidSample,
+    }));
+    auto handled = call_prepare_update(handler, 70, response, sizeof(response));
+    assert(handled.post_transmit_required);
+    assert(handler.settle_transmission(handled.post_transmit_token, true));
+    assert(system_action.peek() ==
+           runtime::DeferredSystemActionKind::EnterBootloader);
+    runtime::DeferredSystemActionKind consumed{};
+    assert(system_action.try_consume(consumed));
+
+    handled = call_restart(handler, 71, response, sizeof(response));
+    assert(decode_success(response, handled.payload_size).code ==
+           runtime::SensorRuntimeResultCode::InProgress);
+    assert(system_mailbox.try_receive_command(command));
+    assert(command.operation == runtime::SystemOperation::RestartNode);
+    assert(system_mailbox.try_send_result({
+        71,
+        runtime::SensorRuntimeResultCode::Ok,
+        runtime::SensorRuntimeState::Faulted,
+        runtime::ObservabilityProfile::Production,
+        SensorStatus::InvalidSample,
+    }));
+    handled = call_restart(handler, 71, response, sizeof(response));
+    assert(handled.post_transmit_required);
+    assert(handler.settle_transmission(handled.post_transmit_token, true));
+    assert(system_action.peek() ==
+           runtime::DeferredSystemActionKind::RestartNode);
+    assert(handler.state().update_actions_armed == 1);
+    assert(handler.state().restart_actions_armed == 1);
+}
+
 void test_trial_confirmation_is_a_cached_system_operation_without_reboot() {
     Mailbox mailbox;
     SystemMailbox system_mailbox;
@@ -353,6 +417,7 @@ int main() {
     test_unexpected_result_fails_closed();
     test_update_action_is_armed_only_after_successful_transmission();
     test_rejected_update_never_creates_post_transmit_action();
+    test_faulted_update_and_restart_arm_distinct_post_transmit_actions();
     test_trial_confirmation_is_a_cached_system_operation_without_reboot();
     return 0;
 }

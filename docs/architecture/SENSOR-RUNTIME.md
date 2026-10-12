@@ -30,9 +30,11 @@ Lifecycle jest jawny:
 - `Faulted` — runtime zatrzymał akwizycję, ponieważ start sensora albo
   measurement path nie zachował wymaganych gwarancji.
 
-`Faulted` jest obecnie terminalny do restartu. Jawna operacja recovery zostanie
-dodana dopiero z polityką ponownej inicjalizacji sensora; zwykły `Start` nie
-ukrywa faultu.
+`Faulted` jest terminalny dla akwizycji: zwykły `Start` nie ukrywa faultu ani
+nie próbuje zgadywać polityki ponownej inicjalizacji sensora. Pozostaje jednak
+zdalnie zarządzalny. `RestartNode` oraz `PrepareFirmwareUpdate` są dozwolone w
+`Faulted`, aby instalacja obsługiwana wyłącznie po RS485 nie wymagała fizycznej
+interwencji.
 
 ## Operacje
 
@@ -40,6 +42,12 @@ ukrywa faultu.
 `SetObservabilityProfile` są stałymi typami wartości i mogą przechodzić przez
 `OperationMailbox`. Przejścia są idempotentne. Wynik zawiera `operation_id`, kod,
 lifecycle, profil obserwowalności i ostatni `SensorStatus`.
+
+`RestartNode` jest osobną operacją systemową. Jest dozwolony wyłącznie w
+`Idle`, `Maintenance` i `Faulted`; `Recording` oraz `Stopping` zwracają
+`InvalidState`. Restart zostaje uzbrojony dopiero po fizycznym zakończeniu TX
+odpowiedzi. `PrepareFirmwareUpdate` ma tę samą gwarancję post-transmit i jest
+dopuszczone w `Maintenance` oraz `Faulted`.
 
 Start wykonuje `prepare_for_runtime`, a dopiero po sukcesie wznawia akwizycję.
 Stop wykonuje bounded `finish_recording`: blokuje nowe kroki, opróżnia pełne

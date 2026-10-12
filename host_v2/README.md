@@ -164,6 +164,19 @@ The command validates identity and capabilities before reading the live fault
 snapshot, persistent flash record and paginated event ring. It does not change
 lifecycle state or clear diagnostic evidence.
 
+Firmware 0.5.7 keeps a bounded RS485 recovery path in `Faulted`. A firmware
+update may enter the bootloader directly from `Maintenance` or `Faulted`. A
+separate restart command is accepted only from `Idle`, `Maintenance` or
+`Faulted`, and is executed after the response has left the wire:
+
+```bash
+host_v2/target/release/sensor-hil restart \
+  /dev/sensor-system-rs485 1 0011223344556677 2 115200
+```
+
+Both operations reject `Recording` and `Stopping`; stop the node cleanly before
+using them during ordinary service.
+
 For a newly migrated protocol-5 node whose immutable hardware ID has not yet
 been added to inventory, use the read-only discovery command first:
 

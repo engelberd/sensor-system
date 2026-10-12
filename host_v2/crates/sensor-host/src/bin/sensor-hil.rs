@@ -182,6 +182,21 @@ fn run() -> Result<(), HilError> {
                 patch: 4,
             }),
         ),
+        Command::Restart {
+            device,
+            node_address,
+            hardware_id,
+            board_revision,
+            baud_rate,
+        } => run_restart(
+            SerialPortConfig::rs485(device, baud_rate),
+            HandshakeRequirements::recording_node(
+                hardware_id,
+                node_address,
+                board_revision,
+                FEATURE_SAMPLE_JOURNAL,
+            ),
+        ),
         Command::TimeProbe {
             device,
             node_address,
@@ -819,28 +834,54 @@ fn run_prepare_update(
                                 .map_err(HilError::Agent)?,
                         );
                     }
-                    RuntimeState::Faulted => return Err(HilError::NodeFaulted),
+                    RuntimeState::Faulted => {
+                        prepare_operation_id = Some(
+                            endpoint
+                                .agent_mut()
+                                .submit_lifecycle(
+                                    requirements.node_address,
+                                    RuntimeOperation::PrepareFirmwareUpdate,
+                                    ObservabilityProfile::Production,
+                                )
+                                .map_err(HilError::Agent)?,
+                        );
+                    }
                 }
             }
             ChannelEndpointEvent::Agent(ChannelEvent::LifecycleComplete { result, .. })
                 if Some(result.operation_id) == stop_operation_id =>
             {
-                require_lifecycle_result(result.code, result.state, RuntimeState::Idle)?;
-                maintenance_operation_id = Some(
-                    endpoint
-                        .agent_mut()
-                        .submit_lifecycle(
-                            requirements.node_address,
-                            RuntimeOperation::EnterMaintenance,
-                            ObservabilityProfile::Production,
-                        )
-                        .map_err(HilError::Agent)?,
-                );
+                if result.state == RuntimeState::Faulted {
+                    prepare_operation_id = Some(
+                        endpoint
+                            .agent_mut()
+                            .submit_lifecycle(
+                                requirements.node_address,
+                                RuntimeOperation::PrepareFirmwareUpdate,
+                                ObservabilityProfile::Production,
+                            )
+                            .map_err(HilError::Agent)?,
+                    );
+                } else {
+                    require_lifecycle_result(result.code, result.state, RuntimeState::Idle)?;
+                    maintenance_operation_id = Some(
+                        endpoint
+                            .agent_mut()
+                            .submit_lifecycle(
+                                requirements.node_address,
+                                RuntimeOperation::EnterMaintenance,
+                                ObservabilityProfile::Production,
+                            )
+                            .map_err(HilError::Agent)?,
+                    );
+                }
             }
             ChannelEndpointEvent::Agent(ChannelEvent::LifecycleComplete { result, .. })
                 if Some(result.operation_id) == maintenance_operation_id =>
             {
-                require_lifecycle_result(result.code, result.state, RuntimeState::Maintenance)?;
+                if result.state != RuntimeState::Faulted {
+                    require_lifecycle_result(result.code, result.state, RuntimeState::Maintenance)?;
+                }
                 prepare_operation_id = Some(
                     endpoint
                         .agent_mut()
@@ -855,10 +896,21 @@ fn run_prepare_update(
             ChannelEndpointEvent::Agent(ChannelEvent::LifecycleComplete { result, .. })
                 if Some(result.operation_id) == prepare_operation_id =>
             {
-                require_lifecycle_result(result.code, result.state, RuntimeState::Maintenance)?;
+                if result.code != RuntimeResultCode::Ok
+                    || !matches!(
+                        result.state,
+                        RuntimeState::Maintenance | RuntimeState::Faulted
+                    )
+                {
+                    return Err(HilError::UnexpectedLifecycleResult {
+                        code: result.code,
+                        state: result.state,
+                        expected_state: RuntimeState::Maintenance,
+                    });
+                }
                 println!(
-                    "firmware update prepared: operation_id={} state=Maintenance",
-                    result.operation_id
+                    "firmware update prepared: operation_id={} state={:?}",
+                    result.operation_id, result.state
                 );
                 return Ok(());
             }
@@ -867,6 +919,101 @@ fn run_prepare_update(
         }
     }
     Err(HilError::PrepareUpdateTimedOut)
+}
+
+fn run_restart(
+    config: SerialPortConfig,
+    requirements: HandshakeRequirements,
+) -> Result<(), HilError> {
+    let port = SerialChannelPort::open(&config).map_err(HilError::Port)?;
+    let policy = ChannelPolicy {
+        transaction_timeout: DurationMicros::new(250_000).map_err(HilError::Transaction)?,
+        retry_delay: DurationMicros::new(25_000).map_err(HilError::Transaction)?,
+        measurement_attempts_per_slot: 2,
+        max_pending_work_items: 4,
+    };
+    let session_seed = process_session_seed();
+    let mut agent = ChannelAgent::new(
+        session_seed,
+        session_seed.rotate_left(13),
+        DurationMicros::new(50_000).map_err(HilError::Transaction)?,
+        policy,
+    )
+    .map_err(HilError::Agent)?;
+    agent
+        .submit_handshake(requirements)
+        .map_err(HilError::Agent)?;
+    let mut endpoint = ChannelEndpoint::new(agent, port, SystemMonotonicClock::new());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut state_operation_id = None;
+    let mut restart_operation_id = None;
+
+    while Instant::now() < deadline {
+        match endpoint.step().map_err(HilError::Endpoint)? {
+            ChannelEndpointEvent::Agent(ChannelEvent::HandshakeComplete { .. }) => {
+                state_operation_id = Some(
+                    endpoint
+                        .agent_mut()
+                        .submit_lifecycle(
+                            requirements.node_address,
+                            RuntimeOperation::GetState,
+                            ObservabilityProfile::Production,
+                        )
+                        .map_err(HilError::Agent)?,
+                );
+            }
+            ChannelEndpointEvent::Agent(ChannelEvent::LifecycleComplete { result, .. })
+                if Some(result.operation_id) == state_operation_id =>
+            {
+                if result.code != RuntimeResultCode::Ok
+                    || matches!(
+                        result.state,
+                        RuntimeState::Recording | RuntimeState::Stopping
+                    )
+                {
+                    return Err(HilError::UnexpectedLifecycleResult {
+                        code: result.code,
+                        state: result.state,
+                        expected_state: RuntimeState::Idle,
+                    });
+                }
+                restart_operation_id = Some(
+                    endpoint
+                        .agent_mut()
+                        .submit_lifecycle(
+                            requirements.node_address,
+                            RuntimeOperation::RestartNode,
+                            ObservabilityProfile::Production,
+                        )
+                        .map_err(HilError::Agent)?,
+                );
+            }
+            ChannelEndpointEvent::Agent(ChannelEvent::LifecycleComplete { result, .. })
+                if Some(result.operation_id) == restart_operation_id =>
+            {
+                if result.code != RuntimeResultCode::Ok
+                    || matches!(
+                        result.state,
+                        RuntimeState::Recording | RuntimeState::Stopping
+                    )
+                {
+                    return Err(HilError::UnexpectedLifecycleResult {
+                        code: result.code,
+                        state: result.state,
+                        expected_state: RuntimeState::Idle,
+                    });
+                }
+                println!(
+                    "node restart accepted: operation_id={} previous_state={:?}",
+                    result.operation_id, result.state
+                );
+                return Ok(());
+            }
+            ChannelEndpointEvent::Disconnected => return Err(HilError::Disconnected),
+            _ => {}
+        }
+    }
+    Err(HilError::RestartTimedOut)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1778,6 +1925,13 @@ enum Command {
         board_revision: u8,
         baud_rate: u32,
     },
+    Restart {
+        device: PathBuf,
+        node_address: u8,
+        hardware_id: HardwareId,
+        board_revision: u8,
+        baud_rate: u32,
+    },
     TimeProbe {
         device: PathBuf,
         node_address: u8,
@@ -1812,6 +1966,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
     let prepare_update = arguments
         .first()
         .is_some_and(|value| value == "prepare-update");
+    let restart = arguments.first().is_some_and(|value| value == "restart");
     let time_probe = arguments.first().is_some_and(|value| value == "time-probe");
     let diagnostics = arguments
         .first()
@@ -1823,6 +1978,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
         && !capture_cycle
         && !safe_stop
         && !prepare_update
+        && !restart
         && !time_probe
         && !diagnostics)
         || (identify && !(arguments.len() == 3 || arguments.len() == 4))
@@ -1832,6 +1988,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
         || (capture_cycle && !(arguments.len() >= 7 && arguments.len() <= 10))
         || (safe_stop && !(arguments.len() == 5 || arguments.len() == 6))
         || (prepare_update && !(arguments.len() == 5 || arguments.len() == 6))
+        || (restart && !(arguments.len() == 5 || arguments.len() == 6))
         || (time_probe && !(arguments.len() >= 5 && arguments.len() <= 8))
         || (diagnostics && !(arguments.len() == 5 || arguments.len() == 6))
     {
@@ -1997,7 +2154,7 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
             baud_rate,
         });
     }
-    if safe_stop || prepare_update {
+    if safe_stop || prepare_update || restart {
         let baud_rate = arguments
             .get(5)
             .map(|value| value.parse::<u32>().map_err(|_| HilError::InvalidBaudRate))
@@ -2014,8 +2171,16 @@ fn parse_arguments(arguments: &[String]) -> Result<Command, HilError> {
                 board_revision,
                 baud_rate,
             }
-        } else {
+        } else if prepare_update {
             Command::PrepareUpdate {
+                device: PathBuf::from(&arguments[1]),
+                node_address,
+                hardware_id,
+                board_revision,
+                baud_rate,
+            }
+        } else {
+            Command::Restart {
                 device: PathBuf::from(&arguments[1]),
                 node_address,
                 hardware_id,
@@ -2136,7 +2301,7 @@ fn record_cycle_limit() -> Duration {
 
 fn print_usage() {
     println!(
-        "usage: sensor-hil identify <device> <node-address> [baud-rate]\n       sensor-hil handshake <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil diagnostics <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil time-probe <device> <node-address> <hardware-id-hex> <board-revision> [observation-count] [interval-ms] [baud-rate]\n       sensor-hil confirm-trial <device> <node-address> <hardware-id-hex> <board-revision> <expected-firmware> [baud-rate]\n       sensor-hil record-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil capture-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output-directory> <window-duration-us> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil safe-stop <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil prepare-update <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]"
+        "usage: sensor-hil identify <device> <node-address> [baud-rate]\n       sensor-hil handshake <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil diagnostics <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil time-probe <device> <node-address> <hardware-id-hex> <board-revision> [observation-count] [interval-ms] [baud-rate]\n       sensor-hil confirm-trial <device> <node-address> <hardware-id-hex> <board-revision> <expected-firmware> [baud-rate]\n       sensor-hil record-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil capture-cycle <device> <node-address> <hardware-id-hex> <board-revision> <output-directory> <window-duration-us> [sample-target] [chunk-limit] [baud-rate]\n       sensor-hil safe-stop <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil prepare-update <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]\n       sensor-hil restart <device> <node-address> <hardware-id-hex> <board-revision> [baud-rate]"
     );
 }
 
@@ -2177,6 +2342,7 @@ enum HilError {
     NodeNotIdle(RuntimeState),
     SafeStopTimedOut,
     PrepareUpdateTimedOut,
+    RestartTimedOut,
     TimeProbeHandshakeTimedOut,
     TimeProbeObservationTimedOut(u16),
     TimeProbeNotAccepted,
@@ -2304,6 +2470,7 @@ impl fmt::Display for HilError {
             Self::PrepareUpdateTimedOut => {
                 formatter.write_str("prepare-update deadline expired")
             }
+            Self::RestartTimedOut => formatter.write_str("restart deadline expired"),
             Self::TimeProbeHandshakeTimedOut => {
                 formatter.write_str("time-probe handshake deadline expired")
             }
@@ -2462,6 +2629,27 @@ mod tests {
         assert!(matches!(
             parse_arguments(&arguments),
             Ok(Command::Diagnostics {
+                node_address: 7,
+                board_revision: 2,
+                baud_rate: 115_200,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_explicit_remote_restart_command() {
+        let arguments = vec![
+            "restart".to_owned(),
+            "/dev/ttyUSB0".to_owned(),
+            "7".to_owned(),
+            "0102030405060708".to_owned(),
+            "2".to_owned(),
+            "115200".to_owned(),
+        ];
+        assert!(matches!(
+            parse_arguments(&arguments),
+            Ok(Command::Restart {
                 node_address: 7,
                 board_revision: 2,
                 baud_rate: 115_200,

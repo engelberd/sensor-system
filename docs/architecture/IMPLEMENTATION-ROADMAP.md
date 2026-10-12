@@ -862,8 +862,10 @@ gotowe oraz przetestowane. Kompozycja ma jeden jawny composition root, a
 tymczasowy `RuntimeCapacityProfile` centralizuje wartości potrzebne do builda i
 pilnuje budżetu ingress/journala przez `static_assert`.
 
-Odroczone przejście do bootloadera po RS485 jest gotowe. Operacja jest dozwolona
-wyłącznie z Maintenance, a restart następuje dopiero po zakończeniu transmisji
+Odroczone przejście do bootloadera i zdalny restart po RS485 są gotowe.
+`PrepareFirmwareUpdate` jest dozwolone z `Maintenance` oraz `Faulted`, a
+`RestartNode` z `Idle`, `Maintenance` i `Faulted`. `Recording` i `Stopping`
+odrzucają obie operacje. Akcja następuje dopiero po zakończeniu transmisji
 odpowiedzi. Odpowiedzialność pozostaje poza `SensorRuntime`, w osobnym system
 operation routerze core 0 i koordynatorze core 1.
 
@@ -871,9 +873,9 @@ Ogólny kontrakt post-transmit jest już gotowy w dispatcherze, response outbox 
 `TransportEndpoint`. Zachowuje token do zakończenia TX, zatwierdza go po
 `tx_completed` i anuluje po błędzie kodowania lub timeout.
 
-`PrepareFirmwareUpdate` jest gotowe jako osobna operacja systemowa. Core 0
-dopuszcza ją wyłącznie w `Maintenance`; timeout odpowiedzi nie ustawia akcji, a
-potwierdzony TX uzbraja jednokrotny `EnterBootloader`. Osobny obraz
+`PrepareFirmwareUpdate` i `RestartNode` są osobnymi operacjami systemowymi.
+Timeout odpowiedzi nie ustawia akcji, a potwierdzony TX uzbraja dokładnie jedno
+`EnterBootloader` albo `RestartNode`. Osobny obraz
 `sensor_system_node_v2_integration` pozostaje diagnostycznym obrazem bez A/B.
 Produkcyjne obrazy slotów A/B składają ten sam runtime protocol 5 i są źródłem
 paczki update.

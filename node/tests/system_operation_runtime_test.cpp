@@ -1,4 +1,5 @@
 #include <cassert>
+#include <initializer_list>
 
 #include "runtime/deferred_system_action.h"
 #include "runtime/system_operation_runtime.h"
@@ -42,7 +43,9 @@ using Mailbox = runtime::OperationMailbox<
 runtime::SensorRuntimeResult execute(
     FakeSensorRuntime& sensor,
     runtime::SensorRuntimeState state,
-    uint32_t operation_id) {
+    uint32_t operation_id,
+    runtime::SystemOperation operation =
+        runtime::SystemOperation::PrepareFirmwareUpdate) {
     sensor.value.state = state;
     Mailbox mailbox;
     FakeFirmwareUpdateControl control;
@@ -50,7 +53,7 @@ runtime::SensorRuntimeResult execute(
         sensor, mailbox, &control);
     assert(mailbox.try_send_command({
         operation_id,
-        runtime::SystemOperation::PrepareFirmwareUpdate}));
+        operation}));
     assert(system.poll() ==
            runtime::OperationExecutorStatus::CommandExecutedAndPublished);
     runtime::SensorRuntimeResult result{};
@@ -58,7 +61,7 @@ runtime::SensorRuntimeResult execute(
     return result;
 }
 
-void test_update_requires_maintenance() {
+void test_update_requires_quiescent_or_faulted_state() {
     FakeSensorRuntime sensor;
     const auto idle = execute(
         sensor, runtime::SensorRuntimeState::Idle, 1);
@@ -76,7 +79,29 @@ void test_update_requires_maintenance() {
 
     const auto faulted = execute(
         sensor, runtime::SensorRuntimeState::Faulted, 4);
-    assert(faulted.code == runtime::SensorRuntimeResultCode::Faulted);
+    assert(faulted.code == runtime::SensorRuntimeResultCode::Ok);
+}
+
+void test_restart_is_remote_recovery_but_never_interrupts_recording() {
+    FakeSensorRuntime sensor;
+    for (const auto state : {
+             runtime::SensorRuntimeState::Idle,
+             runtime::SensorRuntimeState::Maintenance,
+             runtime::SensorRuntimeState::Faulted}) {
+        const auto result = execute(
+            sensor, state, 20 + static_cast<uint32_t>(state),
+            runtime::SystemOperation::RestartNode);
+        assert(result.code == runtime::SensorRuntimeResultCode::Ok);
+        assert(result.state == state);
+    }
+    for (const auto state : {
+             runtime::SensorRuntimeState::Recording,
+             runtime::SensorRuntimeState::Stopping}) {
+        const auto result = execute(
+            sensor, state, 30 + static_cast<uint32_t>(state),
+            runtime::SystemOperation::RestartNode);
+        assert(result.code == runtime::SensorRuntimeResultCode::InvalidState);
+    }
 }
 
 void test_deferred_action_is_bounded_and_consumed_once() {
@@ -131,7 +156,8 @@ void test_trial_confirmation_requires_health_and_maps_storage_result() {
 }  // namespace
 
 int main() {
-    test_update_requires_maintenance();
+    test_update_requires_quiescent_or_faulted_state();
+    test_restart_is_remote_recovery_but_never_interrupts_recording();
     test_deferred_action_is_bounded_and_consumed_once();
     test_trial_confirmation_requires_health_and_maps_storage_result();
     return 0;

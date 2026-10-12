@@ -10,6 +10,7 @@ namespace runtime {
 enum class SystemOperation : uint8_t {
     PrepareFirmwareUpdate = 0,
     ConfirmTrialBoot,
+    RestartNode,
 };
 
 struct SystemOperationCommand {
@@ -65,16 +66,15 @@ private:
         const SensorRuntimeSnapshot snapshot = sensor_runtime_.snapshot();
         SensorRuntimeResultCode code = SensorRuntimeResultCode::InvalidOperation;
         if (command.operation == SystemOperation::PrepareFirmwareUpdate) {
-            code = snapshot.state == SensorRuntimeState::Maintenance
+            code = (snapshot.state == SensorRuntimeState::Maintenance ||
+                    snapshot.state == SensorRuntimeState::Faulted)
                 ? firmware_update_control_ == nullptr
                     ? SensorRuntimeResultCode::InvalidOperation
                     : firmware_update_control_->prepare_firmware_update() ==
                               FirmwareUpdatePreparationStatus::Prepared
                         ? SensorRuntimeResultCode::Ok
                         : SensorRuntimeResultCode::TransitionFailed
-                : snapshot.state == SensorRuntimeState::Faulted
-                    ? SensorRuntimeResultCode::Faulted
-                    : SensorRuntimeResultCode::InvalidState;
+                : SensorRuntimeResultCode::InvalidState;
         } else if (command.operation == SystemOperation::ConfirmTrialBoot) {
             if (snapshot.state == SensorRuntimeState::Faulted ||
                 snapshot.last_sensor_status != SensorStatus::Ok) {
@@ -96,6 +96,12 @@ private:
                         break;
                 }
             }
+        } else if (command.operation == SystemOperation::RestartNode) {
+            code = snapshot.state == SensorRuntimeState::Idle ||
+                           snapshot.state == SensorRuntimeState::Maintenance ||
+                           snapshot.state == SensorRuntimeState::Faulted
+                ? SensorRuntimeResultCode::Ok
+                : SensorRuntimeResultCode::InvalidState;
         }
         return {
             command.operation_id,

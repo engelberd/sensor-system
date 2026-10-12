@@ -37,6 +37,7 @@ struct LifecycleServiceState {
     uint32_t conflict_responses = 0;
     uint32_t unexpected_results = 0;
     uint32_t update_actions_armed = 0;
+    uint32_t restart_actions_armed = 0;
 };
 
 template <typename SensorMailbox,
@@ -84,11 +85,21 @@ public:
             return true;
         }
 
-        const bool arm_update =
-            active_.message == kPrepareFirmwareUpdateMessageId &&
-            result.code == runtime::SensorRuntimeResultCode::Ok &&
-            result.state == runtime::SensorRuntimeState::Maintenance;
-        cache_result(last_request_, result, arm_update);
+        runtime::DeferredSystemActionKind action =
+            runtime::DeferredSystemActionKind::None;
+        if (result.code == runtime::SensorRuntimeResultCode::Ok) {
+            if (active_.message == kPrepareFirmwareUpdateMessageId &&
+                (result.state == runtime::SensorRuntimeState::Maintenance ||
+                 result.state == runtime::SensorRuntimeState::Faulted)) {
+                action = runtime::DeferredSystemActionKind::EnterBootloader;
+            } else if (active_.message == kRestartNodeMessageId &&
+                       (result.state == runtime::SensorRuntimeState::Idle ||
+                        result.state == runtime::SensorRuntimeState::Maintenance ||
+                        result.state == runtime::SensorRuntimeState::Faulted)) {
+                action = runtime::DeferredSystemActionKind::RestartNode;
+            }
+        }
+        cache_result(last_request_, result, action);
         increment(completed_operations_);
         return true;
     }
@@ -106,14 +117,20 @@ public:
         RequestKey request{};
         runtime::SensorRuntimeCommand sensor_command{};
         if (message == kPrepareFirmwareUpdateMessageId ||
-            message == kConfirmTrialBootMessageId) {
+            message == kConfirmTrialBootMessageId ||
+            message == kRestartNodeMessageId) {
             uint32_t operation_id = 0;
-            const LifecycleCodecStatus decoded =
-                message == kPrepareFirmwareUpdateMessageId
-                    ? decode_prepare_firmware_update_request(
-                          request_payload, request_payload_size, operation_id)
-                    : decode_confirm_trial_boot_request(
-                          request_payload, request_payload_size, operation_id);
+            LifecycleCodecStatus decoded = LifecycleCodecStatus::UnknownMessage;
+            if (message == kPrepareFirmwareUpdateMessageId) {
+                decoded = decode_prepare_firmware_update_request(
+                    request_payload, request_payload_size, operation_id);
+            } else if (message == kConfirmTrialBootMessageId) {
+                decoded = decode_confirm_trial_boot_request(
+                    request_payload, request_payload_size, operation_id);
+            } else {
+                decoded = decode_restart_node_request(
+                    request_payload, request_payload_size, operation_id);
+            }
             if (decoded != LifecycleCodecStatus::Ok) {
                 return error(ResponseStatus::MalformedRequest,
                              response_payload, response_capacity);
@@ -173,7 +190,9 @@ public:
                   request.operation_id,
                   request.message == kPrepareFirmwareUpdateMessageId
                       ? runtime::SystemOperation::PrepareFirmwareUpdate
-                      : runtime::SystemOperation::ConfirmTrialBoot})
+                      : request.message == kConfirmTrialBootMessageId
+                          ? runtime::SystemOperation::ConfirmTrialBoot
+                          : runtime::SystemOperation::RestartNode})
             : sensor_mailbox_.try_send_command(sensor_command);
         if (!accepted) {
             increment(busy_responses_);
@@ -190,14 +209,18 @@ public:
         CacheEntry* cached = find_token(token);
         if (cached == nullptr) return false;
         if (!transmitted) return true;
-        const auto status = system_action_.request(
-            runtime::DeferredSystemActionKind::EnterBootloader);
+        const auto status = system_action_.request(cached->post_transmit_action);
         if (status != runtime::DeferredSystemActionRequestStatus::Accepted &&
             status != runtime::DeferredSystemActionRequestStatus::AlreadyRequested) {
             return false;
         }
         cached->post_transmit_pending = false;
-        increment(update_actions_armed_);
+        if (cached->post_transmit_action ==
+            runtime::DeferredSystemActionKind::EnterBootloader) {
+            increment(update_actions_armed_);
+        } else {
+            increment(restart_actions_armed_);
+        }
         return true;
     }
 
@@ -206,7 +229,7 @@ public:
             has_active_, faulted_, has_active_ ? active_.operation_id : 0,
             cached_count_, accepted_operations_, completed_operations_,
             in_progress_results_, busy_responses_, conflict_responses_,
-            unexpected_results_, update_actions_armed_,
+            unexpected_results_, update_actions_armed_, restart_actions_armed_,
         };
     }
 
@@ -223,6 +246,8 @@ private:
         RequestKey request{};
         runtime::SensorRuntimeResult result{};
         uint64_t post_transmit_token = 0;
+        runtime::DeferredSystemActionKind post_transmit_action =
+            runtime::DeferredSystemActionKind::None;
         bool post_transmit_pending = false;
         bool valid = false;
     };
@@ -306,9 +331,9 @@ private:
 
     void cache_result(const RequestKey& request,
                       const runtime::SensorRuntimeResult& result,
-                      bool arm_update) {
+                      runtime::DeferredSystemActionKind action) {
         uint64_t token = 0;
-        if (arm_update) {
+        if (action != runtime::DeferredSystemActionKind::None) {
             ++next_post_transmit_generation_;
             if (next_post_transmit_generation_ == 0) {
                 ++next_post_transmit_generation_;
@@ -316,7 +341,13 @@ private:
             token = (static_cast<uint64_t>(next_post_transmit_generation_) << 32u) |
                     request.operation_id;
         }
-        cache_[cache_next_] = {request, result, token, arm_update, true};
+        cache_[cache_next_] = {
+            request,
+            result,
+            token,
+            action,
+            action != runtime::DeferredSystemActionKind::None,
+            true};
         cache_next_ = (cache_next_ + 1u) % ResultCacheCapacity;
         if (cached_count_ < ResultCacheCapacity) ++cached_count_;
     }
@@ -338,6 +369,7 @@ private:
     uint32_t conflict_responses_ = 0;
     uint32_t unexpected_results_ = 0;
     uint32_t update_actions_armed_ = 0;
+    uint32_t restart_actions_armed_ = 0;
     bool has_active_ = false;
     bool has_last_result_ = false;
     bool faulted_ = false;

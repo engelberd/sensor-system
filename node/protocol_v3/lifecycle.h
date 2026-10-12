@@ -19,6 +19,7 @@ constexpr uint8_t kExitMaintenanceMessageId = 5;
 constexpr uint8_t kSetObservabilityMessageId = 6;
 constexpr uint8_t kPrepareFirmwareUpdateMessageId = 7;
 constexpr uint8_t kConfirmTrialBootMessageId = 8;
+constexpr uint8_t kRestartNodeMessageId = 9;
 
 constexpr size_t kLifecycleOperationRequestBytes = 4;
 constexpr size_t kLifecycleProfileRequestBytes = 5;
@@ -67,6 +68,16 @@ LifecycleCodecStatus encode_confirm_trial_boot_request(
     size_t output_capacity);
 
 LifecycleCodecStatus decode_confirm_trial_boot_request(
+    const uint8_t* payload,
+    size_t payload_size,
+    uint32_t& operation_id);
+
+LifecycleCodecStatus encode_restart_node_request(
+    uint32_t operation_id,
+    uint8_t* output,
+    size_t output_capacity);
+
+LifecycleCodecStatus decode_restart_node_request(
     const uint8_t* payload,
     size_t payload_size,
     uint32_t& operation_id);

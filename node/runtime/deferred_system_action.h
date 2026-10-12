@@ -8,6 +8,7 @@ namespace runtime {
 enum class DeferredSystemActionKind : uint8_t {
     None = 0,
     EnterBootloader,
+    RestartNode,
 };
 
 enum class DeferredSystemActionRequestStatus : uint8_t {

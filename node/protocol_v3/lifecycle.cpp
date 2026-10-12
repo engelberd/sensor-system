@@ -225,6 +225,22 @@ LifecycleCodecStatus decode_confirm_trial_boot_request(
         payload, payload_size, operation_id);
 }
 
+LifecycleCodecStatus encode_restart_node_request(
+    uint32_t operation_id,
+    uint8_t* output,
+    size_t output_capacity) {
+    return encode_prepare_firmware_update_request(
+        operation_id, output, output_capacity);
+}
+
+LifecycleCodecStatus decode_restart_node_request(
+    const uint8_t* payload,
+    size_t payload_size,
+    uint32_t& operation_id) {
+    return decode_prepare_firmware_update_request(
+        payload, payload_size, operation_id);
+}
+
 LifecycleCodecStatus decode_lifecycle_response(
     const uint8_t* payload,
     size_t payload_size,

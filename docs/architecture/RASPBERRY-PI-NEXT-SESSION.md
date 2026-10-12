@@ -51,14 +51,16 @@ Node A:
   dane stanowiska testowego i może zostać porzucone.
 
 Capture przed awarią został zweryfikowany. Nie było błędów RS485 ani storage.
-Błąd ujawnił dopiero wymuszony drain FIFO podczas `Stop`. Firmware 0.5.6
-odrzuca `prepare-update` w stanie `Faulted`, więc przed aktualizacją potrzebny
-jest pojedynczy fizyczny reset lub restart zasilania wyłącznie noda A. Trwały
-rekord diagnostyczny pozostaje w flash.
+Błąd ujawnił dopiero wymuszony drain FIFO podczas `Stop`. Zainstalowany firmware
+0.5.6 odrzuca `prepare-update` w stanie `Faulted`; jest to ostatnia wersja bez
+zdalnej ścieżki ratunkowej. Firmware 0.5.7 dopuszcza wejście do bootloadera oraz
+jawny restart także z `Faulted`. Dla obecnego A potrzebny jest jednorazowy
+zdalny restart jego zasilania, jeśli pozwala na to kontroler USB. Trwały rekord
+diagnostyczny pozostaje w flash.
 
 ## Najbliższa procedura
 
-Po potwierdzeniu fizycznego restartu A:
+Po jednorazowym restarcie zasilania A:
 
 1. Nie zatrzymuj działającej usługi i nie otwieraj portów B/C/D/G/H.
 2. Sprawdź A tylko po RS485:
