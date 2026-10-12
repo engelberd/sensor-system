@@ -306,7 +306,7 @@ Kryterium ukończenia: zimny boot uruchamia system bez sesji SSH, restart proces
 i całego Raspberry Pi zachowuje ciągłość jawną w WAL, a `systemctl stop` zawsze
 kończy się kontrolowanym shutdownem w wyznaczonym czasie.
 
-### Etap 4 — dashboard v2 w trybie obserwacji
+### Etap 4 — dashboard v2 w trybie obserwacji — pierwszy przyrost wdrożony
 
 Na początek wykorzystamy istniejący interfejs strony, lecz dodamy osobny adapter
 danych v2. Adapter czyta wyłącznie wersjonowany snapshot i bezpiecznie
@@ -330,6 +330,28 @@ dashboardu nie może wpłynąć na recorder.
 Kryterium ukończenia: dashboard odświeża dane bez odpytywania RS485 i bez wzrostu
 backpressure, poprawnie pokazuje status stale/offline, a zatrzymanie dashboardu
 nie zmienia akwizycji.
+
+Pierwszy przyrost wykorzystuje istniejący interfejs strony i osobny
+`V2DashboardRepository`. Automatycznie rozpoznaje profil hosta v2, czyta
+wyłącznie ograniczony Runtime Status v1 oraz bounded ogon
+`sensor-host-v2.service` z journald. Pokazuje fazę procesu, storage, stan
+kanałów, identity, firmware, ODR, świeżość pomiaru i TimeSync oraz cztery
+cursory każdego dostępnego node. Status starszy niż 30 sekund przechodzi do
+stale/offline. Wszystkie endpointy POST i podgląd aktywnego Capture są w tym
+trybie odrzucone, więc dashboard nie otwiera RS485, nie czyta aktywnego WAL i
+nie steruje lifecycle.
+
+Na Raspberry Pi adapter odczytał działający proces degraded, pięć kanałów i
+pięć node online oraz odizolowaną `line-a`; żądanie sterujące otrzymało HTTP
+405. Pełne testy starego hosta i dashboardu przechodzą. Istniejąca lokalna
+jednostka dashboardu została przepięta z legacy supervisora na
+`sensor-host-v2.service`.
+
+Do pełnego zamknięcia etapu pozostają pola, których bieżący Runtime Status nie
+publikuje jeszcze bezpośrednio: dokładne samples/s i liczniki gap/reconnect,
+ostatni zapisany wynik `doctor`, zweryfikowana lista zakończonych okien Capture
+oraz wyliczony horyzont storage. Podgląd surowych próbek pozostaje odłożony
+zgodnie z granicą etapu.
 
 ### Etap 5 — minimalne bezpieczne sterowanie
 

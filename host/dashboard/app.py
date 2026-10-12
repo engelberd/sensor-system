@@ -1111,6 +1111,13 @@ INDEX_HTML = """<!doctype html>
         $("last-runtime").textContent = supervisor.updated_utc
           ? `Ostatni update runtime: ${formatDate(supervisor.updated_utc)}`
           : "Supervisor jeszcze nie zapisał statusu";
+        if (data.read_only) {
+          $("restart-all-btn").hidden = true;
+          $("purge-all-btn").hidden = true;
+        }
+        if (data.data_available === false) {
+          $("data").hidden = true;
+        }
       }
 
       function renderOverview(data) {
@@ -1223,7 +1230,7 @@ INDEX_HTML = """<!doctype html>
                 ${chip(`alerty ${formatNumber(channel.attention_count || 0)}`, (channel.attention_count || 0) > 0 ? "warn" : "muted")}
               </div>
             </div>
-            <div class="channel-actions">
+            <div class="channel-actions" ${channel.controls_enabled === false ? "hidden" : ""}>
               <button class="btn channel-action-btn" data-action="start" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Start</button>
               <button class="btn channel-action-btn" data-action="restart" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Restart</button>
               <button class="btn secondary channel-action-btn" data-action="stop" data-channel-name="${escapeHtml(channel.name)}" type="button">Stop</button>
@@ -1263,13 +1270,13 @@ INDEX_HTML = """<!doctype html>
               ${statusDot(onlineKind)}
               ${escapeHtml(node.online ? (node.sample_flow_state === "stalled" ? "ONLINE / BRAK PRÓBEK" : "ONLINE") : (node.has_runtime ? "OFFLINE" : "NO-RUNTIME"))}
               <div class="node-meta">${escapeHtml(alerts)}</div>
-              <button
+              ${channel.controls_enabled === false ? "" : `<button
                 class="btn secondary small node-firmware-restart-btn"
                 data-channel-name="${escapeHtml(channel.name)}"
                 data-node-id="${escapeHtml(node.node_id)}"
                 type="button"
                 ${channel.enabled && node.enabled ? "" : "disabled"}
-              >Restart firmware</button>
+              >Restart firmware</button>`}
             </td>
             <td data-label="ODR">
               <span class="mono">${escapeHtml(formatNumber(node.sensor_odr_hz || 0))} / ${escapeHtml(formatFloat(node.output_odr_hz || 0, 1))}</span>
@@ -1284,16 +1291,18 @@ INDEX_HTML = """<!doctype html>
               )}</div>
             </td>
             <td data-label="Gaps / Overflow / No data">
-              <span class="mono">gaps ${escapeHtml(formatNumber(node.gaps_detected || 0))}</span>
-              <div class="node-meta">
-                rx ${escapeHtml(formatNumber(node.rx_overflow_session || 0))}
-                · pkt ${escapeHtml(formatNumber(node.packet_overwrite_session || 0))}
-                · no_data ${escapeHtml(formatNumber(node.bursts_no_data || 0))}
-              </div>
+              ${node.runtime_v2
+                ? `<span class="mono">rx ${escapeHtml(formatNumber(node.received_cursor || 0))} · durable ${escapeHtml(formatNumber(node.durable_cursor || 0))}</span>
+                   <div class="node-meta">released ${escapeHtml(formatNumber(node.released_cursor || 0))} · produced ${escapeHtml(formatNumber(node.produced_cursor || 0))} · no_data ${escapeHtml(formatNumber(node.bursts_no_data || 0))}</div>`
+                : `<span class="mono">gaps ${escapeHtml(formatNumber(node.gaps_detected || 0))}</span>
+                   <div class="node-meta">rx ${escapeHtml(formatNumber(node.rx_overflow_session || 0))} · pkt ${escapeHtml(formatNumber(node.packet_overwrite_session || 0))} · no_data ${escapeHtml(formatNumber(node.bursts_no_data || 0))}</div>`}
             </td>
             <td data-label="Temperatura">
-              <span class="mono">${escapeHtml(node.last_temperature_c == null ? "-" : `${formatFloat(node.last_temperature_c, 2)} C`)}</span>
-              <div class="node-meta">${escapeHtml(formatUnixNs(node.last_temperature_unix_ns))}</div>
+              ${node.runtime_v2
+                ? `<span class="mono">measurement ${escapeHtml(node.last_measurement_age_ms == null ? "-" : `${formatNumber(node.last_measurement_age_ms)} ms`)}</span>
+                   <div class="node-meta">time sync ${escapeHtml(node.last_time_sync_age_ms == null ? "-" : `${formatNumber(node.last_time_sync_age_ms)} ms`)}</div>`
+                : `<span class="mono">${escapeHtml(node.last_temperature_c == null ? "-" : `${formatFloat(node.last_temperature_c, 2)} C`)}</span>
+                   <div class="node-meta">${escapeHtml(formatUnixNs(node.last_temperature_unix_ns))}</div>`}
             </td>
           </tr>
         `;
@@ -4679,6 +4688,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if route == "/live":
+                if not getattr(self.repository, "supports_live_preview", True):
+                    self._write_json({"error": "live preview is not available for host v2 Capture WAL"}, status=HTTPStatus.NOT_FOUND)
+                    return
                 self._write_response(LIVE_PREVIEW_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 return
 
@@ -4735,6 +4747,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if route == "/api/live/data":
+                if not getattr(self.repository, "supports_live_preview", True):
+                    self._write_json({"error": "live preview is not available for host v2 Capture WAL"}, status=HTTPStatus.NOT_FOUND)
+                    return
                 limit = clamp_live_limit(query.get("limit", [None])[0])
                 channel_name = query.get("channel", [""])[0]
                 node_id = int(query.get("node", ["0"])[0])
@@ -4775,6 +4790,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             route = parsed.path
+            if getattr(self.repository, "read_only", False):
+                self._write_json(
+                    {"error": "host v2 dashboard is read-only"},
+                    status=HTTPStatus.METHOD_NOT_ALLOWED,
+                )
+                return
             if route == "/api/live/acquire":
                 payload = self._read_json_body()
                 channel_name = str(payload.get("channel_name", ""))
@@ -4923,14 +4944,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--event-limit", type=int, default=40)
+    parser.add_argument("--runtime-status", default="/run/sensor-system/host-v2-status.json")
+    parser.add_argument("--service-unit", default="sensor-host-v2.service")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    repository = DashboardRepository(args.config, default_event_limit=args.event_limit)
+    from host.dashboard.v2 import V2DashboardRepository, is_v2_profile
+
+    if is_v2_profile(Path(args.config)):
+        repository = V2DashboardRepository(
+            args.config,
+            default_event_limit=args.event_limit,
+            status_path=args.runtime_status,
+            service_unit=args.service_unit,
+        )
+        mode = "host-v2 read-only"
+    else:
+        repository = DashboardRepository(args.config, default_event_limit=args.event_limit)
+        mode = "legacy"
     server = DashboardServer((args.host, args.port), repository)
-    print(f"[dashboard] serving on http://{args.host}:{args.port}/ using {args.config}")
+    print(f"[dashboard] serving on http://{args.host}:{args.port}/ using {args.config} ({mode})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

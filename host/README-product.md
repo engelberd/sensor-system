@@ -145,10 +145,14 @@ Dashboard:
 host/.venv/bin/python host/host_dashboard.py --config host/system_config.json --port 8080
 ```
 
-Then open `http://<host-ip>:8080/` on the local network. The dashboard shows the
-operator overview, channels, nodes, runtime files, recent events, data preview,
-and guarded control actions. It exposes JSON endpoints under `/api/dashboard`,
-`/api/channels`, `/api/events`, `/api/config`, and `/api/health`.
+Then open `http://<host-ip>:8080/` on the local network. The dashboard detects
+the active configuration family. A host v2 profile selects a read-only adapter
+for `/run/sensor-system/host-v2-status.json` and bounded journald history. It
+shows process, storage, channels, nodes, cursors and data freshness without
+opening RS485 or active Capture WAL; POST control and live-sample endpoints are
+disabled. A legacy profile retains the previous supervisor/HDF5 adapter. Both
+modes expose JSON endpoints under `/api/dashboard`, `/api/channels`,
+`/api/events`, `/api/config`, and `/api/health`.
 
 The dashboard and operator panel do not currently provide user authentication.
 Bind them to `127.0.0.1` unless remote access is required, and expose them only

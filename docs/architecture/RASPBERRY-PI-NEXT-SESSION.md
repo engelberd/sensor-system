@@ -34,6 +34,10 @@ brak zmian w nieśledzonych plikach `hardware/`.
   `node/build/releases/sensor-system-node-v0.5.7/sensor-system-node-v0.5.7-update-package.json`.
 - `sensor-host-v2.service` działa. Linie B, C, D, G i H nagrywają. Linia A jest
   odizolowana jako `faulted`, a jej port nie jest zajęty przez recorder.
+- Read-only dashboard hosta v2 korzysta z Runtime Status v1 i bounded journald,
+  nie otwiera RS485 ani aktywnego Capture WAL. Lokalna jednostka
+  `sensor-system-dashboard.service` udostępnia go na `127.0.0.1:8090`; zdalny
+  podgląd wymaga tunelu SSH przez prywatną sieć administracyjną.
 - E i F nie są fizycznie podłączone.
 - Na Pi istnieją lokalne, nieśledzone profile debug. Nie dodawaj ich do Git.
 
