@@ -137,12 +137,19 @@ fn run(
         let _ = process.request_stop();
     }
     println!(
-        "host running: system={} channels={} supervision_interval_ms={} metrics_interval_ms={}",
+        "host running: system={} channels={} startup_faults={} supervision_interval_ms={} metrics_interval_ms={}",
         system_name,
         process.channel_count(),
+        process.startup_channel_faults().len(),
         process.supervision_interval().as_millis(),
         process.metrics_interval().as_millis()
     );
+    for fault in process.startup_channel_faults() {
+        eprintln!(
+            "channel unavailable at startup: id={} name={} error={}",
+            fault.channel_id, fault.channel_name, fault.detail
+        );
+    }
 
     let mut next_metrics = Instant::now() + process.metrics_interval();
     while cause.is_none() {

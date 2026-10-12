@@ -159,6 +159,7 @@ where
     channels: ChannelSupervisorSet<T>,
     channel_metrics: Vec<ChannelMetricsReader>,
     node_metrics: Vec<NodeMetricsReader>,
+    startup_channel_faults: Vec<StartupChannelFault>,
     time: TimeRuntime,
     lifecycle: HostCoordinatorLifecycle,
     shared_storage_fault: Option<SharedStorageFault>,
@@ -190,6 +191,10 @@ where
             .collect()
     }
 
+    pub fn startup_channel_faults(&self) -> &[StartupChannelFault] {
+        &self.startup_channel_faults
+    }
+
     pub const fn time_health(&self) -> &TimePersistenceHealth {
         self.time.health()
     }
@@ -199,17 +204,32 @@ where
     }
 
     pub fn health_snapshot(&self) -> HostHealthSnapshot {
+        let mut channels = self
+            .channels
+            .channels()
+            .iter()
+            .map(|channel| ObservedChannelHealth {
+                snapshot: channel.snapshot(),
+                thread_finished: channel.is_finished(),
+            })
+            .collect::<Vec<_>>();
+        channels.extend(
+            self.startup_channel_faults
+                .iter()
+                .map(|fault| ObservedChannelHealth {
+                    snapshot: crate::channel_supervisor::ChannelWorkerSnapshot {
+                        channel_id: fault.channel_id,
+                        phase: crate::channel_supervisor::ChannelWorkerPhase::Faulted,
+                        completed_steps: 0,
+                    },
+                    thread_finished: true,
+                }),
+        );
         evaluate_host_health(
             self.lifecycle,
             self.time.health().state(),
             self.shared_storage_fault,
-            self.channels
-                .channels()
-                .iter()
-                .map(|channel| ObservedChannelHealth {
-                    snapshot: channel.snapshot(),
-                    thread_finished: channel.is_finished(),
-                }),
+            channels,
         )
     }
 
@@ -340,9 +360,10 @@ pub struct HostCoordinatorShutdown<E, S> {
 }
 
 /// Crosses the host startup side-effect boundary exactly once: opens global
-/// Time storage, composes each Capture/channel task, and only after every task
-/// is ready starts the supervisor threads. Any failure shuts down all resources
-/// that were already created before returning.
+/// Time storage, composes each Capture/channel task, and then starts the ready
+/// supervisor threads. A node lifecycle activation fault is isolated to its
+/// physical channel. Configuration, Capture/recovery, scheduler and shared
+/// Time failures remain fail-closed for the whole process.
 pub fn start_host_runtime<P, C>(
     blueprint: HostStartupBlueprint<P, C>,
     capture: &CaptureInstallationProfile,
@@ -365,6 +386,7 @@ where
     let (inventory, channels, time_config) = blueprint.into_parts();
     let time = time_config.start().map_err(HostRuntimeStartError::Time)?;
     let mut prepared = Vec::with_capacity(channels.len());
+    let mut startup_channel_faults = Vec::new();
 
     for planned in channels {
         let channel_id = planned.channel_id();
@@ -402,6 +424,14 @@ where
             time_observations,
         ) {
             Ok(value) => value,
+            Err(source @ ChannelWorkerError::Activation { .. }) => {
+                startup_channel_faults.push(StartupChannelFault {
+                    channel_id,
+                    channel_name,
+                    detail: source.to_string(),
+                });
+                continue;
+            }
             Err(source) => {
                 let cleanup = cleanup_prepared_channels(prepared, time);
                 return Err(HostRuntimeStartError::Channel {
@@ -414,6 +444,14 @@ where
         let task = ProductionChannelTask::new(recording, &startup, shutdown_policy)
             .expect("shutdown policy was validated before channel composition");
         prepared.push((channel_id, channel_name, task));
+    }
+
+    if prepared.is_empty() {
+        let time_shutdown_error = time.shutdown().err();
+        return Err(HostRuntimeStartError::NoRunnableChannels {
+            faults: startup_channel_faults,
+            time_shutdown_error,
+        });
     }
 
     let mut channel_metrics = Vec::with_capacity(prepared.len());
@@ -444,10 +482,18 @@ where
         channels,
         channel_metrics,
         node_metrics,
+        startup_channel_faults,
         time,
         lifecycle: HostCoordinatorLifecycle::Running,
         shared_storage_fault: None,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartupChannelFault {
+    pub channel_id: u8,
+    pub channel_name: String,
+    pub detail: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -546,6 +592,10 @@ pub enum HostRuntimeStartError {
         channel_id: u8,
         source: ChannelWorkerError,
         cleanup: HostStartupCleanup,
+    },
+    NoRunnableChannels {
+        faults: Vec<StartupChannelFault>,
+        time_shutdown_error: Option<TimePersistenceExecutorError>,
     },
     Supervisor {
         source: ChannelSupervisorError,

@@ -122,6 +122,10 @@ impl LinuxHostProcess {
         self.runtime.node_metrics()
     }
 
+    pub fn startup_channel_faults(&self) -> &[crate::host_coordinator::StartupChannelFault] {
+        self.runtime.startup_channel_faults()
+    }
+
     pub fn inventory(&self) -> &DiscoveryInventory {
         self.runtime.inventory()
     }
