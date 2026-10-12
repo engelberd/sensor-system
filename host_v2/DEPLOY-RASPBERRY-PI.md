@@ -128,13 +128,36 @@ macierz tworzy baseline dla Raspberry Pi 4/5 i użytego nośnika. Zero błędów
 transportu i backpressure pozostaje oczekiwaniem dla stabilnego testu
 laboratoryjnego; każdy wyjątek analizujemy przed dalszym etapem.
 
-## 6. Systemd dopiero po macierzy
+## 6. Instalacja systemd
 
-Szablon znajduje się w `host_v2/systemd/sensor-host-v2.service.example`.
-Przed instalacją trzeba dopasować użytkownika, `WorkingDirectory`, `ExecStart`
-i `ReadWritePaths` do rzeczywistego punktu montowania SSD. Aktywnej jednostki
-oraz lokalnego `host/system_config.json` nie commitujemy.
+Tracked szablon znajduje się w `host_v2/systemd/sensor-host-v2.service.in`.
+Nie jest aktywną jednostką. Instalator generuje z niego lokalną jednostkę,
+dlatego rzeczywiste ścieżki, użytkownik oraz lokalny `host/system_config.json`
+nie trafiają do Git.
+
+```bash
+./hostctl install-services --dry-run
+./hostctl install-services
+./hostctl start
+./hostctl status
+./hostctl logs --since today
+```
+
+Pierwsze polecenie pokazuje wynik bez zapisu do `/opt` i `/etc`. Instalacja
+buduje release, ponownie waliduje profil, liczy SHA-256 i umieszcza niezmienne
+binarium w `/opt/sensor-system/releases/<wersja>-<sha>`. Symlink `current` jest
+przełączany atomowo, a poprzedni cel zachowuje `previous`. Instalator włącza
+start przy boot, lecz celowo nie uruchamia procesu; start pozostaje jawną
+operacją po zatrzymaniu legacy hosta i sprawdzeniu właścicieli portów.
+
+Jednostka wysyła SIGTERM i daje 120 sekund na kontrolowany Stop oraz drain WAL.
+Błąd konfiguracji, utworzenia statusu albo storage nie jest restartowany.
+Przejściowy błąd bootstrapu ma odstęp 15 sekund oraz limit czterech startów w
+ciągu pięciu minut. To ograniczenie chroni magistrale przed szybką pętlą, ale
+nie zastępuje docelowego startu degraded przy nieobecnym node; ten przypadek
+pozostaje otwartą bramką Etapu 3.
 
 Przełączenie wykonujemy w oknie serwisowym: zatrzymujemy legacy host, upewniamy
 się, że zwolnił wszystkie porty, uruchamiamy v2 i sprawdzamy discovery oraz
-nowy Capture. Rollback zatrzymuje v2 przed ponownym uruchomieniem legacy.
+nowy Capture. Rollback zatrzymuje v2 przed przełączeniem artefaktu albo ponownym
+uruchomieniem legacy.

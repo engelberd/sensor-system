@@ -174,13 +174,23 @@ błędem dla fazy aktywnej i ostrzeżeniem dla zatrzymanego procesu. Pozostałe
 ostrzeżenia instalacji są zgodne z roadmapą: usługa systemd nie jest jeszcze
 zainstalowana, a katalog checkpoint powstanie przy uruchomieniu retencji.
 
-### Etap 3 — automatyczne procesy na Raspberry Pi
+### Etap 3 — automatyczne procesy na Raspberry Pi — w realizacji
 
 Powstanie instalowalna konfiguracja systemd dla:
 
 1. `sensor-host-v2.service` — rejestrator;
 2. `sensor-host-dashboard-v2.service` — dashboard;
 3. opcjonalnego małego pomocnika sterowania z wąskimi uprawnieniami.
+
+Pierwszy przyrost jest gotowy dla recordera: `hostctl install-services` buduje
+i waliduje release, instaluje artefakt identyfikowany wersją i SHA-256, zachowuje
+symlinki `current/previous` i generuje jednostkę z rzeczywistych ścieżek.
+`hostctl start`, `stop`, `restart`, `status` i `logs` mają jeden adapter do
+systemd. Jednostka klasyfikuje stałe błędy konfiguracji/storage osobno od
+przejściowego błędu bootstrapu, ogranicza restart i zachowuje 120 sekund na
+kontrolowany shutdown. Szablon oraz instalator przeszły lokalny test renderu,
+checksumy i atomowej publikacji; bramka parsera systemd i lifecycle pozostaje
+do wykonania na Raspberry Pi.
 
 Instalator/deployer ustawi użytkownika i grupy, katalogi, prawa, konfigurację,
 limity journald oraz zależność od właściwego mountpointu danych. `ExecStartPre`

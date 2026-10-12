@@ -51,7 +51,7 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("sensor-host: run failed: {error}");
-                ExitCode::from(1)
+                ExitCode::from(error.exit_code())
             }
         },
         Ok(Command::Help) => {
@@ -559,6 +559,34 @@ enum RunCommandError {
         cause: Option<String>,
         summary: HostProcessShutdownSummary,
     },
+}
+
+impl RunCommandError {
+    /// Stable process codes used by the systemd restart contract.
+    ///
+    /// `75` (temporary failure) may be retried with a bounded start limit.
+    /// Configuration and local I/O failures require operator intervention and
+    /// are listed in `RestartPreventExitStatus` by the installed unit.
+    const fn exit_code(&self) -> u8 {
+        match self {
+            Self::Profile(_) => 78, // EX_CONFIG
+            Self::Status(_) => 73,  // EX_CANTCREAT
+            Self::Start(error) => match error {
+                sensor_host::host_process::LinuxHostProcessStartError::Bootstrap(_) => 75,
+                sensor_host::host_process::LinuxHostProcessStartError::StorageRoot(_)
+                | sensor_host::host_process::LinuxHostProcessStartError::StorageProbe(_)
+                | sensor_host::host_process::LinuxHostProcessStartError::StorageUnavailable(_) => {
+                    73
+                }
+                sensor_host::host_process::LinuxHostProcessStartError::RuntimeProfile(_)
+                | sensor_host::host_process::LinuxHostProcessStartError::Planning(_) => 78,
+                sensor_host::host_process::LinuxHostProcessStartError::HostClock(_) => 69,
+                sensor_host::host_process::LinuxHostProcessStartError::Runtime(_) => 70,
+            },
+            Self::Signal(_) | Self::Clock(_) => 70,
+            Self::Execution { .. } => 1,
+        }
+    }
 }
 
 impl std::fmt::Display for RunCommandError {

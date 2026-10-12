@@ -81,8 +81,11 @@ rozliczenie pracy w locie, `Stop`, pobranie ogona journala, durable drain,
 zamknięcie Capture, dołączenie wszystkich kanałów i zamknięcie wspólnego Time
 WAL. Proces wypisuje wynik każdego kanału i kończy się kodem 0 wyłącznie po
 czystym shutdownie. Szablon usługi znajduje się w
-`systemd/sensor-host-v2.service.example`; nie jest aktywną jednostką i wymaga
-dopasowania użytkownika oraz ścieżek instalacji.
+`systemd/sensor-host-v2.service.in`; nie jest aktywną jednostką, lecz wejściem
+dla `./hostctl install-services`. Instalator podstawia rzeczywiste ścieżki,
+użytkownika i grupę, instaluje binarium pod wersjonowanym SHA-256 i dopiero
+potem publikuje jednostkę. Szczegóły znajdują się w
+[`DEPLOY-RASPBERRY-PI.md`](DEPLOY-RASPBERRY-PI.md).
 
 `run` wymaga jawnej ścieżki statusu. Testy ręczne zapisują ją razem z
 artefaktami, a usługa produkcyjna używa

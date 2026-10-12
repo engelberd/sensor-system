@@ -29,6 +29,12 @@ Commands:
   operator   Run operator control panel for host, node config, runs, and preview
   paths      Show the effective config, recording, archive, log and runtime paths
   doctor     Run native v2 checks; add --offline, --deep or --json
+  install-services  Build and install the v2 recorder systemd service
+  start      Start the v2 recorder service
+  stop       Stop the v2 recorder service with controlled shutdown
+  restart    Restart the v2 recorder service with controlled shutdown
+  status     Show the v2 recorder systemd status
+  logs       Show v2 recorder journald logs
   boot       Run bootloader maintenance tool
   update     Upload latest firmware package over RS485
   py         Run arbitrary python module/script inside host venv
@@ -74,6 +80,25 @@ if [[ "$COMMAND" == "doctor" ]]; then
     exit 69
   fi
   exec "$DOCTOR_BINARY" --repository-root "$ROOT_DIR" "$@"
+fi
+
+if [[ "$COMMAND" == "install-services" ]]; then
+  HOST_BINARY="${SENSOR_HOST_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-host}"
+  HOST_CONFIG="${SENSOR_HOST_CONFIG:-$ROOT_DIR/host/system_config.json}"
+  if [[ ${SENSOR_HOST_SKIP_BUILD:-0} != 1 ]]; then
+    cargo build --release -p sensor-host --manifest-path "$ROOT_DIR/host_v2/Cargo.toml"
+  fi
+  "$HOST_BINARY" validate --config "$HOST_CONFIG" --repository-root "$ROOT_DIR"
+  exec "$ROOT_DIR/host_v2/tools/install_systemd_service.sh" \
+    --repository-root "$ROOT_DIR" --config "$HOST_CONFIG" --binary "$HOST_BINARY" \
+    --user "${SENSOR_HOST_SERVICE_USER:-$(id -un)}" \
+    --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" "$@"
+fi
+
+if [[ "$COMMAND" == "start" || "$COMMAND" == "stop" || \
+      "$COMMAND" == "restart" || "$COMMAND" == "status" || \
+      "$COMMAND" == "logs" ]]; then
+  exec "$ROOT_DIR/host_v2/tools/service_control.sh" "$COMMAND" "$@"
 fi
 
 if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$COMMAND" == "--help" ]]; then
