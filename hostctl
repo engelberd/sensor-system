@@ -30,6 +30,7 @@ Commands:
   paths      Show the effective config, recording, archive, log and runtime paths
   doctor     Run native v2 checks; add --offline, --deep or --json
   install-services  Build and install the v2 recorder systemd service
+  rollback-services Swap current/previous v2 release with controlled restart
   start      Start the v2 recorder service
   stop       Stop the v2 recorder service with controlled shutdown
   restart    Restart the v2 recorder service with controlled shutdown
@@ -93,6 +94,10 @@ if [[ "$COMMAND" == "install-services" ]]; then
     --repository-root "$ROOT_DIR" --config "$HOST_CONFIG" --binary "$HOST_BINARY" \
     --user "${SENSOR_HOST_SERVICE_USER:-$(id -un)}" \
     --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" "$@"
+fi
+
+if [[ "$COMMAND" == "rollback-services" ]]; then
+  exec "$ROOT_DIR/host_v2/tools/rollback_systemd_service.sh" "$@"
 fi
 
 if [[ "$COMMAND" == "start" || "$COMMAND" == "stop" || \

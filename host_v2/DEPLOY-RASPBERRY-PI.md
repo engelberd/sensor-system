@@ -141,6 +141,8 @@ nie trafiają do Git.
 ./hostctl start
 ./hostctl status
 ./hostctl logs --since today
+# jeśli nowy release zawiedzie:
+./hostctl rollback-services
 ```
 
 Pierwsze polecenie pokazuje wynik bez zapisu do `/opt` i `/etc`. Instalacja
@@ -149,6 +151,8 @@ binarium w `/opt/sensor-system/releases/<wersja>-<sha>`. Symlink `current` jest
 przełączany atomowo, a poprzedni cel zachowuje `previous`. Instalator włącza
 start przy boot, lecz celowo nie uruchamia procesu; start pozostaje jawną
 operacją po zatrzymaniu legacy hosta i sprawdzeniu właścicieli portów.
+`rollback-services` czeka na kontrolowany Stop, sprawdza wykonywalność
+poprzedniego artefaktu, atomowo zamienia `current/previous` i uruchamia usługę.
 
 Jednostka wysyła SIGTERM i daje 120 sekund na kontrolowany Stop oraz drain WAL.
 Błąd konfiguracji, utworzenia statusu albo storage nie jest restartowany.

@@ -189,8 +189,16 @@ symlinki `current/previous` i generuje jednostkę z rzeczywistych ścieżek.
 systemd. Jednostka klasyfikuje stałe błędy konfiguracji/storage osobno od
 przejściowego błędu bootstrapu, ogranicza restart i zachowuje 120 sekund na
 kontrolowany shutdown. Szablon oraz instalator przeszły lokalny test renderu,
-checksumy i atomowej publikacji; bramka parsera systemd i lifecycle pozostaje
-do wykonania na Raspberry Pi.
+checksumy i atomowej publikacji. `rollback-services` wykonuje kontrolowany Stop,
+atomowo zamienia `current/previous` i uruchamia wcześniejszy artefakt.
+
+Bramka Raspberry Pi potwierdziła poprawny parser jednostki, instalację release,
+start na sześciu liniach, odczyt statusu, kontrolowany Stop i restart. Oba
+zatrzymania zakończyły sześć kanałów z `clean=true`; po restarcie systemd nie
+wykonał żadnego restartu awaryjnego, a ustabilizowany doctor raportował zero
+błędów. Doctor odczytany sekundę po starcie pokazuje kursory oczekujące na
+pierwszy StreamState jako ostrzeżenia, zachowując błąd dla częściowego lub
+regresywnego porządku poza tym dozwolonym stanem przejściowym.
 
 Instalator/deployer ustawi użytkownika i grupy, katalogi, prawa, konfigurację,
 limity journald oraz zależność od właściwego mountpointu danych. `ExecStartPre`
