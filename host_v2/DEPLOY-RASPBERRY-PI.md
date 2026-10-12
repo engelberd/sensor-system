@@ -158,8 +158,10 @@ Jednostka wysyła SIGTERM i daje 120 sekund na kontrolowany Stop oraz drain WAL.
 Błąd konfiguracji, utworzenia statusu albo storage nie jest restartowany.
 Przejściowy błąd bootstrapu ma odstęp 15 sekund oraz limit czterech startów w
 ciągu pięciu minut. To ograniczenie chroni magistrale przed szybką pętlą, ale
-nie zastępuje docelowego startu degraded przy nieobecnym node; ten przypadek
-pozostaje otwartą bramką Etapu 3.
+nie zastępuje docelowego częściowego bootstrapu przy nieobecnym node; ten
+przypadek pozostaje otwartą bramką Etapu 3. Node wykryty poprawnie, lecz
+odrzucający aktywację, jest już izolowany do swojego kanału: pozostałe kanały
+pracują, a Runtime Status zachowuje jawny `faulted` i ogólny stan `degraded`.
 
 Przełączenie wykonujemy w oknie serwisowym: zatrzymujemy legacy host, upewniamy
 się, że zwolnił wszystkie porty, uruchamiamy v2 i sprawdzamy discovery oraz

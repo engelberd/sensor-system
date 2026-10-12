@@ -205,10 +205,21 @@ Fizyczny rollback ujawnił właściwą otwartą bramkę startu: `line-a` weszła
 udawała sukcesu. Błąd złożenia runtime był jednak początkowo restartowany przez
 systemd. Został przeklasyfikowany na trwały błąd startu (`EX_CONFIG=78`), więc
 jednostka zatrzyma się do interwencji zamiast ponownie obciążać wszystkie
-magistrale. Następny przyrost Etapu 3 ma izolować taki kanał podczas kompozycji,
-uruchomić pozostałe kanały jako degraded i zachować jawny fault w Runtime
-Status. Powrót kanału bez restartu procesu pozostaje kolejną częścią tej samej
-bramki, a nie zadaniem systemd.
+magistrale.
+
+Kolejny przyrost izoluje teraz błąd aktywacji do fizycznego kanału. Ten sam
+realny `Faulted/InvalidSample` na `line-a` uruchomił pięć pozostałych kanałów,
+opublikował `process=degraded`, `health=degraded` i `line-a=faulted`, bez
+restartu procesu. Zdrowe linie nie miały błędów transportu ani backpressure, a
+kontrolowany Stop zakończył wszystkie pięć z `clean=true`. Doctor celowo zwraca
+kod `2`, ponieważ utrata skonfigurowanego kanału wymaga interwencji operatora.
+
+Nieobecność node już podczas bootstrapu nadal kończy daną próbę kodem
+przejściowym. Fizyczny test pokazał pojedynczy `NodeDeadline` na `line-d`; po
+15-sekundowym, limitowanym retry pełny bootstrap przeszedł i system wrócił do
+pracy degraded wyłącznie przez fault `line-a`. Do zamknięcia bramki pozostaje
+częściowy bootstrap oraz późniejsze dołączenie brakującego kanału bez restartu
+procesu. To jest odpowiedzialność koordynatora kanałów, a nie systemd.
 
 Instalator/deployer ustawi użytkownika i grupy, katalogi, prawa, konfigurację,
 limity journald oraz zależność od właściwego mountpointu danych. `ExecStartPre`
