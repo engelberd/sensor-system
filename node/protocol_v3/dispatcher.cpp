@@ -4,7 +4,7 @@
 #include "protocol_v3/lifecycle.h"
 #include "protocol_v3/lifecycle_handler.h"
 #include "protocol_v3/diagnostics.h"
-#include "protocol_v3/time.h"
+#include "protocol_v3/time_service.h"
 
 namespace ProtocolV3 {
 

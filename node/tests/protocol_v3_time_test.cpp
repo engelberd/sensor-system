@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "protocol_v3/time.h"
+#include "protocol_v3/time_service.h"
 
 namespace {
 using namespace ProtocolV3;

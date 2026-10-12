@@ -10,7 +10,7 @@
 #include "protocol_v3/lifecycle_handler.h"
 #include "protocol_v3/measurement.h"
 #include "protocol_v3/measurement_handler.h"
-#include "protocol_v3/time.h"
+#include "protocol_v3/time_service.h"
 #include "protocol_v3/transport_endpoint.h"
 
 namespace {
