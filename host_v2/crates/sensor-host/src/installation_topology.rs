@@ -817,6 +817,16 @@ mod tests {
     }
 
     #[test]
+    fn tracked_v2_profiles_remain_loadable_as_complete_host_profiles() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let system = repository_root.join("host/configs/systems/rpi-sanok.json");
+        let profile = HostInstallationProfile::load(&system, &repository_root).unwrap();
+        assert_eq!(profile.system_name(), "rpi-sanok");
+        assert_eq!(profile.topology().channels().len(), 6);
+        assert_eq!(profile.topology().enabled_channels().count(), 6);
+    }
+
+    #[test]
     fn configuration_fingerprint_is_stable_and_detects_a_semantic_change() {
         let first = serde_json::json!({"b": [1, 2], "a": {"enabled": true}});
         let reordered = serde_json::json!({"a": {"enabled": true}, "b": [1, 2]});

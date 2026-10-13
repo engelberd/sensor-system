@@ -1,4 +1,8 @@
-# Sensor System Host Product Layout
+# Sensor System Host Product Layout (legacy)
+
+Ten katalog nie opisuje obsługi hosta v2. Polecenia Python zachowujemy wyłącznie
+jako materiał migracyjny i źródło scenariuszy testowych. Obowiązujący interfejs
+operatora opisuje `../docs/architecture/HOSTCTL-V2.md`.
 
 The host stack is now split into product-oriented layers:
 

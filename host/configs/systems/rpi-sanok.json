@@ -6,196 +6,34 @@
   },
   "channels": [
     {
-      "name": "line-a",
-      "channel_id": 1,
-      "label": "Linia A",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-a",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik A",
-        "sensor_label": "A",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 125.0,
-        "sensor_odr_hz": 250,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
+      "name": "line-a", "channel_id": 1, "label": "Linia A", "enabled": true,
+      "transport": {"kind": "serial-rs485", "device_id": "wch-ch9344-3-2", "endpoint": "/dev/sensor-system-line-a", "baud_rate": 115200},
+      "nodes": [{"id": 1, "hardware_id": "8d626ee02dcea999", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
     },
     {
-      "name": "line-b",
-      "channel_id": 2,
-      "label": "Linia B",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-b",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik B",
-        "sensor_label": "B",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 125.0,
-        "sensor_odr_hz": 250,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
+      "name": "line-b", "channel_id": 2, "label": "Linia B", "enabled": true,
+      "transport": {"kind": "serial-rs485", "device_id": "wch-ch9344-3-2", "endpoint": "/dev/sensor-system-line-b", "baud_rate": 115200},
+      "nodes": [{"id": 1, "hardware_id": "e6ab60a60e1506b3", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
     },
     {
-      "name": "line-c",
-      "channel_id": 3,
-      "label": "Linia C",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-c",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik C",
-        "sensor_label": "C",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 250.0,
-        "sensor_odr_hz": 500,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
+      "name": "line-c", "channel_id": 3, "label": "Linia C", "enabled": true,
+      "transport": {"kind": "serial-rs485", "device_id": "wch-ch9344-3-2", "endpoint": "/dev/sensor-system-line-c", "baud_rate": 115200},
+      "nodes": [{"id": 1, "hardware_id": "914c7da59ba288ed", "board_revision": 2, "enabled": true, "output_rate_hz": 250}]
     },
     {
-      "name": "line-d",
-      "channel_id": 4,
-      "label": "Linia D",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-d",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik D",
-        "sensor_label": "D",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 125.0,
-        "sensor_odr_hz": 250,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
+      "name": "line-d", "channel_id": 4, "label": "Linia D", "enabled": true,
+      "transport": {"kind": "serial-rs485", "device_id": "wch-ch9344-3-2", "endpoint": "/dev/sensor-system-line-d", "baud_rate": 115200},
+      "nodes": [{"id": 1, "hardware_id": "e7ef559bda6965ef", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
     },
     {
-      "name": "line-e",
-      "channel_id": 5,
-      "label": "Linia E",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-e",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik E",
-        "sensor_label": "E",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 125.0,
-        "sensor_odr_hz": 250,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
+      "name": "line-g", "channel_id": 7, "label": "Linia G", "enabled": true,
+      "transport": {"kind": "serial-rs485", "device_id": "wch-ch9344-3-2", "endpoint": "/dev/sensor-system-line-g", "baud_rate": 115200},
+      "nodes": [{"id": 1, "hardware_id": "c2d5b6c24245eaa9", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
     },
     {
-      "name": "line-f",
-      "channel_id": 6,
-      "label": "Linia F",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-f",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik F",
-        "sensor_label": "F",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 125.0,
-        "sensor_odr_hz": 250,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
-    },
-    {
-      "name": "line-g",
-      "channel_id": 7,
-      "label": "Linia G",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-g",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik G",
-        "sensor_label": "G",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 125.0,
-        "sensor_odr_hz": 250,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
-    },
-    {
-      "name": "line-h",
-      "channel_id": 8,
-      "label": "Linia H",
-      "enabled": true,
-      "port": "/dev/sensor-system-line-h",
-      "baud": 115200,
-      "timing_mode": "required",
-      "nodes": [{
-        "id": 1,
-        "name": "Czujnik H",
-        "sensor_label": "H",
-        "board_revision": 2,
-        "enabled": true,
-        "expected_odr_hz": 125.0,
-        "sensor_odr_hz": 250,
-        "range_g": 2,
-        "high_pass_corner": 0,
-        "fifo_watermark": 30,
-        "offset_x": 0,
-        "offset_y": 0,
-        "offset_z": 0
-      }]
+      "name": "line-h", "channel_id": 8, "label": "Linia H", "enabled": true,
+      "transport": {"kind": "serial-rs485", "device_id": "wch-ch9344-3-2", "endpoint": "/dev/sensor-system-line-h", "baud_rate": 115200},
+      "nodes": [{"id": 1, "hardware_id": "e648a8babac453a2", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
     }
   ]
 }

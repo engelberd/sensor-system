@@ -4,16 +4,12 @@ This repository contains the full Sensor System project:
 
 - `hardware/` for KiCad PCB projects, parts, footprints, and hardware notes
 - `node/` for the Pico firmware and bootloader artifacts
-- `host/` for recorder, configurator, supervisor, dashboards, and deployment files
+- `host_v2/` for the Rust recorder, protocol-5 service tools and data tools
+- `host/` for installation profiles and temporarily retained migration code
 
-Current product version: **0.4.1**.
-
-For day-to-day use, see the Polish
-[operator guide](docs/INSTRUKCJA-OPERATORA.md). For a new host computer, run:
-
-```bash
-./host/tools/setup_host.sh rpi-sanok
-```
+Architecture and current implementation gates start at
+[docs/README.md](docs/README.md). The supported local operator interface is
+[hostctl v2](docs/architecture/HOSTCTL-V2.md).
 
 For a macOS KiCad, firmware and host-development workstation, follow
 [the macOS setup guide](docs/SETUP-MACOS.md), install declared tools with
@@ -74,8 +70,8 @@ the Raspberry Pi host:
 2. Install the Pico SDK and toolchain.
 3. Build `node/`.
 4. Flash `node/build/sensor-system-node-factory.uf2` onto a brand-new Pico 2.
-5. Create `host/.venv` and install host requirements.
-6. Use `./hostctl config` to commission the node over RS485.
+5. Build host v2 with `./hostctl build`.
+6. Identify the node read-only with `./hostctl node identify DEVICE ADDRESS 115200`.
 
 Example setup for a clean local checkout:
 

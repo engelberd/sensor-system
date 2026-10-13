@@ -58,12 +58,13 @@ cmake --build --preset board-v2
 Artefakty powstają w ignorowanym `node/build/`. Dla V1 używamy osobnego presetu
 `board-v1` i katalogu `node/build.v1`.
 
-## 3. Python i lokalna konfiguracja hosta
+## 3. Host v2 i lokalna konfiguracja
 
 ```bash
-./host/tools/setup_host.sh rpi-sanok
 cp host/configs/host_system.macos.example.json host/system_config.json
+./hostctl build
 ./hostctl paths --init
+./hostctl validate
 ```
 
 Przed uruchomieniem zmień `extends`, jeśli pracujesz z innym systemem, wpisz
@@ -76,9 +77,9 @@ Lista portów z identyfikatorami USB:
 host/.venv/bin/python -m serial.tools.list_ports -v
 ```
 
-Narzędzia `ping`, `config`, `recorder`, `supervisor`, `dashboard` i `operator`
-mogą działać lokalnie. Supervisor i panele uruchamiamy na Macu w terminalu;
-sterowanie usługami `systemd` jest funkcją produkcyjnego hosta Linux.
+Na macOS można uruchamiać `validate`, `discover`, `run`, `doctor`, `capture`
+oraz `node`. Sterowanie usługą `systemd` jest funkcją hosta Linux. Wycofane
+narzędzia Python nie są częścią interfejsu hosta v2.
 
 ## 4. USB-RS485 i CH9344
 

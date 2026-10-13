@@ -30,6 +30,11 @@ Warstwa operatora nadal pochodzi w większości ze starego hosta. Natywny
 zainstalowany i uruchamiany automatycznie przez systemd. Dashboard nadal czyta
 stare pliki statusu i HDF5.
 
+Aktualizacja 2026-10-13: główny `hostctl` został odcięty od runtime legacy.
+Udostępnia tylko recorder, dane, serwis node i systemd dla V2. Stare komendy
+zwracają jawny błąd, a pełny kontrakt opisuje [HOSTCTL-V2.md](HOSTCTL-V2.md).
+Dashboard nadal pozostaje otwartą bramką Etapu 4.
+
 ## 2. Docelowe doświadczenie operatora
 
 Po ukończeniu tej roadmapy typowa obsługa ma wyglądać tak:
@@ -264,14 +269,17 @@ samą tożsamością. Pięć kanałów ponownie pracuje pod systemd; A pozostaje
 odizolowane na `0.5.6` do pierwszego rzeczywistego zaniku zasilania. Od `0.5.7`
 `Faulted` zachowuje zarówno restart, jak i wejście do bootloadera po RS485.
 
-Test ujawnił dwa braki narzędzia serwisowego. `hostctl update --enter auto`
+Test ujawnił dwa braki narzędzia serwisowego. Stare `hostctl update --enter auto`
 nadal próbuje legacy command `0x03`, a jego kontrola zajętości i inventory używa
 legacy kształtu `host/system_config.json`, co dla konfiguracji v2 kończy się
 `KeyError: port`. Bezpieczna procedura przejściowa wykonuje najpierw
 `sensor-hil prepare-update`, a następnie uploader z `--enter none`, jawnym
-`--board-revision` i zatrzymaną usługą. Integracja tej sekwencji z jednym
-poleceniem `hostctl` jest następnym zadaniem operatorskim; nie zmienia kontraktu
-firmware.
+`--board-revision` i zatrzymaną usługą. Sekwencja jest obecnie zintegrowana w
+jednym `hostctl update`: wymaga jawnej tożsamości, rewizji i oczekiwanej wersji,
+wykonuje protocol-5 prepare, upload A/B z `--enter none` oraz exact-version
+trial confirm. Stary parser inventory i command `0x03` nie uczestniczą w
+operacji. Sam transport bootloadera pozostaje czasowo odizolowanym modułem
+Python do późniejszego przepisania.
 
 Instalator/deployer ustawi użytkownika i grupy, katalogi, prawa, konfigurację,
 limity journald oraz zależność od właściwego mountpointu danych. `ExecStartPre`
@@ -417,13 +425,12 @@ testu 24/7:
 
 ## 6. Decyzja o najbliższej pracy
 
-Status runtime, `doctor` i automatyczny recorder systemd są zamknięte. Bieżącą
-bramką jest kontrolowany reset A, aktualizacja `0.5.6` → `0.5.7` po RS485,
-exact-version trial confirm i odczyt trwałego rekordu przez pasywny Diagnostics
-Service. Dokładny handoff zawiera
-[RASPBERRY-PI-NEXT-SESSION.md](RASPBERRY-PI-NEXT-SESSION.md).
+Status runtime, `doctor`, automatyczny recorder systemd i spójny interfejs
+`hostctl` V2 są zamknięte lokalnie. Fizyczny gate nowego `hostctl update`
+pozostaje do wykonania przy najbliższej planowanej aktualizacji noda; nie
+wykonujemy zapisu flash wyłącznie w celu testu CLI.
 
-Po rozpoznaniu i naprawie `InvalidSample` kontynuujemy dwie jawne ścieżki:
-częściowy bootstrap/późniejsze dołączanie kanału oraz dashboard w trybie
-obserwacji. Nie tworzymy w tym celu drugiego modelu stanu ani osobnej ścieżki
-RS485.
+Bieżące ścieżki produktu to częściowy bootstrap/późniejsze dołączanie kanału
+oraz dashboard V2 w trybie obserwacji. Następnie powstaną Configuration Service,
+Operations API i godzinny compactor Archive. Nie tworzymy dla nich drugiego
+modelu stanu ani osobnej ścieżki RS485.

@@ -43,6 +43,17 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Ok(Command::Paths {
+            config,
+            repository_root,
+            initialize,
+        }) => match paths(config, repository_root, initialize) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("sensor-host: cannot resolve paths: {error}");
+                ExitCode::from(2)
+            }
+        },
         Ok(Command::Run {
             config,
             repository_root,
@@ -472,6 +483,32 @@ fn validate(config: PathBuf, repository_root: PathBuf) -> Result<(), Box<dyn std
     Ok(())
 }
 
+fn paths(
+    config: PathBuf,
+    repository_root: PathBuf,
+    initialize: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let profile = HostInstallationProfile::load(&config, &repository_root)?;
+    let storage = profile.storage();
+    let entries = [
+        ("repository", repository_root.as_path()),
+        ("config", config.as_path()),
+        ("capture", storage.capture().root()),
+        ("checkpoint", storage.checkpoint_root()),
+        ("time", storage.time_persistence().root()),
+    ];
+    if initialize {
+        for (_, path) in &entries[2..] {
+            std::fs::create_dir_all(path)?;
+        }
+    }
+    for (name, path) in entries {
+        let state = if path.exists() { "exists" } else { "missing" };
+        println!("{name:12} {} [{state}]", path.display());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Version,
@@ -482,6 +519,11 @@ enum Command {
     Discover {
         config: PathBuf,
         repository_root: PathBuf,
+    },
+    Paths {
+        config: PathBuf,
+        repository_root: PathBuf,
+        initialize: bool,
     },
     Run {
         config: PathBuf,
@@ -501,17 +543,22 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
     {
         return Ok(Command::Help);
     }
-    if arguments
-        .first()
-        .is_some_and(|value| value == "validate" || value == "discover" || value == "run")
-    {
+    if arguments.first().is_some_and(|value| {
+        value == "validate" || value == "discover" || value == "paths" || value == "run"
+    }) {
         let operation = arguments[0].clone();
         let mut config = None;
         let mut repository_root = None;
         let mut status_file = None;
+        let mut initialize = false;
         let mut index = 1;
         while index < arguments.len() {
             let flag = &arguments[index];
+            if flag == "--init" && operation == "paths" && !initialize {
+                initialize = true;
+                index += 1;
+                continue;
+            }
             let value = arguments
                 .get(index + 1)
                 .ok_or("operation option requires a value")?;
@@ -538,6 +585,11 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                 config,
                 repository_root,
             }),
+            Some("paths") => Ok(Command::Paths {
+                config,
+                repository_root,
+                initialize,
+            }),
             Some("run") => Ok(Command::Run {
                 config,
                 repository_root,
@@ -546,12 +598,12 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
             _ => unreachable!("operation was matched above"),
         };
     }
-    Err("expected --version, --help, validate, discover, or run")
+    Err("expected --version, --help, validate, discover, paths, or run")
 }
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  sensor-host --version\n  sensor-host validate --config <profile.json> --repository-root <path>\n  sensor-host discover --config <profile.json> --repository-root <path>\n  sensor-host run --config <profile.json> --repository-root <path> --status-file <path>"
+        "usage:\n  sensor-host --version\n  sensor-host validate --config <profile.json> --repository-root <path>\n  sensor-host discover --config <profile.json> --repository-root <path>\n  sensor-host paths --config <profile.json> --repository-root <path> [--init]\n  sensor-host run --config <profile.json> --repository-root <path> --status-file <path>"
     );
 }
 
@@ -676,6 +728,34 @@ mod tests {
         );
         assert_ne!(fresh_session_seed(), 0);
         assert_ne!(fresh_work_id_seed(), 0);
+    }
+
+    #[test]
+    fn parses_paths_with_optional_initialization() {
+        assert_eq!(
+            parse_arguments(strings(&[
+                "paths",
+                "--config",
+                "/etc/sensor.json",
+                "--repository-root",
+                "/repo",
+                "--init"
+            ])),
+            Ok(Command::Paths {
+                config: PathBuf::from("/etc/sensor.json"),
+                repository_root: PathBuf::from("/repo"),
+                initialize: true,
+            })
+        );
+        assert!(parse_arguments(strings(&[
+            "validate",
+            "--config",
+            "/etc/sensor.json",
+            "--repository-root",
+            "/repo",
+            "--init"
+        ]))
+        .is_err());
     }
 
     #[test]

@@ -80,24 +80,20 @@ Po jednorazowym restarcie zasilania A:
    przygotowaną paczkę A/B po RS485:
 
    ```bash
-   host_v2/target/release/sensor-hil prepare-update \
-     /dev/sensor-system-line-a 1 8d626ee02dcea999 2 115200
-
    ./hostctl update \
-     --enter none \
      --port /dev/sensor-system-line-a \
      --node 1 \
+     --hardware-id 8d626ee02dcea999 \
      --board-revision 2 \
-     --image node/build/releases/sensor-system-node-v0.5.7/sensor-system-node-v0.5.7-update-package.json \
-     --no-verify-app \
-     --force-busy
+     --expected-firmware 0.5.7 \
+     --image node/build/releases/sensor-system-node-v0.5.7/sensor-system-node-v0.5.7-update-package.json
    ```
 
-   `--force-busy` jest tutaj dozwolone wyłącznie po potwierdzeniu, że usługa nie
-   posiada portu A. Automatyczne wejście updatera i parser inventory wymagają
-   jeszcze migracji z legacy konfiguracji do v2.
+   Polecenie samo wykonuje protocol-5 PrepareFirmwareUpdate i odmawia pracy,
+   gdy usługa recordera jest aktywna.
 
-4. Natychmiast potwierdź dokładny trial boot:
+4. `hostctl update` natychmiast potwierdza dokładny trial boot. Osobne polecenie
+   poniżej służy wyłącznie do diagnostyki albo wznowienia ręcznej procedury:
 
    ```bash
    host_v2/target/release/sensor-hil confirm-trial \

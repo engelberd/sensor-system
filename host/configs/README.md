@@ -2,7 +2,7 @@
 
 | Path | Tracked | Purpose |
 | --- | --- | --- |
-| `common.json` | yes | Product-wide storage and supervisor defaults |
+| `common.json` | yes | Product-wide storage and host v2 runtime defaults |
 | `systems/<name>.json` | yes | Stable hardware and sensor inventory for one installation |
 | `host_system.local.example.json` | yes | Example local port overlay copied during setup |
 | `host_system.macos.example.json` | yes | Disabled-by-default macOS workstation overlay |

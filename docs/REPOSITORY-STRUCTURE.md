@@ -12,12 +12,10 @@ sensor-system/
 │   ├── configs/
 │   │   ├── common.json       wspólne ustawienia produktu
 │   │   └── systems/          śledzone profile fizycznych instalacji
-│   ├── common/               wspólny model konfiguracji i statusu
-│   ├── recorder/             zapis Capture i Archive
-│   ├── systemd/              wyłącznie szablony jednostek
-│   ├── tests/                testy hosta
+│   ├── common/, recorder/    kod legacy zachowany do migracji danych
+│   ├── tests/                testy migracyjne i interfejsu operatorskiego
 │   └── system_config.json    lokalna, ignorowana nakładka aktywnego hosta
-├── host_v2/                  nowy runtime Rust i narzędzia offline
+├── host_v2/                  runtime Rust, systemd i narzędzia danych v2
 ├── docs/
 │   ├── architecture/         obowiązujący projekt i roadmapa
 │   ├── adr/                  decyzje architektoniczne

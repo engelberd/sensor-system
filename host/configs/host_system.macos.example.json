@@ -6,22 +6,16 @@
   },
   "storage": {
     "root_dir": "var/recordings",
-    "archive_dir": "var/archive"
-  },
-  "supervisor": {
-    "status_file": "var/run/supervisor.status.json",
-    "event_log": "var/log/supervisor.events.jsonl",
-    "channel_runtime_dir": "var/run",
-    "log_dir": "var/log"
+    "archive_dir": "var/archive",
+    "capture_v2": {"checkpoint_dir": "var/recordings/.retention"},
+    "time_v2": {"root_dir": "var/recordings/time"}
   },
   "channels": [
-    {"name": "line-a", "port": "/dev/cu.REPLACE-line-a", "enabled": false},
-    {"name": "line-b", "port": "/dev/cu.REPLACE-line-b", "enabled": false},
-    {"name": "line-c", "port": "/dev/cu.REPLACE-line-c", "enabled": false},
-    {"name": "line-d", "port": "/dev/cu.REPLACE-line-d", "enabled": false},
-    {"name": "line-e", "port": "/dev/cu.REPLACE-line-e", "enabled": false},
-    {"name": "line-f", "port": "/dev/cu.REPLACE-line-f", "enabled": false},
-    {"name": "line-g", "port": "/dev/cu.REPLACE-line-g", "enabled": false},
-    {"name": "line-h", "port": "/dev/cu.REPLACE-line-h", "enabled": false}
+    {"name": "line-a", "enabled": false, "transport": {"endpoint": "/dev/cu.REPLACE-line-a"}},
+    {"name": "line-b", "enabled": false, "transport": {"endpoint": "/dev/cu.REPLACE-line-b"}},
+    {"name": "line-c", "enabled": false, "transport": {"endpoint": "/dev/cu.REPLACE-line-c"}},
+    {"name": "line-d", "enabled": false, "transport": {"endpoint": "/dev/cu.REPLACE-line-d"}},
+    {"name": "line-g", "enabled": false, "transport": {"endpoint": "/dev/cu.REPLACE-line-g"}},
+    {"name": "line-h", "enabled": false, "transport": {"endpoint": "/dev/cu.REPLACE-line-h"}}
   ]
 }

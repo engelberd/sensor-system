@@ -13,17 +13,19 @@ podana niżej.
 3. [Host v2 user adoption roadmap](architecture/HOST-V2-USER-ADOPTION-ROADMAP.md)
    — droga od działającego rdzenia do automatycznej pracy 24/7, `hostctl doctor`,
    dashboardu i zdalnej obsługi Raspberry Pi.
-4. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
+4. [Hostctl v2](architecture/HOSTCTL-V2.md) — obowiązujący lokalny interfejs
+   operatora, aktualizacja node i jawnie wycofane komendy legacy.
+5. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
    ryzyka, realne granice wydajności i mapa parametrów.
-5. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
+6. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
    implementacja nie może naruszyć.
-6. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
+7. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
    znaczenie próbek, sekwencji, luk, czasu i okien danych.
-7. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
+8. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
    — godzinne produkty, watermark, wysyłka i retencja.
-8. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
+9. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
    zasady jednej magistrali z wieloma node.
-9. [Host v2 README](../host_v2/README.md) — realne drzewo kodu i polecenia
+10. [Host v2 README](../host_v2/README.md) — realne drzewo kodu i polecenia
    weryfikacji.
 
 Logiczny strumień node łączący zwarty ring próbek z dokładnymi lukami

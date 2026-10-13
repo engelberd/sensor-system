@@ -2,12 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
-VENV_PYTHON="$ROOT_DIR/host/.venv/bin/python"
-export PYTHONUNBUFFERED=1
+HOST_BINARY="${SENSOR_HOST_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-host}"
+DOCTOR_BINARY="${SENSOR_HOST_DOCTOR_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-doctor}"
+HIL_BINARY="${SENSOR_HOST_HIL_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-hil}"
+CAPTURE_VALIDATE_BINARY="${SENSOR_CAPTURE_VALIDATE_BINARY:-$ROOT_DIR/host_v2/target/release/capture-validate}"
+CAPTURE_EXPORT_BINARY="${SENSOR_CAPTURE_EXPORT_BINARY:-$ROOT_DIR/host_v2/target/release/capture-export}"
+HOST_CONFIG="${SENSOR_HOST_CONFIG:-$ROOT_DIR/host/system_config.json}"
+STATUS_FILE="${SENSOR_HOST_STATUS_FILE:-/run/sensor-system/host-v2-status.json}"
 
-# All repository-relative paths are anchored here, independently of the
-# caller's current working directory.
 cd "$ROOT_DIR"
 
 usage() {
@@ -15,169 +17,160 @@ usage() {
 Usage:
   ./hostctl <command> [args...]
 
-Commands:
-  ping       Run host ping tool
-  config     Run configurator
-  channel    Start, stop, or restart one recorder channel
-  lab        Run lab/diagnostic tool
-  recorder   Run production recorder
-  archive    Compact sealed Capture v1 files into Archive v1
-  verify     Fully validate Capture/Archive HDF5 and report effective ODR
-  supervisor Run multi-channel recorder supervisor
-  console    Run operator console
-  dashboard  Run web dashboard for supervisor/runtime state
-  operator   Run operator control panel for host, node config, runs, and preview
-  paths      Show the effective config, recording, archive, log and runtime paths
-  doctor     Run native v2 checks; add --offline, --deep or --json
-  install-services  Build and install the v2 recorder systemd service
-  rollback-services Swap current/previous v2 release with controlled restart
-  start      Start the v2 recorder service
-  stop       Stop the v2 recorder service with controlled shutdown
-  restart    Restart the v2 recorder service with controlled shutdown
-  status     Show the v2 recorder systemd status
-  logs       Show v2 recorder journald logs
-  boot       Run bootloader maintenance tool
-  update     Upload latest firmware package over RS485
-  py         Run arbitrary python module/script inside host venv
+Host v2:
+  build                 Build all native host v2 release binaries
+  validate              Validate the effective v2 installation profile
+  discover              Read-only discovery of every enabled node
+  run                   Run the v2 recorder in the foreground
+  paths [--init]        Show or create effective v2 storage paths
+  doctor                Check configuration, runtime and optionally RS485
+
+Data:
+  capture validate ROOT                 Validate all sealed Capture streams
+  capture export CAPTURE_DIR OUTPUT_DIR Validate and export one stream to CSV
+
+Node service (protocol 5 over RS485):
+  node <sensor-hil command> [args...]    Identity, diagnostics, time and recovery
+  update [options]                      Fail-closed application + A/B update
+
+Service:
+  install-services      Install a checksummed v2 systemd release
+  rollback-services     Switch to the previous v2 systemd release
+  start|stop|restart    Control sensor-host-v2.service
+  status|logs           Inspect sensor-host-v2.service
+
+Defaults:
+  config: host/system_config.json
+  status: /run/sensor-system/host-v2-status.json
 
 Examples:
-  ./hostctl ping --port /dev/sensor-system-rs485
-  ./hostctl config --port /dev/sensor-system-rs485 get-config
-  ./hostctl channel restart-remote --channel line-h
-  ./hostctl channel stop --channel line-g
-  ./hostctl channel start --channel line-g
-  ./hostctl config --port /dev/sensor-system-rs485 commission-scan
-  ./hostctl config --port /dev/sensor-system-rs485 commission-assign --hardware-id 0123456789ABCDEF --node-id 7
-  ./hostctl recorder --port /dev/sensor-system-rs485 --nodes 1 --output-dir runs/sensor-system --format hdf5 --window-seconds 600
-  ./hostctl archive --day 2026-08-02 --output archive/sensor-A_2026-08-02.archive.h5 capture/*.capture.h5
-  ./hostctl verify --json var/archive/sensor-A_2026-08-02.archive.h5
-  ./hostctl supervisor --config host/system_config.json
-  ./hostctl console
-  ./hostctl dashboard --config host/system_config.json --port 8080
-  ./hostctl operator --config host/system_config.json --port 8090
-  ./hostctl paths
-  ./hostctl doctor
-  ./hostctl boot --port /dev/sensor-system-rs485 --node 1 --enter app hello
-  ./hostctl update --port /dev/sensor-system-rs485 --node 1
+  ./hostctl validate
+  ./hostctl discover
+  ./hostctl run
+  ./hostctl doctor --deep
+  ./hostctl capture validate var/recordings
+  ./hostctl node diagnostics /dev/sensor-system-line-b 1 HARDWARE_ID 2 115200
+  ./hostctl update --port /dev/sensor-system-line-b --node 1 \
+    --hardware-id HARDWARE_ID --board-revision 2 --expected-firmware 0.5.7
 EOF
 }
 
-if [[ $# -lt 1 ]]; then
+missing_binary() {
+  echo "[ERROR] missing host v2 binary: $1" >&2
+  echo "Build it with: ./hostctl build" >&2
+  exit 69
+}
+
+require_binary() {
+  [[ -x $1 ]] || missing_binary "$1"
+}
+
+if (($# == 0)); then
   usage
-  exit 2
+  exit 64
 fi
 
 COMMAND="$1"
 shift
 
-# Native v2 operator commands must remain available when the retired Python
-# environment is absent. They receive explicit repository-relative defaults
-# from their own stable CLI contract.
-if [[ "$COMMAND" == "doctor" ]]; then
-  DOCTOR_BINARY="${SENSOR_HOST_DOCTOR_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-doctor}"
-  if [[ ! -x "$DOCTOR_BINARY" ]]; then
-    echo "[ERROR] missing native v2 doctor: $DOCTOR_BINARY" >&2
-    echo "Build it with: cargo build --release -p sensor-host --manifest-path host_v2/Cargo.toml" >&2
-    exit 69
-  fi
-  exec "$DOCTOR_BINARY" --repository-root "$ROOT_DIR" "$@"
-fi
-
-if [[ "$COMMAND" == "install-services" ]]; then
-  HOST_BINARY="${SENSOR_HOST_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-host}"
-  HOST_CONFIG="${SENSOR_HOST_CONFIG:-$ROOT_DIR/host/system_config.json}"
-  if [[ ${SENSOR_HOST_SKIP_BUILD:-0} != 1 ]]; then
-    cargo build --release -p sensor-host --manifest-path "$ROOT_DIR/host_v2/Cargo.toml"
-  fi
-  "$HOST_BINARY" validate --config "$HOST_CONFIG" --repository-root "$ROOT_DIR"
-  exec "$ROOT_DIR/host_v2/tools/install_systemd_service.sh" \
-    --repository-root "$ROOT_DIR" --config "$HOST_CONFIG" --binary "$HOST_BINARY" \
-    --user "${SENSOR_HOST_SERVICE_USER:-$(id -un)}" \
-    --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" "$@"
-fi
-
-if [[ "$COMMAND" == "rollback-services" ]]; then
-  exec "$ROOT_DIR/host_v2/tools/rollback_systemd_service.sh" "$@"
-fi
-
-if [[ "$COMMAND" == "start" || "$COMMAND" == "stop" || \
-      "$COMMAND" == "restart" || "$COMMAND" == "status" || \
-      "$COMMAND" == "logs" ]]; then
-  exec "$ROOT_DIR/host_v2/tools/service_control.sh" "$COMMAND" "$@"
-fi
-
-if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$COMMAND" == "--help" ]]; then
-  usage
-  exit 0
-fi
-
-if [[ ! -x "$VENV_PYTHON" ]]; then
-  echo "[ERROR] missing host virtualenv python: $VENV_PYTHON" >&2
-  echo "Create it first, for example:" >&2
-  echo "  python3 -m venv host/.venv" >&2
-  echo "  host/.venv/bin/python -m pip install pyserial numpy h5py" >&2
-  exit 1
-fi
+HAS_CONFIG=0
+HAS_REPOSITORY=0
+HAS_STATUS=0
+for argument in "$@"; do
+  [[ $argument == --config ]] && HAS_CONFIG=1
+  [[ $argument == --repository-root ]] && HAS_REPOSITORY=1
+  [[ $argument == --status-file ]] && HAS_STATUS=1
+done
 
 case "$COMMAND" in
-  ping)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_ping.py" "$@"
+  help|-h|--help)
+    usage
     ;;
-  config)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_configurator.py" "$@"
+  build)
+    exec cargo build --release --workspace --manifest-path "$ROOT_DIR/host_v2/Cargo.toml" "$@"
     ;;
-  channel)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_channel_control.py" "$@"
+  validate|discover)
+    require_binary "$HOST_BINARY"
+    EXECUTION=("$HOST_BINARY" "$COMMAND")
+    ((HAS_CONFIG)) || EXECUTION+=(--config "$HOST_CONFIG")
+    ((HAS_REPOSITORY)) || EXECUTION+=(--repository-root "$ROOT_DIR")
+    exec "${EXECUTION[@]}" "$@"
     ;;
-  lab)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_lab.py" "$@"
-    ;;
-  recorder)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_recorder.py" "$@"
-    ;;
-  archive)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_archive.py" "$@"
-    ;;
-  verify)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_hdf5.py" "$@"
-    ;;
-  supervisor)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_supervisor.py" "$@"
-    ;;
-  console)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_console.py" "$@"
-    ;;
-  dashboard)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_dashboard.py" "$@"
-    ;;
-  operator)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_operator_panel.py" "$@"
+  run)
+    require_binary "$HOST_BINARY"
+    EXECUTION=("$HOST_BINARY" run)
+    ((HAS_CONFIG)) || EXECUTION+=(--config "$HOST_CONFIG")
+    ((HAS_REPOSITORY)) || EXECUTION+=(--repository-root "$ROOT_DIR")
+    ((HAS_STATUS)) || EXECUTION+=(--status-file "$STATUS_FILE")
+    exec "${EXECUTION[@]}" "$@"
     ;;
   paths)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/host_paths.py" "$@"
+    require_binary "$HOST_BINARY"
+    EXECUTION=("$HOST_BINARY" paths)
+    ((HAS_CONFIG)) || EXECUTION+=(--config "$HOST_CONFIG")
+    ((HAS_REPOSITORY)) || EXECUTION+=(--repository-root "$ROOT_DIR")
+    exec "${EXECUTION[@]}" "$@"
     ;;
-  boot)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/tools/bootloader_cli.py" "$@"
+  doctor)
+    require_binary "$DOCTOR_BINARY"
+    EXECUTION=("$DOCTOR_BINARY")
+    ((HAS_CONFIG)) || EXECUTION+=(--config "$HOST_CONFIG")
+    ((HAS_REPOSITORY)) || EXECUTION+=(--repository-root "$ROOT_DIR")
+    ((HAS_STATUS)) || EXECUTION+=(--status-file "$STATUS_FILE")
+    exec "${EXECUTION[@]}" "$@"
+    ;;
+  capture)
+    SUBCOMMAND="${1:-}"
+    [[ -n $SUBCOMMAND ]] || { echo "[ERROR] capture requires validate or export" >&2; exit 64; }
+    shift
+    case "$SUBCOMMAND" in
+      validate)
+        require_binary "$CAPTURE_VALIDATE_BINARY"
+        exec "$CAPTURE_VALIDATE_BINARY" "$@"
+        ;;
+      export)
+        require_binary "$CAPTURE_EXPORT_BINARY"
+        exec "$CAPTURE_EXPORT_BINARY" "$@"
+        ;;
+      *)
+        echo "[ERROR] unknown capture command: $SUBCOMMAND" >&2
+        exit 64
+        ;;
+    esac
+    ;;
+  node)
+    require_binary "$HIL_BINARY"
+    [[ $# -gt 0 ]] || { "$HIL_BINARY" --help; exit 64; }
+    exec "$HIL_BINARY" "$@"
     ;;
   update)
-    exec "$VENV_PYTHON" "$ROOT_DIR/host/tools/bootloader_cli.py" \
-      --enter auto \
-      --enter-wait "${SENSOR_SYSTEM_UPDATE_ENTER_WAIT:-3}" \
-      --timeout "${SENSOR_SYSTEM_UPDATE_TIMEOUT:-10}" \
-      --hello-retries "${SENSOR_SYSTEM_UPDATE_HELLO_RETRIES:-20}" \
-      --hello-retry-delay "${SENSOR_SYSTEM_UPDATE_HELLO_RETRY_DELAY:-0.5}" \
-      --verify-app-wait "${SENSOR_SYSTEM_UPDATE_VERIFY_WAIT:-12}" \
-      --verify-app-retries "${SENSOR_SYSTEM_UPDATE_VERIFY_RETRIES:-10}" \
-      --verify-app-retry-delay "${SENSOR_SYSTEM_UPDATE_VERIFY_RETRY_DELAY:-0.5}" \
-      --image "$ROOT_DIR/node/build/sensor-system-node-update-package.json" \
-      upload "$@"
+    exec "$ROOT_DIR/host_v2/tools/update_node_v2.sh" "$@"
     ;;
-  py)
-    exec "$VENV_PYTHON" "$@"
+  install-services)
+    if [[ ${SENSOR_HOST_SKIP_BUILD:-0} != 1 ]]; then
+      cargo build --release -p sensor-host --manifest-path "$ROOT_DIR/host_v2/Cargo.toml"
+    fi
+    require_binary "$HOST_BINARY"
+    "$HOST_BINARY" validate --config "$HOST_CONFIG" --repository-root "$ROOT_DIR"
+    exec "$ROOT_DIR/host_v2/tools/install_systemd_service.sh" \
+      --repository-root "$ROOT_DIR" --config "$HOST_CONFIG" --binary "$HOST_BINARY" \
+      --user "${SENSOR_HOST_SERVICE_USER:-$(id -un)}" \
+      --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" "$@"
+    ;;
+  rollback-services)
+    exec "$ROOT_DIR/host_v2/tools/rollback_systemd_service.sh" "$@"
+    ;;
+  start|stop|restart|status|logs)
+    exec "$ROOT_DIR/host_v2/tools/service_control.sh" "$COMMAND" "$@"
+    ;;
+  ping|config|channel|lab|recorder|archive|verify|supervisor|console|dashboard|operator|boot|py)
+    echo "[ERROR] '$COMMAND' belongs to the retired Python host and is not exposed by hostctl v2" >&2
+    echo "See docs/legacy/ for historical procedures." >&2
+    exit 64
     ;;
   *)
     echo "[ERROR] unknown command: $COMMAND" >&2
     usage >&2
-    exit 2
+    exit 64
     ;;
 esac

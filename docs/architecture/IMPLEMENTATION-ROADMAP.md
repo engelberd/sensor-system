@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-10
+- Ostatnia aktualizacja: 2026-10-13
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -161,6 +161,12 @@ uzasadnią ją pomiary lub testy awarii.
 - timing DRDY i model synchronizacji;
 - zapis HDF5, dashboard i konfigurator pozostają w legacy do czasu powstania
   produkcyjnego Capture i Operations API.
+
+Interfejs operatorski nie wystawia już tych implementacji jako poleceń
+produkcyjnych. `hostctl` obsługuje wyłącznie V2; zakres i jawne braki opisuje
+[HOSTCTL-V2.md](HOSTCTL-V2.md). Produkcyjny Capture V2 ma własną walidację i
+eksport, natomiast compactor Archive, dashboard i Configuration Service nadal
+pozostają do implementacji.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
 Nie oznacza to jeszcze gotowości produkcyjnej dla wielu node, 1–16 channels,

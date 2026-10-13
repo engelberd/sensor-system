@@ -101,13 +101,12 @@ For a brand-new node or a board recovered locally:
 1. Put the Pico 2 into BOOTSEL mode.
 2. Flash `node/build/releases/sensor-system-node-vX.Y.Z/sensor-system-node-vX.Y.Z-factory.uf2`.
 3. Reboot normally.
-4. Commission a runtime `node_id` over RS485:
+4. Commission a runtime `node_id` before installing the node.
 
-```bash
-./hostctl config --port /dev/sensor-system-rs485 commission-scan
-./hostctl config --port /dev/sensor-system-rs485 commission-assign --hardware-id 0123456789ABCDEF --node-id 1
-./hostctl config --port /dev/sensor-system-rs485 --node 1 get-config
-```
+The protocol-5 Configuration/Commissioning Service is still an explicit open
+item. The legacy `hostctl config` command is retired and must not be used as a
+protocol-5 tool. Until the new service is implemented, do not install a fresh
+unassigned factory image where USB recovery is unavailable.
 
 Fresh factory images now start as unassigned (`node_id=0`), so they will not
 answer normal `ping` or update commands until commissioning assigns a real
@@ -120,12 +119,11 @@ udev alias such as `/dev/sensor-system-rs485`.
 The expected post-provisioning check is:
 
 ```bash
-./hostctl ping --port /dev/sensor-system-rs485 --node 1
-./hostctl boot --port /dev/sensor-system-rs485 --node 1 --enter none hello
+./hostctl node identify /dev/sensor-system-rs485 1 115200
+./hostctl node handshake /dev/sensor-system-rs485 1 HARDWARE_ID 2 115200
 ```
 
-`ping` should answer. `boot ... --enter none hello` should time out because the
-node should be running the application, not sitting in bootloader update mode.
+Both commands must return the expected protocol-5 identity and capabilities.
 
 ## Hardware Pinout
 
@@ -163,8 +161,9 @@ For field updates, use the packaged manifest instead of a raw `.bin`:
 
 ```bash
 ./hostctl update --port /dev/sensor-system-rs485 --node 1 \
+  --hardware-id 0011223344556677 --board-revision 2 \
+  --expected-firmware X.Y.Z \
   --image node/build/releases/sensor-system-node-vX.Y.Z/sensor-system-node-vX.Y.Z-update-package.json \
-  --no-verify-app
 ```
 
 The host uses a longer timeout for update operations because the bootloader
@@ -172,22 +171,23 @@ erases the inactive slot before acknowledging `Begin`. For slow flash or noisy
 links, override it explicitly:
 
 ```bash
-SENSOR_SYSTEM_UPDATE_TIMEOUT=30 ./hostctl update --port /dev/sensor-system-rs485 --node 1
+SENSOR_SYSTEM_UPDATE_TIMEOUT=30 ./hostctl update \
+  --port /dev/sensor-system-rs485 --node 1 \
+  --hardware-id 0011223344556677 --board-revision 2 \
+  --expected-firmware X.Y.Z
 ```
 
 This does:
 
-- asks the running app to reboot into bootloader
+- validates identity and asks the protocol-5 app to enter the bootloader
 - probes bootloader `HELLO`
 - learns which inactive slot should receive the update
 - selects the matching image from `sensor-system-node-update-package.json`
 - uploads the image
-- leaves metadata armed for a trial boot into the new slot
+- confirms the exact trial version after the application returns
 
-For a protocol-5 image, complete the trial over the same RS485 connection after
-the upload. The command first validates hardware identity, board revision,
-protocol and advertised trial-confirm support, then sends the idempotent
-confirmation:
+The update command performs trial confirmation itself. For diagnostics or
+recovery the same step remains available directly:
 
 ```bash
 cargo run --release --manifest-path host_v2/Cargo.toml --bin sensor-hil -- \
@@ -201,18 +201,15 @@ must therefore receive a new firmware version. A v2 trial restarts after 30
 seconds without confirmation, allowing the bootloader to roll back on its next
 decision. Run the command promptly after upload; USB is not involved.
 
-`--no-verify-app` only disables the legacy protocol-4 ping in the uploader.
-Verification is still mandatory and is performed by `sensor-hil confirm-trial`
-against protocol 5. The command tolerates the bootloader maintenance window and
-will not confirm a mismatched hardware ID, board revision, protocol or firmware
-version.
-
-You can also use the low-level maintenance tool directly:
+The command tolerates the bootloader maintenance window and will not confirm a
+mismatched hardware ID, board revision, protocol or firmware version. After an
+interrupted upload, resume the already entered bootloader explicitly:
 
 ```bash
-./hostctl boot --port /dev/sensor-system-rs485 --node 1 --enter app hello
-./hostctl boot --port /dev/sensor-system-rs485 --node 1 --enter app \
-  --image node/build/sensor-system-node-update-package.json upload
+./hostctl update --resume-bootloader \
+  --port /dev/sensor-system-rs485 --node 1 \
+  --hardware-id 0011223344556677 --board-revision 2 \
+  --expected-firmware X.Y.Z
 ```
 
 ## Reliability Model
@@ -265,8 +262,7 @@ Minimum acceptance after changing bootloader or application startup:
 
 1. Flash `sensor-system-node-factory.uf2` for a fresh board, or `sensor-system-node.uf2` for bench reflashing.
 2. Confirm LED turns on after startup.
-3. Confirm `./hostctl ping --port ...` succeeds.
-4. Confirm `./hostctl boot --port ... --node ... --enter none hello` times out.
-5. Run `./hostctl update --port ... --node ...`.
-6. Confirm the node reboots back into the application and still answers `ping`.
-7. Repeat once more to prove A/B alternation.
+3. Confirm `./hostctl node handshake ...` succeeds.
+4. Run `./hostctl update` with explicit hardware ID, board revision and version.
+5. Confirm the node reboots back into the application and passes handshake.
+6. Repeat once more with a newer unique version to prove A/B alternation.
