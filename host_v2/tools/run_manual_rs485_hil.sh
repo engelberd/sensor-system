@@ -37,8 +37,8 @@ if [[ ! -e $device ]]; then
   printf 'RS485 device does not exist: %s\n' "$device" >&2
   exit 66
 fi
-if [[ ! $node_address =~ ^[0-9]+$ ]] || (( node_address < 1 || node_address > 254 )); then
-  printf 'NODE_ADDRESS must be in range 1..254\n' >&2
+if [[ ! $node_address =~ ^[0-9]+$ ]] || (( node_address < 1 || node_address > 253 )); then
+  printf 'NODE_ADDRESS must be in range 1..253\n' >&2
   exit 64
 fi
 if [[ ! $hardware_id =~ ^[[:xdigit:]]{16}$ ]]; then

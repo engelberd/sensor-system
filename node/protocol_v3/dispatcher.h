@@ -8,6 +8,8 @@ namespace ProtocolV3 {
 class IMeasurementServiceHandler;
 class ILifecycleServiceHandler;
 class IDiagnosticsServiceHandler;
+class IConfigurationServiceHandler;
+class ICommissioningServiceHandler;
 
 struct ResponseCompletion {
     bool required = false;
@@ -51,11 +53,15 @@ public:
         NodeIdentity identity, NodeCapabilities capabilities,
         IMeasurementServiceHandler* measurement_handler = nullptr,
         ILifecycleServiceHandler* lifecycle_handler = nullptr,
-        IDiagnosticsServiceHandler* diagnostics_handler = nullptr)
+        IDiagnosticsServiceHandler* diagnostics_handler = nullptr,
+        IConfigurationServiceHandler* configuration_handler = nullptr,
+        ICommissioningServiceHandler* commissioning_handler = nullptr)
         : identity_(identity), capabilities_(capabilities),
           measurement_handler_(measurement_handler),
           lifecycle_handler_(lifecycle_handler),
-          diagnostics_handler_(diagnostics_handler) {}
+          diagnostics_handler_(diagnostics_handler),
+          configuration_handler_(configuration_handler),
+          commissioning_handler_(commissioning_handler) {}
 
     ApplicationDispatcher(const ApplicationDispatcher&) = delete;
     ApplicationDispatcher& operator=(const ApplicationDispatcher&) = delete;
@@ -85,12 +91,16 @@ private:
     DispatchResult dispatch_measurement(const Frame& request, Frame& response);
     DispatchResult dispatch_lifecycle(const Frame& request, Frame& response);
     DispatchResult dispatch_diagnostics(const Frame& request, Frame& response);
+    DispatchResult dispatch_configuration(const Frame& request, Frame& response);
+    DispatchResult dispatch_commissioning(const Frame& request, Frame& response);
 
     NodeIdentity identity_{};
     NodeCapabilities capabilities_{};
     IMeasurementServiceHandler* measurement_handler_ = nullptr;
     ILifecycleServiceHandler* lifecycle_handler_ = nullptr;
     IDiagnosticsServiceHandler* diagnostics_handler_ = nullptr;
+    IConfigurationServiceHandler* configuration_handler_ = nullptr;
+    ICommissioningServiceHandler* commissioning_handler_ = nullptr;
 };
 
 }  // namespace ProtocolV3

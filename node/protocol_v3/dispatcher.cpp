@@ -4,6 +4,8 @@
 #include "protocol_v3/lifecycle.h"
 #include "protocol_v3/lifecycle_handler.h"
 #include "protocol_v3/diagnostics.h"
+#include "protocol_v3/configuration_handler.h"
+#include "protocol_v3/commissioning_handler.h"
 #include "protocol_v3/time_service.h"
 
 namespace ProtocolV3 {
@@ -15,12 +17,21 @@ DispatchResult ApplicationDispatcher::dispatch(
 
 DispatchResult ApplicationDispatcher::dispatch_at(
     const Frame& request, Frame& response, uint64_t node_receive_us) {
+    const bool commissioning_request =
+        identity_.node_address == kHostAddress &&
+        request.destination == kBroadcastAddress &&
+        request.service == kCommissioningServiceId;
     if (request.role != Role::Request || request.source != kHostAddress ||
-        request.destination != identity_.node_address) {
+        (!commissioning_request &&
+         request.destination != identity_.node_address)) {
         return {};
     }
 
     initialize_response(request, response);
+    if (commissioning_request) {
+        response.source = kCommissioningAddress;
+        return dispatch_commissioning(request, response);
+    }
     if (request.service == kIdentityServiceId) {
         dispatch_identity(request, response);
         return {true, {}};
@@ -38,9 +49,55 @@ DispatchResult ApplicationDispatcher::dispatch_at(
     if (request.service == kDiagnosticsServiceId) {
         return dispatch_diagnostics(request, response);
     }
+    if (request.service == kConfigurationServiceId) {
+        return dispatch_configuration(request, response);
+    }
 
     set_error(ResponseStatus::UnsupportedService, response);
     return {true, {}};
+}
+
+DispatchResult ApplicationDispatcher::dispatch_commissioning(
+    const Frame& request, Frame& response) {
+    if (commissioning_handler_ == nullptr) return {};
+    const auto handled = commissioning_handler_->handle(
+        request.message, request.payload, request.payload_size,
+        response.payload, sizeof(response.payload));
+    if (!handled.response_produced) return {};
+    if (handled.payload_size == 0 ||
+        handled.payload_size > sizeof(response.payload)) {
+        set_error(ResponseStatus::InternalError, response);
+        return {true, {}, {}};
+    }
+    response.payload_size = handled.payload_size;
+    DispatchResult result{true, {}, {}};
+    if (handled.post_transmit_required) {
+        result.transmission = {
+            true, kCommissioningServiceId, handled.post_transmit_token};
+    }
+    return result;
+}
+
+DispatchResult ApplicationDispatcher::dispatch_configuration(
+    const Frame& request, Frame& response) {
+    if (!capabilities_.supports_service(ServiceId::Configuration)) {
+        set_error(ResponseStatus::UnsupportedService, response);
+        return {true, {}, {}};
+    }
+    if (configuration_handler_ == nullptr) {
+        set_error(ResponseStatus::InternalError, response);
+        return {true, {}, {}};
+    }
+    const auto handled = configuration_handler_->handle(
+        request.message, request.payload, request.payload_size,
+        response.payload, sizeof(response.payload));
+    if (handled.payload_size == 0 ||
+        handled.payload_size > sizeof(response.payload)) {
+        set_error(ResponseStatus::InternalError, response);
+        return {true, {}, {}};
+    }
+    response.payload_size = handled.payload_size;
+    return {true, {}, {}};
 }
 
 DispatchResult ApplicationDispatcher::dispatch_diagnostics(
@@ -84,6 +141,15 @@ bool ApplicationDispatcher::prepare_transmission(
 TransmissionSettlementStatus ApplicationDispatcher::settle_transmission(
     const TransmissionCompletion& completion, bool transmitted) {
     if (!completion.required) return TransmissionSettlementStatus::NotRequired;
+    if (completion.service == kCommissioningServiceId) {
+        if (commissioning_handler_ == nullptr) {
+            return TransmissionSettlementStatus::RejectedByHandler;
+        }
+        return commissioning_handler_->settle_transmission(
+                   completion.token, transmitted)
+            ? TransmissionSettlementStatus::Ok
+            : TransmissionSettlementStatus::RejectedByHandler;
+    }
     if (completion.service != kLifecycleServiceId) {
         return TransmissionSettlementStatus::UnsupportedService;
     }

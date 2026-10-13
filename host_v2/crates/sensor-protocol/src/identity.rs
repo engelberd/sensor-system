@@ -98,6 +98,23 @@ impl OutputRateCode {
             Self::Hz3_90625 => "3.90625",
         }
     }
+
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Hz4000),
+            1 => Some(Self::Hz2000),
+            2 => Some(Self::Hz1000),
+            3 => Some(Self::Hz500),
+            4 => Some(Self::Hz250),
+            5 => Some(Self::Hz125),
+            6 => Some(Self::Hz62_5),
+            7 => Some(Self::Hz31_25),
+            8 => Some(Self::Hz15_625),
+            9 => Some(Self::Hz7_8125),
+            10 => Some(Self::Hz3_90625),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,7 +183,7 @@ impl NodeIdentity {
         if self.boot_epoch.get() == 0 {
             return Err(IdentityContractError::ZeroBootEpoch);
         }
-        if !(1..=254).contains(&self.node_address) {
+        if !(1..=253).contains(&self.node_address) {
             return Err(IdentityContractError::InvalidNodeAddress);
         }
         if self.board_revision == 0 {

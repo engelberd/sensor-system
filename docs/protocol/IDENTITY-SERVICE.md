@@ -42,7 +42,7 @@ Success response ma dokładnie 24 bajty:
 | 0 | 1 | `status = OK` |
 | 1 | 8 | `hardware_id`, niezmienne bajty Pico unique ID |
 | 9 | 8 | `boot_epoch u64 LE`, niezerowe |
-| 17 | 1 | `node_address`, 1..254 |
+| 17 | 1 | `node_address`, 1..253; 254 jest zarezerwowane dla Commissioning |
 | 18 | 1 | `board_revision`, niezerowe |
 | 19 | 3 | firmware major, minor, patch |
 | 22 | 1 | framing version, obecnie 3 |

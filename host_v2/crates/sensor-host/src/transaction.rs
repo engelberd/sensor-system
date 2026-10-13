@@ -64,10 +64,25 @@ pub struct RequestSpec {
     pub timeout_recovery: TimeoutRecovery,
 }
 
+/// Explicit route for protocol services whose request destination differs
+/// from the expected response source. Commissioning is the only current user:
+/// host broadcasts to 255 and accepts a correlated reply from address 254.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoutedRequestSpec {
+    pub request_destination: u8,
+    pub response_source: u8,
+    pub service: u8,
+    pub request_message: u8,
+    pub response_message: u8,
+    pub timeout: DurationMicros,
+    pub timeout_recovery: TimeoutRecovery,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ActiveTransaction {
     pub transaction_id: u32,
     pub node_address: u8,
+    pub request_destination: u8,
     pub service: u8,
     pub request_message: u8,
     pub response_message: u8,
@@ -79,6 +94,7 @@ pub struct ActiveTransaction {
 pub struct PreparedTransaction {
     pub transaction_id: u32,
     pub node_address: u8,
+    pub request_destination: u8,
     pub service: u8,
     pub request_message: u8,
     pub response_message: u8,
@@ -90,7 +106,7 @@ impl PreparedTransaction {
     pub fn request_frame(self, payload: &[u8]) -> Result<Frame, sensor_protocol::FrameError> {
         Frame::new(
             FrameRole::Request,
-            self.node_address,
+            self.request_destination,
             HOST_ADDRESS,
             self.service,
             self.request_message,
@@ -104,7 +120,7 @@ impl ActiveTransaction {
     pub fn request_frame(self, payload: &[u8]) -> Result<Frame, sensor_protocol::FrameError> {
         Frame::new(
             FrameRole::Request,
-            self.node_address,
+            self.request_destination,
             HOST_ADDRESS,
             self.service,
             self.request_message,
@@ -211,6 +227,35 @@ impl TransactionCore {
         let transaction = PreparedTransaction {
             transaction_id: self.next_transaction_id,
             node_address: request.node_address,
+            request_destination: request.node_address,
+            service: request.service,
+            request_message: request.request_message,
+            response_message: request.response_message,
+            timeout: request.timeout,
+            timeout_recovery: request.timeout_recovery,
+        };
+        self.next_transaction_id = self.next_transaction_id.wrapping_add(1);
+        self.state = State::Transmitting(transaction);
+        Ok(transaction)
+    }
+
+    pub fn prepare_routed(
+        &mut self,
+        request: RoutedRequestSpec,
+    ) -> Result<PreparedTransaction, TransactionError> {
+        if !matches!(self.state, State::Idle) {
+            return Err(TransactionError::ChannelBusy);
+        }
+        if request.request_destination == HOST_ADDRESS
+            || request.response_source == HOST_ADDRESS
+            || request.response_source == BROADCAST_ADDRESS
+        {
+            return Err(TransactionError::InvalidRoutedRequest);
+        }
+        let transaction = PreparedTransaction {
+            transaction_id: self.next_transaction_id,
+            node_address: request.response_source,
+            request_destination: request.request_destination,
             service: request.service,
             request_message: request.request_message,
             response_message: request.response_message,
@@ -235,6 +280,7 @@ impl TransactionCore {
         let active = ActiveTransaction {
             transaction_id: prepared.transaction_id,
             node_address: prepared.node_address,
+            request_destination: prepared.request_destination,
             service: prepared.service,
             request_message: prepared.request_message,
             response_message: prepared.response_message,
@@ -326,6 +372,7 @@ pub enum TransactionError {
     ZeroDuration,
     ChannelBusy,
     RequestRequiresAddressedNode,
+    InvalidRoutedRequest,
     NotTransmitting,
     TimeOverflow,
 }
@@ -338,6 +385,7 @@ impl fmt::Display for TransactionError {
             Self::RequestRequiresAddressedNode => {
                 "request/response transactions require one addressed node"
             }
+            Self::InvalidRoutedRequest => "routed transaction has an invalid address pair",
             Self::NotTransmitting => "channel has no prepared transmission",
             Self::TimeOverflow => "transaction deadline exceeds monotonic time range",
         };

@@ -20,6 +20,9 @@ void test_ab_image_reports_only_implemented_behavior() {
                    ProtocolV3::kFeatureRemoteFirmwareUpdate) != 0);
     assert(capabilities.supports_service(ProtocolV3::ServiceId::Time));
     assert(capabilities.supports_service(ProtocolV3::ServiceId::Diagnostics));
+    assert(capabilities.supports_service(ProtocolV3::ServiceId::Configuration));
+    assert((capabilities.feature_flags &
+            ProtocolV3::kFeatureAtomicConfig) != 0);
     assert(ProtocolV3::validate(capabilities) ==
            ProtocolV3::IdentityCodecStatus::Ok);
 }
@@ -29,13 +32,15 @@ void test_standalone_image_does_not_claim_ab_services() {
         node_v2::FirmwareImageKind::Standalone, false);
 
     static_assert(capabilities.feature_flags ==
-                  ProtocolV3::kFeatureSampleJournal);
+                  (ProtocolV3::kFeatureSampleJournal |
+                   ProtocolV3::kFeatureAtomicConfig));
     static_assert((capabilities.feature_flags &
                    ProtocolV3::kFeatureTrialBootConfirmation) == 0);
     static_assert((capabilities.feature_flags &
                    ProtocolV3::kFeatureRemoteFirmwareUpdate) == 0);
     assert(capabilities.supports_service(ProtocolV3::ServiceId::Time));
     assert(capabilities.supports_service(ProtocolV3::ServiceId::Diagnostics));
+    assert(capabilities.supports_service(ProtocolV3::ServiceId::Configuration));
     assert(ProtocolV3::validate(capabilities) ==
            ProtocolV3::IdentityCodecStatus::Ok);
 }

@@ -3,6 +3,8 @@
 #include "config/node_v2_runtime_profile.h"
 #include "measurement/measurement_ingress_sink.h"
 #include "protocol_v3/lifecycle_handler.h"
+#include "protocol_v3/configuration_handler.h"
+#include "protocol_v3/commissioning_handler.h"
 #include "protocol_v3/transport_endpoint.h"
 #include "runtime/core1_measurement_runtime.h"
 #include "runtime/operation_mailbox.h"
@@ -25,6 +27,16 @@ using SystemOperationMailbox = runtime::OperationMailbox<
     runtime::SensorRuntimeResult,
     Profile::kCommandMailboxEntries,
     Profile::kResultMailboxEntries>;
+using ConfigurationMailbox = runtime::OperationMailbox<
+    runtime::ConfigurationCommand,
+    runtime::ConfigurationResult,
+    Profile::kCommandMailboxEntries,
+    Profile::kResultMailboxEntries>;
+using CommissioningMailbox = runtime::OperationMailbox<
+    runtime::CommissioningCommand,
+    runtime::CommissioningResult,
+    Profile::kCommandMailboxEntries,
+    Profile::kResultMailboxEntries>;
 using Core1MeasurementRuntime = runtime::Core1MeasurementRuntime<
     Profile::kIngressEvents,
     Profile::kJournalSamples,
@@ -33,6 +45,12 @@ using Core1MeasurementRuntime = runtime::Core1MeasurementRuntime<
 using LifecycleService = ProtocolV3::LifecycleServiceHandler<
     OperationMailbox,
     SystemOperationMailbox,
+    Profile::kLifecycleResultCacheEntries>;
+using ConfigurationService = ProtocolV3::ConfigurationServiceHandler<
+    ConfigurationMailbox,
+    Profile::kLifecycleResultCacheEntries>;
+using CommissioningService = ProtocolV3::CommissioningServiceHandler<
+    CommissioningMailbox,
     Profile::kLifecycleResultCacheEntries>;
 
 template <typename Port>

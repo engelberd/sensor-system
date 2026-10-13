@@ -15,17 +15,19 @@ podana niżej.
    dashboardu i zdalnej obsługi Raspberry Pi.
 4. [Hostctl v2](architecture/HOSTCTL-V2.md) — obowiązujący lokalny interfejs
    operatora, aktualizacja node i jawnie wycofane komendy legacy.
-5. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
+5. [Operations API v1](architecture/OPERATIONS-API-V1.md) — targety, tryby,
+   idempotency i bounded command path dla sterowania per channel/per node.
+6. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
    ryzyka, realne granice wydajności i mapa parametrów.
-6. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
+7. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
    implementacja nie może naruszyć.
-7. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
+8. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
    znaczenie próbek, sekwencji, luk, czasu i okien danych.
-8. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
+9. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
    — godzinne produkty, watermark, wysyłka i retencja.
-9. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
+10. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
    zasady jednej magistrali z wieloma node.
-10. [Host v2 README](../host_v2/README.md) — realne drzewo kodu i polecenia
+11. [Host v2 README](../host_v2/README.md) — realne drzewo kodu i polecenia
    weryfikacji.
 
 Logiczny strumień node łączący zwarty ring próbek z dokładnymi lukami
@@ -84,6 +86,9 @@ z działającego protocol 4 opisuje
 [MIGRATION-V4-V5.md](protocol/MIGRATION-V4-V5.md).
 Minimalny payload synchronizacji zegara opisuje
 [TIME-WIRE-V5.md](protocol/TIME-WIRE-V5.md).
+Atomową konfigurację pomiaru, slotowane discovery i pierwsze przypisanie adresu
+opisuje
+[CONFIGURATION-COMMISSIONING-V5.md](protocol/CONFIGURATION-COMMISSIONING-V5.md).
 Pełną tabelę ODR, format liczb całkowitych i znalezione ograniczenia starego
 firmware opisuje
 [DATA-TYPE-AND-RATE-AUDIT.md](protocol/DATA-TYPE-AND-RATE-AUDIT.md).

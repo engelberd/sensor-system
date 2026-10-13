@@ -7,6 +7,7 @@ namespace ProtocolV3 {
 
 constexpr uint8_t kFramingVersion = 3;
 constexpr uint8_t kHostAddress = 0;
+constexpr uint8_t kCommissioningAddress = 254;
 constexpr uint8_t kBroadcastAddress = 255;
 constexpr size_t kHeaderBytes = 10;
 constexpr size_t kCrcBytes = 4;

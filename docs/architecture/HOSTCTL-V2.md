@@ -60,7 +60,8 @@ jako materiał migracyjny, źródło testów danych i bootloader uploader. Nie j
 specyfikacją V2.
 
 Brakujące funkcje mają otrzymać nowe odpowiedzialności zamiast aliasów do
-legacy:
+legacy. Codeki i runtime Configuration/Commissioning są już gotowe, lecz nie są
+jeszcze publicznymi poleceniami `hostctl` bez Operations API:
 
 - konfiguracja i commissioning przez Configuration Service protocol 5;
 - Operations API oraz sterowanie per kanał/node;

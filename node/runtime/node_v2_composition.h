@@ -32,7 +32,8 @@ private:
     MeasurementSink sink_;
 };
 
-template <typename Acquisition, typename Port, typename Observer>
+template <typename Acquisition, typename Port, typename Observer,
+          typename ConfigManager>
 class RuntimeComposition {
 public:
     using SensorRuntime = runtime::SensorRuntime<Acquisition, MeasurementSink>;
@@ -42,6 +43,9 @@ public:
     using SystemRuntime = runtime::SystemOperationRuntime<
         SensorRuntime,
         SystemOperationMailbox>;
+    using ConfigurationRuntime = runtime::ConfigurationRuntime<
+        SensorRuntime, Acquisition, ConfigManager, MeasurementSink>;
+    using CommissioningRuntime = runtime::CommissioningRuntime<ConfigManager>;
     using Endpoint = TransportEndpoint<Port>;
     using Core1Runtime = runtime::Core1ProtocolRuntime<
         Core1MeasurementRuntime,
@@ -51,6 +55,8 @@ public:
 
     RuntimeComposition(DataPlane& data_plane,
                        Acquisition& acquisition,
+                       ConfigManager& config_manager,
+                       runtime::ICommissioningBootSettings& commissioning_boot,
                        Port& port,
                        Observer& observer,
                        ProtocolV3::NodeIdentity identity,
@@ -65,13 +71,20 @@ public:
         : data_plane_(data_plane),
           sensor_runtime_(acquisition, data_plane.sink()),
           core0_(sensor_runtime_, mailbox_, fault_latch_),
+          configuration_runtime_(sensor_runtime_, acquisition, config_manager,
+                                 data_plane.sink()),
+          commissioning_runtime_(config_manager, commissioning_boot),
           system_runtime_(sensor_runtime_, system_mailbox_,
                           firmware_update_control, trial_boot_control),
           core1_measurement_(data_plane.queue(), boot_epoch, fault_latch_),
           lifecycle_(mailbox_, system_mailbox_, system_action_),
+          configuration_(configuration_mailbox_,
+                         initial_configuration(config_manager, acquisition)),
+          commissioning_(commissioning_mailbox_, system_action_,
+                         commissioning_identity(identity)),
           dispatcher_(identity, capabilities,
                       &core1_measurement_.handler(), &lifecycle_,
-                      diagnostics_handler),
+                      diagnostics_handler, &configuration_, &commissioning_),
           endpoint_(port, dispatcher_, transport_policy),
           core1_(core1_measurement_, lifecycle_, endpoint_, observer,
                  core1_policy),
@@ -82,8 +95,10 @@ public:
     RuntimeComposition& operator=(const RuntimeComposition&) = delete;
 
     bool configuration_valid() const {
-        return ProtocolV3::validate(identity_) ==
-                   ProtocolV3::IdentityCodecStatus::Ok &&
+        const bool identity_valid = identity_.node_address == 0 ||
+            ProtocolV3::validate(identity_) ==
+                ProtocolV3::IdentityCodecStatus::Ok;
+        return identity_valid &&
                ProtocolV3::validate(capabilities_) ==
                    ProtocolV3::IdentityCodecStatus::Ok &&
                endpoint_.valid_policy() && core1_.policy().valid() &&
@@ -93,29 +108,94 @@ public:
     Core0Runtime& core0() { return core0_; }
     void poll_core0() {
         core0_.poll();
+        (void)configuration_executor_.poll(
+            configuration_mailbox_,
+            [this](const runtime::ConfigurationCommand& command) {
+                return configuration_runtime_.handle(command);
+            });
+        (void)commissioning_executor_.poll(
+            commissioning_mailbox_,
+            [this](const runtime::CommissioningCommand& command) {
+                return commissioning_runtime_.handle(command);
+            });
         (void)system_runtime_.poll();
     }
     Core1Runtime& core1() { return core1_; }
     Core1MeasurementRuntime& measurement() { return core1_measurement_; }
     LifecycleService& lifecycle() { return lifecycle_; }
+    ConfigurationService& configuration() { return configuration_; }
+    CommissioningService& commissioning() { return commissioning_; }
     ProtocolV3::ApplicationDispatcher& dispatcher() { return dispatcher_; }
     Endpoint& endpoint() { return endpoint_; }
     OperationMailbox& mailbox() { return mailbox_; }
     SystemOperationMailbox& system_mailbox() { return system_mailbox_; }
+    ConfigurationMailbox& configuration_mailbox() {
+        return configuration_mailbox_;
+    }
+    CommissioningMailbox& commissioning_mailbox() {
+        return commissioning_mailbox_;
+    }
     runtime::DeferredSystemAction& system_action() { return system_action_; }
     runtime::RuntimeFaultLatch& fault_latch() { return fault_latch_; }
 
 private:
+    static ProtocolV3::CommissioningIdentity commissioning_identity(
+        const ProtocolV3::NodeIdentity& identity) {
+        ProtocolV3::CommissioningIdentity output{};
+        for (size_t index = 0; index < ProtocolV3::kHardwareIdBytes; ++index) {
+            output.hardware_id[index] = identity.hardware_id[index];
+        }
+        output.board_revision = identity.board_revision;
+        output.firmware = identity.firmware;
+        output.framing_version = identity.framing_version;
+        output.application_version = identity.application_version;
+        return output;
+    }
+
+    static runtime::ConfigurationResult initial_configuration(
+        const ConfigManager& config_manager,
+        const Acquisition& acquisition) {
+        const auto config = runtime::runtime_configuration_from_device(
+            config_manager.current());
+        uint16_t unused = 0;
+        uint8_t sensor_odr = UINT8_MAX;
+        (void)runtime::output_rate_to_sensor(
+            config.output_rate_code, unused, sensor_odr);
+        return {
+            0,
+            runtime::ConfigurationResultCode::Applied,
+            config_manager.generation(),
+            config,
+            sensor_odr,
+            2,
+            acquisition.stats().next_sample_seq,
+        };
+    }
+
     DataPlane& data_plane_;
     SensorRuntime sensor_runtime_;
     OperationMailbox mailbox_{};
+    ConfigurationMailbox configuration_mailbox_{};
+    CommissioningMailbox commissioning_mailbox_{};
     SystemOperationMailbox system_mailbox_{};
     runtime::DeferredSystemAction system_action_{};
     runtime::RuntimeFaultLatch fault_latch_{};
     Core0Runtime core0_;
+    ConfigurationRuntime configuration_runtime_;
+    CommissioningRuntime commissioning_runtime_;
+    runtime::OperationExecutor<
+        ConfigurationMailbox,
+        runtime::ConfigurationCommand,
+        runtime::ConfigurationResult> configuration_executor_{};
+    runtime::OperationExecutor<
+        CommissioningMailbox,
+        runtime::CommissioningCommand,
+        runtime::CommissioningResult> commissioning_executor_{};
     SystemRuntime system_runtime_;
     Core1MeasurementRuntime core1_measurement_;
     LifecycleService lifecycle_;
+    ConfigurationService configuration_;
+    CommissioningService commissioning_;
     ProtocolV3::ApplicationDispatcher dispatcher_;
     Endpoint endpoint_;
     Core1Runtime core1_;

@@ -165,8 +165,9 @@ uzasadnią ją pomiary lub testy awarii.
 Interfejs operatorski nie wystawia już tych implementacji jako poleceń
 produkcyjnych. `hostctl` obsługuje wyłącznie V2; zakres i jawne braki opisuje
 [HOSTCTL-V2.md](HOSTCTL-V2.md). Produkcyjny Capture V2 ma własną walidację i
-eksport, natomiast compactor Archive, dashboard i Configuration Service nadal
-pozostają do implementacji.
+eksport. Configuration i Commissioning Service są zaimplementowane w protocol 5
+po obu stronach wire; przed HIL i udostępnieniem operatorowi wymagają jeszcze
+Operations API. Compactor Archive i dashboard nadal pozostają do implementacji.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
 Nie oznacza to jeszcze gotowości produkcyjnej dla wielu node, 1–16 channels,
@@ -242,12 +243,12 @@ wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
 | 2. Discovery | runtime oraz fizyczny fail-closed handshake gotowe | inventory i testy wielu node |
 | 3. Transfer/`NodeSession` | fizyczny wire-to-durable pion oraz produkcyjny Capture gotowe | recovery po utracie procesu/zasilania w HIL |
 | 4. Scheduler/`ChannelRuntime` | pełny pion Measurement, TimeSync i symulacja wielu node gotowe | wykonawcy Health/Diagnostic i HIL wielu node |
-| 5. Firmware protocol 5 | obrazy A/B, rollback, migracja oraz confirm 0.5.6 gotowe | soak i pomiary granic pojemności |
+| 5. Firmware protocol 5 | Configuration/Commissioning, obrazy A/B, rollback, migracja i confirm gotowe w kodzie | HIL firmware 0.5.8, soak i pomiary granic pojemności |
 | 6. Adapter RS485/HIL | handshake, update i pełny transfer jednej linii gotowe | wiele node, długi przewód, zakłócenia i restart hosta |
 | 7. Capture | WAL, recovery, segmenty, tracked profile parser, coverage index/proof, osobne checkpointy i cleanup Capture/Archive, bounded handoff, group commit i fault injection gotowe | integracja compactora/publishera, benchmark, process-kill matrix i dane rzeczywiste |
 | 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja i HIL jednego node gotowe | UTC, długi pomiar dryfu, przeplatany HIL i wiele node |
-| 9. Skala 1–16 | implementacja w toku | kompozycja startup/recovery, `HostCoordinator`, `run` i test macierzy |
-| 10. Operations | Lifecycle subset gotowy | API/IPC, audit, config i operacje grupowe |
+| 9. Skala 1–16 | runtime i symulacja 1/4/8 gotowe | fizyczny test macierzy i wiele node na kanał |
+| 10. Operations | codeki Configuration/Commissioning i integracja `ChannelAgent` gotowe | bounded command path, API/IPC, audit i operacje grupowe |
 | 11. Migracja | nierozpoczęty | Archive, canary, rollback i usunięcie legacy |
 
 ### Etap 0 — fundament projektu — ukończony
@@ -724,6 +725,17 @@ config transaction, commissioning i firmware update. UI i CLI są klientami API.
 
 Brama: równoległe/conflicting commands mają deterministyczny wynik, UI nie
 otwiera portów, a przerwany update pozostawia bootowalny slot.
+
+Bieżąca kolejność implementacji:
+
+1. bounded command/result path do workera będącego jedynym właścicielem RS485;
+2. jawne przejścia `Recording → Stopping → Maintenance` i powrót przez pełną
+   walidację/admission;
+3. odczyt oraz mutacje Configuration per node;
+4. wyłączne okno Commissioning per channel i handshake przydzielonego node;
+5. lokalne IPC, rejestr/audit operacji i adapter `hostctl`;
+6. operacje grupowe z wynikiem per target;
+7. dopiero potem dashboard jako cienki klient tego samego API.
 
 ### Etap 11 — Archive, narzędzia i migracja produkcyjna
 

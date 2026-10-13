@@ -192,7 +192,9 @@ Capabilities schema 2 reports Measurement Service **output rates**, after the
 node's mandatory filtering and decimation. The current firmware advertises
 `2000, 1000, 500, 250, 125, 62.5 Hz`; it does not expose the ADXL355 input ODR
 bitmap as if it were the stream rate. The selected current rate belongs to the
-configuration observed state and will be read through Configuration Service.
+configuration observed state. Firmware 0.5.8 implements the bounded
+Configuration and Commissioning services; the operator-facing path will be
+exposed through Operations API after its Maintenance transition is wired.
 
 After an A/B upload, confirm the trial over RS485 with the expected hardware
 identity. This command performs the same fail-closed handshake first:

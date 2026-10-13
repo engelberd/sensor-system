@@ -142,7 +142,7 @@ wire frame = COBS(raw frame) || 0x00
 raw frame:
   framing_version   u8
   role              u8       REQUEST albo RESPONSE
-  destination       u8       0=host, 1..254=node, 255=broadcast
+  destination       u8       0=host, 1..253=node, 254=commissioning, 255=broadcast
   source            u8
   service           u8       discovery/transfer/time/config/diagnostics/...
   message           u8       typ w zakresie service

@@ -3,12 +3,21 @@ use std::collections::VecDeque;
 
 use sensor_core::{BootEpoch, ClockObservation, ClockObservationError};
 use sensor_protocol::{
-    decode_stream_state_success, decode_time_response, Frame, MeasurementWireError,
-    NodeCapabilities, NodeIdentity, ObservabilityProfile, ResponseStatus, RuntimeCommand,
-    RuntimeOperation, RuntimeResult, ServiceId, StreamState, TimeWireError,
-    GET_STREAM_STATE_MESSAGE_ID, OBSERVE_CLOCK_MESSAGE_ID, TIME_SERVICE_ID,
+    decode_stream_state_success, decode_time_response, ConfigOperationRequest, Frame,
+    MeasurementConfiguration, MeasurementWireError, NodeCapabilities, NodeIdentity,
+    ObservabilityProfile, ResponseStatus, RuntimeCommand, RuntimeOperation, RuntimeResult,
+    ServiceId, StreamState, TimeWireError, GET_STREAM_STATE_MESSAGE_ID, OBSERVE_CLOCK_MESSAGE_ID,
+    TIME_SERVICE_ID,
 };
 
+use crate::commissioning::{
+    CommissioningError, CommissioningOperation, CommissioningOutcome, CommissioningPhase,
+    CommissioningRequest,
+};
+use crate::configuration::{
+    ConfigurationError, ConfigurationOperation, ConfigurationOutcome, ConfigurationPhase,
+    ConfigurationRequest,
+};
 use crate::handshake::{
     capabilities_request, identity_request, HandshakeError, HandshakePhase, HandshakeRequirements,
     NodeHandshake,
@@ -123,6 +132,31 @@ pub enum ChannelEvent {
         node_address: u8,
         operation_id: u32,
     },
+    ConfigurationNotAccepted {
+        node_address: u8,
+        operation_id: Option<u32>,
+    },
+    ConfigurationComplete {
+        node_address: u8,
+        outcome: ConfigurationOutcome,
+    },
+    ConfigurationTimedOut {
+        node_address: u8,
+        operation_id: Option<u32>,
+    },
+    CommissioningSlotEmpty {
+        round_nonce: u64,
+        slot_index: u16,
+    },
+    CommissioningNotAccepted {
+        operation_id: u32,
+    },
+    CommissioningComplete {
+        outcome: CommissioningOutcome,
+    },
+    CommissioningTimedOut {
+        operation_id: u32,
+    },
     WireAttemptFailed {
         node_address: u8,
     },
@@ -137,6 +171,8 @@ enum PendingWork {
     Handshake(NodeHandshake),
     StreamState { node_address: u8 },
     Lifecycle(LifecycleOperation),
+    Configuration(ConfigurationOperation),
+    Commissioning(CommissioningOperation),
     Measurement(Box<MeasurementTransfer>),
     TimeSync(TimeSyncAttempt),
 }
@@ -154,6 +190,8 @@ impl PendingWork {
             Self::Handshake(handshake) => handshake.requirements().node_address,
             Self::StreamState { node_address } => *node_address,
             Self::Lifecycle(operation) => operation.node_address(),
+            Self::Configuration(operation) => operation.node_address(),
+            Self::Commissioning(_) => sensor_protocol::COMMISSIONING_ADDRESS,
             Self::Measurement(transfer) => transfer.node_address(),
             Self::TimeSync(attempt) => attempt.node_address,
         }
@@ -216,6 +254,106 @@ impl ChannelAgent {
             },
         )?;
         self.pending.push_back(PendingWork::Lifecycle(lifecycle));
+        Ok(operation_id)
+    }
+
+    pub fn submit_get_configuration(&mut self, node_address: u8) -> Result<(), ChannelAgentError> {
+        self.submit_configuration(ConfigurationOperation::new(
+            node_address,
+            ConfigurationRequest::Get,
+        )?)
+    }
+
+    pub fn submit_validate_configuration(
+        &mut self,
+        node_address: u8,
+        configuration: MeasurementConfiguration,
+    ) -> Result<(), ChannelAgentError> {
+        self.submit_configuration(ConfigurationOperation::new(
+            node_address,
+            ConfigurationRequest::Validate(configuration),
+        )?)
+    }
+
+    pub fn submit_apply_configuration(
+        &mut self,
+        node_address: u8,
+        expected_revision: u32,
+        configuration: MeasurementConfiguration,
+    ) -> Result<u32, ChannelAgentError> {
+        self.ensure_queue_capacity()?;
+        let operation_id = self.allocate_operation_id()?;
+        let operation = ConfigurationOperation::new(
+            node_address,
+            ConfigurationRequest::Apply(ConfigOperationRequest {
+                operation_id,
+                expected_revision,
+                configuration,
+            }),
+        )?;
+        self.pending
+            .push_back(PendingWork::Configuration(operation));
+        Ok(operation_id)
+    }
+
+    pub fn submit_reset_configuration(
+        &mut self,
+        node_address: u8,
+        expected_revision: u32,
+    ) -> Result<u32, ChannelAgentError> {
+        self.ensure_queue_capacity()?;
+        let operation_id = self.allocate_operation_id()?;
+        let operation = ConfigurationOperation::new(
+            node_address,
+            ConfigurationRequest::Reset {
+                operation_id,
+                expected_revision,
+            },
+        )?;
+        self.pending
+            .push_back(PendingWork::Configuration(operation));
+        Ok(operation_id)
+    }
+
+    fn submit_configuration(
+        &mut self,
+        operation: ConfigurationOperation,
+    ) -> Result<(), ChannelAgentError> {
+        self.ensure_queue_capacity()?;
+        self.pending
+            .push_back(PendingWork::Configuration(operation));
+        Ok(())
+    }
+
+    pub fn submit_commissioning_probe(
+        &mut self,
+        request: sensor_protocol::ProbeSlotRequest,
+    ) -> Result<(), ChannelAgentError> {
+        self.ensure_queue_capacity()?;
+        self.pending
+            .push_back(PendingWork::Commissioning(CommissioningOperation::new(
+                CommissioningRequest::Probe(request),
+            )?));
+        Ok(())
+    }
+
+    pub fn submit_commissioning_assignment(
+        &mut self,
+        round_nonce: u64,
+        hardware_id: sensor_core::HardwareId,
+        node_address: u8,
+    ) -> Result<u32, ChannelAgentError> {
+        self.ensure_queue_capacity()?;
+        let operation_id = self.allocate_operation_id()?;
+        self.pending
+            .push_back(PendingWork::Commissioning(CommissioningOperation::new(
+                CommissioningRequest::Assign(sensor_protocol::AssignAddressRequest {
+                    operation_id,
+                    round_nonce,
+                    hardware_id,
+                    node_address,
+                }),
+            )?));
         Ok(operation_id)
     }
 
@@ -324,6 +462,31 @@ impl ChannelAgent {
                             operation_id: operation.command().operation_id,
                         }
                     }
+                    PendingWork::Configuration(operation) => {
+                        operation.mark_timeout()?;
+                        ChannelEvent::ConfigurationTimedOut {
+                            node_address: operation.node_address(),
+                            operation_id: operation.request().operation_id(),
+                        }
+                    }
+                    PendingWork::Commissioning(operation) => {
+                        let request = operation.request();
+                        operation.mark_timeout()?;
+                        match request {
+                            CommissioningRequest::Probe(probe) => {
+                                self.active = None;
+                                return Ok(ChannelEvent::CommissioningSlotEmpty {
+                                    round_nonce: probe.round_nonce,
+                                    slot_index: probe.slot_index,
+                                });
+                            }
+                            CommissioningRequest::Assign(assign) => {
+                                ChannelEvent::CommissioningTimedOut {
+                                    operation_id: assign.operation_id,
+                                }
+                            }
+                        }
+                    }
                     PendingWork::Measurement(transfer) => {
                         transfer.mark_attempt_uncertain()?;
                         measurement_exhausted =
@@ -409,6 +572,28 @@ impl ChannelAgent {
                     .prepare(attempt.request)?
                     .request_frame(attempt.payload())?
             }
+            PendingWork::Configuration(operation) => {
+                if operation.phase() != ConfigurationPhase::ReadyToSend
+                    && operation.phase() != ConfigurationPhase::ReconcileRequired
+                {
+                    return Ok(ChannelEvent::Idle);
+                }
+                let attempt = operation.begin_attempt(self.policy.transaction_timeout)?;
+                self.transactions
+                    .prepare(attempt.request)?
+                    .request_frame(attempt.payload())?
+            }
+            PendingWork::Commissioning(operation) => {
+                if operation.phase() != CommissioningPhase::ReadyToSend
+                    && operation.phase() != CommissioningPhase::ReconcileRequired
+                {
+                    return Ok(ChannelEvent::Idle);
+                }
+                let attempt = operation.begin_attempt(self.policy.transaction_timeout)?;
+                self.transactions
+                    .prepare_routed(attempt.request)?
+                    .request_frame(attempt.payload())?
+            }
             PendingWork::Measurement(transfer) => {
                 let attempt = transfer.begin_attempt(self.policy.transaction_timeout)?;
                 active.attempts_started = active.attempts_started.saturating_add(1);
@@ -470,6 +655,8 @@ impl ChannelAgent {
             .ok_or(ChannelAgentError::InvariantViolation)?;
         match &mut active.work {
             PendingWork::Lifecycle(operation) => operation.mark_timeout()?,
+            PendingWork::Configuration(operation) => operation.mark_timeout()?,
+            PendingWork::Commissioning(operation) => operation.mark_transmit_failed()?,
             PendingWork::Measurement(transfer) => transfer.mark_attempt_uncertain()?,
             PendingWork::Handshake(_) => {}
             PendingWork::StreamState { .. } => {}
@@ -587,6 +774,46 @@ impl ChannelAgent {
                             node_address,
                             result,
                         })
+                    }
+                }
+            }
+            PendingWork::Configuration(operation) => {
+                let node_address = operation.node_address();
+                let operation_id = operation.request().operation_id();
+                match operation.accept_response(frame.payload())? {
+                    ConfigurationOutcome::NotAccepted => {
+                        active.retry_not_before = now
+                            .checked_add(self.policy.retry_delay)
+                            .ok_or(ChannelAgentError::TimeOverflow)?;
+                        Ok(ChannelEvent::ConfigurationNotAccepted {
+                            node_address,
+                            operation_id,
+                        })
+                    }
+                    outcome => {
+                        self.active = None;
+                        Ok(ChannelEvent::ConfigurationComplete {
+                            node_address,
+                            outcome,
+                        })
+                    }
+                }
+            }
+            PendingWork::Commissioning(operation) => {
+                match operation.accept_response(frame.payload())? {
+                    CommissioningOutcome::NotAccepted => {
+                        let operation_id = operation
+                            .request()
+                            .operation_id()
+                            .ok_or(ChannelAgentError::InvariantViolation)?;
+                        active.retry_not_before = now
+                            .checked_add(self.policy.retry_delay)
+                            .ok_or(ChannelAgentError::TimeOverflow)?;
+                        Ok(ChannelEvent::CommissioningNotAccepted { operation_id })
+                    }
+                    outcome => {
+                        self.active = None;
+                        Ok(ChannelEvent::CommissioningComplete { outcome })
                     }
                 }
             }
@@ -730,19 +957,26 @@ impl ChannelAgent {
     }
 
     fn operation_id_in_use(&self, operation_id: u32) -> bool {
-        self.active.as_ref().is_some_and(|active| {
-            matches!(
-                &active.work,
-                PendingWork::Lifecycle(operation)
-                    if operation.command().operation_id == operation_id
-            )
-        }) || self.pending.iter().any(|work| {
-            matches!(
-                work,
-                PendingWork::Lifecycle(operation)
-                    if operation.command().operation_id == operation_id
-            )
-        })
+        self.active
+            .as_ref()
+            .is_some_and(|active| work_uses_operation_id(&active.work, operation_id))
+            || self
+                .pending
+                .iter()
+                .any(|work| work_uses_operation_id(work, operation_id))
+    }
+}
+
+fn work_uses_operation_id(work: &PendingWork, operation_id: u32) -> bool {
+    match work {
+        PendingWork::Lifecycle(operation) => operation.command().operation_id == operation_id,
+        PendingWork::Configuration(operation) => {
+            operation.request().operation_id() == Some(operation_id)
+        }
+        PendingWork::Commissioning(operation) => {
+            operation.request().operation_id() == Some(operation_id)
+        }
+        _ => false,
     }
 }
 
@@ -758,6 +992,8 @@ pub enum ChannelAgentError {
     Transaction(TransactionError),
     Handshake(HandshakeError),
     Lifecycle(LifecycleError),
+    Configuration(ConfigurationError),
+    Commissioning(CommissioningError),
     Measurement(MeasurementTransferError),
     StreamStateWire(MeasurementWireError),
     TimeWire(TimeWireError),
@@ -778,6 +1014,16 @@ impl From<TransactionError> for ChannelAgentError {
 impl From<LifecycleError> for ChannelAgentError {
     fn from(value: LifecycleError) -> Self {
         Self::Lifecycle(value)
+    }
+}
+impl From<ConfigurationError> for ChannelAgentError {
+    fn from(value: ConfigurationError) -> Self {
+        Self::Configuration(value)
+    }
+}
+impl From<CommissioningError> for ChannelAgentError {
+    fn from(value: CommissioningError) -> Self {
+        Self::Commissioning(value)
     }
 }
 impl From<HandshakeError> for ChannelAgentError {
@@ -1402,6 +1648,136 @@ mod tests {
             agent.submit_lifecycle(8, RuntimeOperation::Start, ObservabilityProfile::Production),
             Err(ChannelAgentError::QueueFull)
         ));
+    }
+
+    fn measurement_configuration() -> sensor_protocol::MeasurementConfiguration {
+        sensor_protocol::MeasurementConfiguration {
+            output_rate: sensor_protocol::OutputRateCode::Hz125,
+            range_g: 2,
+            high_pass_corner: 0,
+            filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+            fifo_watermark: 30,
+            offset_x: 0,
+            offset_y: 0,
+            offset_z: 0,
+        }
+    }
+
+    #[test]
+    fn configuration_uses_the_same_transaction_owner_and_operation_id_retry() {
+        let mut agent = ChannelAgent::new(10, 70, duration(50), policy()).unwrap();
+        let desired = measurement_configuration();
+        let operation_id = agent.submit_apply_configuration(7, 3, desired).unwrap();
+        assert_eq!(operation_id, 70);
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let first = take_transmit(&mut agent, 1);
+        assert_eq!(first.service, sensor_protocol::CONFIGURATION_SERVICE_ID);
+        assert_eq!(first.message, sensor_protocol::APPLY_CONFIG_MESSAGE_ID);
+        assert_eq!(
+            u32::from_le_bytes(first.payload()[..4].try_into().unwrap()),
+            70
+        );
+
+        assert_eq!(
+            agent
+                .receive(
+                    MonotonicMicros::new(2),
+                    &wire_response(&first, &[ResponseStatus::Busy as u8]),
+                )
+                .unwrap(),
+            ChannelEvent::ConfigurationNotAccepted {
+                node_address: 7,
+                operation_id: Some(70),
+            }
+        );
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(12)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let second = take_transmit(&mut agent, 13);
+        assert_ne!(first.transaction_id, second.transaction_id);
+        assert_eq!(first.payload(), second.payload());
+
+        let result = sensor_protocol::ConfigOperationResult {
+            operation_id: 70,
+            code: sensor_protocol::ConfigOperationCode::Applied,
+            observed: sensor_protocol::ObservedConfiguration {
+                revision: 4,
+                desired,
+                sensor_odr: sensor_protocol::Adxl355Odr::Hz250,
+                decimation_factor: 2,
+            },
+            effective_sample_seq: 99,
+        };
+        assert_eq!(
+            agent
+                .receive(
+                    MonotonicMicros::new(14),
+                    &wire_response(
+                        &second,
+                        &sensor_protocol::encode_config_operation_response(result).unwrap()
+                    ),
+                )
+                .unwrap(),
+            ChannelEvent::ConfigurationComplete {
+                node_address: 7,
+                outcome: ConfigurationOutcome::Applied(result),
+            }
+        );
+        assert_eq!(agent.queued_work_items(), 0);
+    }
+
+    #[test]
+    fn commissioning_broadcast_accepts_only_the_reserved_response_source() {
+        let mut agent = ChannelAgent::new(10, 70, duration(50), policy()).unwrap();
+        let hardware_id = HARDWARE_ID;
+        let nonce = 0x0102_0304_0506_0708;
+        let slot_index = sensor_protocol::commissioning_slot(hardware_id, nonce, 16).unwrap();
+        agent
+            .submit_commissioning_probe(sensor_protocol::ProbeSlotRequest {
+                round_nonce: nonce,
+                slot_count: 16,
+                slot_index,
+            })
+            .unwrap();
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let request = take_transmit(&mut agent, 1);
+        assert_eq!(request.destination, sensor_protocol::BROADCAST_ADDRESS);
+        assert_eq!(request.service, sensor_protocol::COMMISSIONING_SERVICE_ID);
+
+        let identity = sensor_protocol::CommissioningIdentity {
+            round_nonce: nonce,
+            hardware_id,
+            board_revision: 2,
+            firmware: FirmwareVersion {
+                major: 0,
+                minor: 5,
+                patch: 7,
+            },
+            protocol: LOCAL_PROTOCOL_VERSION,
+        };
+        let response = Frame::new(
+            FrameRole::Response,
+            HOST_ADDRESS,
+            sensor_protocol::COMMISSIONING_ADDRESS,
+            request.service,
+            request.message,
+            request.transaction_id,
+            &sensor_protocol::encode_probe_slot_response(identity).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            agent.receive(MonotonicMicros::new(2), &response).unwrap(),
+            ChannelEvent::CommissioningComplete {
+                outcome: CommissioningOutcome::Discovered(identity),
+            }
+        );
     }
 
     #[test]

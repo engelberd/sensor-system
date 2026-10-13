@@ -80,6 +80,8 @@ set(SENSOR_SYSTEM_NODE_APP_COMMON_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/diagnostics/persistent_diagnostic_store.cpp
     ${CMAKE_CURRENT_LIST_DIR}/observer/tinyusb_cdc_port.cpp
     ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/dispatcher.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/configuration.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/commissioning.cpp
     ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/time.cpp
     ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/framing.cpp
     ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/identity.cpp

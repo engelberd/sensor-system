@@ -39,6 +39,11 @@ bool ConfigManager::init() {
 }
 
 bool ConfigManager::save() {
+    // Revision zero means unknown/invalid on protocol 5. Refuse the
+    // practically unreachable wrap instead of publishing an ambiguous value.
+    if (current_config_.generation == UINT32_MAX) {
+        return false;
+    }
     PersistentConfig tmp = current_config_;
     ++tmp.generation;
     finalize(tmp);

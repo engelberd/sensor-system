@@ -49,14 +49,16 @@ using Observer = UsbObserverEndpoint<kObserverSnapshotCapacity>;
 using Composition = node_v2::RuntimeComposition<
     Acquisition,
     Rs485Port,
-    Observer>;
+    Observer,
+    ConfigManager>;
 
 Composition* g_composition = nullptr;
 std::atomic<bool> g_core1_ready{false};
 alignas(8) uint32_t g_core1_stack[kCore1StackBytes / sizeof(uint32_t)]{};
 
 class BootControl final : public runtime::IFirmwareUpdateControl,
-                          public runtime::ITrialBootControl {
+                          public runtime::ITrialBootControl,
+                          public runtime::ICommissioningBootSettings {
 public:
     BootControl() : state_(boot::app_trial_boot_state()) {}
 
@@ -86,6 +88,10 @@ public:
 
     bool confirmation_required() const {
         return state_ == boot::TrialBootState::PendingCurrentSlot;
+    }
+
+    bool sync_node_address(uint8_t node_address) override {
+        return boot::app_sync_boot_settings(node_address);
     }
 
 private:
@@ -227,6 +233,8 @@ int main() {
     static Composition composition(
         data_plane,
         acquisition,
+        config_manager,
+        boot_control,
         rs485_port,
         observer,
         make_identity(config.node_id, boot_epoch),

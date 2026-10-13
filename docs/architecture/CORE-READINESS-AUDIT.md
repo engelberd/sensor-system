@@ -1,7 +1,7 @@
 # Audyt gotowości rdzenia host v2 i node v2
 
 - Status: obowiązujący przegląd ryzyk i parametrów
-- Ostatnia aktualizacja: 2026-10-11
+- Ostatnia aktualizacja: 2026-10-13
 - Zakres: firmware node protocol 5, host v2 1–16 kanałów i RS485 115200 bit/s
 
 ## Ocena
@@ -14,21 +14,25 @@ waliduje profil, wykonuje fail-closed discovery i admission, odzyskuje Capture
 oraz Time WAL, uruchamia niezależne workery i zamyka je kontrolowanie po
 `SIGINT`/`SIGTERM`. Symulacja 1/4/8 przechodzi; następną bramką jest fizyczna
 macierz na Raspberry Pi. Capabilities schema 2 odpowiada faktycznym output
-rates i rodzajowi obrazu. Nadal brakuje observed/desired Configuration Service.
+rates i rodzajowi obrazu. Configuration i Commissioning Service mają już
+zgodne codeki Rust/C++, bounded wykonanie na obu rdzeniach oraz testy host-side.
+Nie zostały jeszcze wgrane i potwierdzone w HIL; ich pierwszym konsumentem ma
+być Operations API, a nie osobny konfigurator otwierający port szeregowy.
 
 ## Blokery rdzenia
 
-1. Protocol 5 nie ma jeszcze Configuration Service. Ustawienia są odczytywane
-   ze starego trwałego configu, a host v2 nie może ich atomowo odczytać, zmienić
-   ani powiązać z `effective_sample_seq`.
-2. Brak ważnego configu zatrzymuje aplikację w pętli z podtrzymywanym watchdogiem
-   i bez protocol 5 po RS485. Potrzebny jest bounded service-safe mode lub
-   commissioning możliwy bez USB.
+1. Host nie ma jeszcze Operations API ani trwałego rejestru operacji. Codeki
+   Configuration/Commissioning są podłączone do `ChannelAgent`, ale polecenia
+   operatorskie muszą wejść przez właściciela kanału i kontrolowane
+   Production → Maintenance, bez drugiego właściciela RS485.
+2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
+   odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
+   przypisania adresu i końcowego handshake po restarcie.
 3. Watchdog jest karmiony przez core 0 bez późniejszej kontroli postępu core 1.
    Zakleszczony rdzeń komunikacyjny może pozostawić pozornie żywy firmware.
 4. Production/Diagnostic zmienia dziś stan lifecycle, lecz nie steruje jeszcze
-    kompletną, budżetowaną telemetrią po RS485. Health i Diagnostics Service nie
-    są zaimplementowane w protocol 5.
+   kompletną, budżetowaną telemetrią po RS485. Diagnostics jest read-only;
+   osobna polityka kompaktowego Health nadal wymaga implementacji.
 5. Fizycznie potwierdzono jeden node na jednym kanale. Nadal trzeba zmierzyć
    wiele node na kanale, macierz 1/4/8 portów, długi przewód, zakłócenia,
    restart procesu i utratę zasilania.
@@ -152,15 +156,11 @@ a nie strojenia instalacji.
 
 ## Kolejność dalszej pracy
 
-1. Dodać Configuration Service: typowany sensor ODR, decimation, output rate,
-   desired/observed state, pełna walidacja i service-safe recovery. Capability
-   schema 2 ogłasza już wyłącznie rzeczywiste output rates.
-2. Usunąć flash write z hot path oraz dodać heartbeat core 1 do polityki
-   watchdog/fault.
-3. Zaimplementować czysty `ChannelScheduler` z admission control i symulacją
-   wielu node.
-4. Zbudować produkcyjny Capture/WAL, durable cursor store i recovery procesu.
-5. Złożyć `ChannelRuntime`, następnie `HostCoordinator` dla 1–16 channels.
-6. Dodać Time, compact Health, Configuration i Diagnostics Service w tej
-   kolejności, z osobnymi budżetami.
-7. Wykonać HIL wielu node, długiego przewodu, zakłóceń, wolnego storage i soak.
+1. Zbudować Operations API i bounded command path do jedynego właściciela
+   kanału, z operacjami per channel/per node i jawną polityką Maintenance.
+2. Wystawić Configuration/Commissioning przez API, dodać audit/idempotency i
+   wykonać pełny HIL firmware 0.5.8.
+3. Usunąć flash write z pozostałych hot path oraz dodać heartbeat core 1 do
+   polityki watchdog/fault.
+4. Wykonać HIL wielu node, długiego przewodu, zakłóceń, wolnego storage i soak.
+5. Dodać kompaktową politykę Health z osobnym budżetem Production.

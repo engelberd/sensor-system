@@ -2,6 +2,8 @@ use core::fmt;
 
 pub const FRAMING_VERSION: u8 = 3;
 pub const HOST_ADDRESS: u8 = 0;
+/// Temporary source address used only by unassigned-node Commissioning replies.
+pub const COMMISSIONING_ADDRESS: u8 = 254;
 pub const BROADCAST_ADDRESS: u8 = 255;
 pub const HEADER_BYTES: usize = 10;
 pub const CRC_BYTES: usize = 4;

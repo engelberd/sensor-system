@@ -430,7 +430,8 @@ Status runtime, `doctor`, automatyczny recorder systemd i spójny interfejs
 pozostaje do wykonania przy najbliższej planowanej aktualizacji noda; nie
 wykonujemy zapisu flash wyłącznie w celu testu CLI.
 
-Bieżące ścieżki produktu to częściowy bootstrap/późniejsze dołączanie kanału
-oraz dashboard V2 w trybie obserwacji. Następnie powstaną Configuration Service,
-Operations API i godzinny compactor Archive. Nie tworzymy dla nich drugiego
-modelu stanu ani osobnej ścieżki RS485.
+Bieżącą ścieżką produktu jest Operations API z operacjami per channel/per node.
+Configuration i Commissioning Service są gotowe w kodzie protocol 5 i czekają
+na ten control plane oraz HIL firmware 0.5.8. Następnie powstanie godzinny
+compactor Archive. Dashboard pozostaje ostatnim, cienkim klientem API. Nie
+tworzymy dla tych funkcji drugiego modelu stanu ani osobnej ścieżki RS485.

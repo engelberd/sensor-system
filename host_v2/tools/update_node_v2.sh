@@ -47,7 +47,7 @@ done
 for value in PORT NODE HARDWARE_ID BOARD_REVISION EXPECTED_FIRMWARE; do
   [[ -n ${!value} ]] || { echo "[ERROR] missing required option: $value" >&2; usage >&2; exit 64; }
 done
-[[ $NODE =~ ^[1-9][0-9]*$ ]] && ((NODE <= 254)) || { echo "[ERROR] node must be 1..254" >&2; exit 64; }
+[[ $NODE =~ ^[1-9][0-9]*$ ]] && ((NODE <= 253)) || { echo "[ERROR] node must be 1..253" >&2; exit 64; }
 [[ $HARDWARE_ID =~ ^[0-9A-Fa-f]{16}$ ]] || { echo "[ERROR] hardware-id must contain 16 hexadecimal digits" >&2; exit 64; }
 [[ $BOARD_REVISION == 1 || $BOARD_REVISION == 2 ]] || { echo "[ERROR] board-revision must be 1 or 2" >&2; exit 64; }
 [[ $BAUD == 115200 ]] || { echo "[ERROR] production RS485 baud rate must be 115200" >&2; exit 64; }

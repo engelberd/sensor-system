@@ -54,7 +54,7 @@ bool decode_status(uint8_t value, ResponseStatus& output) {
 IdentityCodecStatus validate(const NodeIdentity& identity) {
     if (identity.boot_epoch == 0) return IdentityCodecStatus::ZeroBootEpoch;
     if (identity.node_address == kHostAddress ||
-        identity.node_address == kBroadcastAddress) {
+        identity.node_address >= kCommissioningAddress) {
         return IdentityCodecStatus::InvalidNodeAddress;
     }
     if (identity.board_revision == 0) {

@@ -8,6 +8,7 @@ namespace {
 
 class FakeAcquisition {
 public:
+    struct Stats { uint64_t next_sample_seq = 0; };
     explicit FakeAcquisition(node_v2::MeasurementSink& sink) : sink_(sink) {}
     void pause() { paused = true; }
     void resume() { paused = false; }
@@ -19,10 +20,35 @@ public:
         return SensorStatus::Ok;
     }
     void update() {}
+    SensorStatus reload_runtime_config(const DeviceConfig&) {
+        return SensorStatus::Ok;
+    }
+    Stats stats() const { return {}; }
     bool paused = false;
 
 private:
     node_v2::MeasurementSink& sink_;
+};
+
+class FakeConfigManager {
+public:
+    const DeviceConfig& current() const { return value; }
+    uint32_t generation() const { return revision; }
+    void replace_device_config(const DeviceConfig& next) { value = next; }
+    bool save() { ++revision; return true; }
+    static DeviceConfig default_device_config() { return {}; }
+    DeviceConfig value{};
+    uint32_t revision = 1;
+};
+
+class FakeCommissioningBoot final
+    : public runtime::ICommissioningBootSettings {
+public:
+    bool sync_node_address(uint8_t value) override {
+        last = value;
+        return true;
+    }
+    uint8_t last = 0;
 };
 
 class FakePort {
@@ -79,11 +105,15 @@ ProtocolV3::NodeCapabilities capabilities() {
 void test_production_types_form_one_valid_composition() {
     node_v2::DataPlane data_plane(1);
     FakeAcquisition acquisition(data_plane.sink());
+    FakeConfigManager config;
+    FakeCommissioningBoot commissioning_boot;
     FakePort port;
     FakeObserver observer;
     node_v2::RuntimeComposition composition(
         data_plane,
         acquisition,
+        config,
+        commissioning_boot,
         port,
         observer,
         identity(),
@@ -122,11 +152,15 @@ void test_production_types_form_one_valid_composition() {
 void test_invalid_config_revision_fails_composition_validation() {
     node_v2::DataPlane data_plane(0);
     FakeAcquisition acquisition(data_plane.sink());
+    FakeConfigManager config;
+    FakeCommissioningBoot commissioning_boot;
     FakePort port;
     FakeObserver observer;
     node_v2::RuntimeComposition composition(
         data_plane,
         acquisition,
+        config,
+        commissioning_boot,
         port,
         observer,
         identity(),
@@ -138,11 +172,13 @@ void test_invalid_config_revision_fails_composition_validation() {
 void test_composition_admits_update_only_after_entering_maintenance() {
     node_v2::DataPlane data_plane(1);
     FakeAcquisition acquisition(data_plane.sink());
+    FakeConfigManager config;
+    FakeCommissioningBoot commissioning_boot;
     FakePort port;
     FakeObserver observer;
     FakeFirmwareUpdateControl firmware_update;
     node_v2::RuntimeComposition composition(
-        data_plane, acquisition, port, observer,
+        data_plane, acquisition, config, commissioning_boot, port, observer,
         identity(), capabilities(), 123, {}, {}, &firmware_update);
     uint8_t request[ProtocolV3::kLifecycleProfileRequestBytes]{};
     uint8_t response[ProtocolV3::kMaxPayloadBytes]{};

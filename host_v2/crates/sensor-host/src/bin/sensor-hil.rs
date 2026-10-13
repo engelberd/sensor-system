@@ -2388,7 +2388,7 @@ impl fmt::Display for HilError {
             Self::Usage => formatter.write_str(
                 "expected handshake arguments or confirm-trial arguments including expected firmware",
             ),
-            Self::InvalidNodeAddress => formatter.write_str("node address must be in 1..254"),
+            Self::InvalidNodeAddress => formatter.write_str("node address must be in 1..253"),
             Self::InvalidHardwareId => {
                 formatter.write_str("hardware ID must contain exactly 16 hexadecimal digits")
             }

@@ -12,7 +12,7 @@ use crate::installation_config::{
 use crate::runtime_profile::{HostRuntimeInstallationProfile, RuntimeProfileError};
 
 pub const MAX_HOST_CHANNELS: usize = 16;
-pub const MAX_NODES_PER_CHANNEL: usize = 254;
+pub const MAX_NODES_PER_CHANNEL: usize = 253;
 pub const PRODUCTION_RS485_BAUD_RATE: u32 = 115_200;
 
 pub struct HostInstallationProfile {

@@ -17,7 +17,7 @@ Wielobajtowe liczby używają little-endian. CRC obejmuje wszystkie bajty od
 | ---: | ---: | --- |
 | 0 | 1 | `framing_version = 3` |
 | 1 | 1 | `role`: 1 request, 2 response |
-| 2 | 1 | `destination`: 0 host, 1..254 node, 255 broadcast |
+| 2 | 1 | `destination`: 0 host, 1..253 node, 254 commissioning, 255 broadcast |
 | 3 | 1 | `source` |
 | 4 | 1 | `service` |
 | 5 | 1 | `message` |
@@ -51,8 +51,9 @@ check("123456789")     = 0xE3069283
 
 ## Routing
 
-- request: `source=0`, destination `1..254` albo `255`;
-- response: source `1..254`, `destination=0`;
+- request: `source=0`, destination `1..253` albo `255`;
+- response: source `1..253`, albo tymczasowo `254` dla Commissioning,
+  `destination=0`;
 - broadcast request nie otrzymuje odpowiedzi;
 - pozostałe kombinacje są błędem framingu;
 - odpowiedź musi powtarzać service, message i transaction ID requestu, chyba że
