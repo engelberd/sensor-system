@@ -65,7 +65,7 @@ uzasadnią ją pomiary lub testy awarii.
 - fail-closed przy niezgodnej wersji protokołu;
 - minimalna binarka hosta raportująca wersję oraz `sensor-hil` wykonujący
   fail-closed handshake przez produkcyjny adapter portu;
-- 99 testów jednostkowych Rust, czysty Clippy i release build workspace;
+- pełny zestaw testów workspace Rust, czysty Clippy i release build workspace;
 - zaakceptowany ADR-0008 i normatywna specyfikacja framing protocol 3;
 - bounded encoder/decoder COBS + CRC-32C w Rust i C++ z limitem payloadu 512 B;
 - wspólne binarne golden vectors potwierdzające identyczny wire Rust ↔ C++;
@@ -126,7 +126,8 @@ uzasadnią ją pomiary lub testy awarii.
 - `MeasurementTransfer` zachowujący pełny `SampleChunk` z timing evidence i
   `config_revision` oraz `DurableMeasurementSink`, który nie pozwala podnieść
   release przed trwałym potwierdzeniem;
-- 32 wykonywalne zestawy testów host-side C++ firmware;
+- wykonywalne testy host-side C++ obejmujące protokół, runtime i kompozycję
+  firmware;
 - produkcyjne obrazy slotów A/B budowane z `main_v2`, paczka update protocol 5,
   zdalne `ConfirmTrialBoot` oraz automatyczny restart do rollbacku po 30 s bez
   potwierdzenia.
