@@ -91,6 +91,7 @@ compile_and_run tests/sample_ingress_test.cpp -pthread
 compile_and_run tests/measurement_ingress_sink_test.cpp
 compile_and_run tests/operation_mailbox_test.cpp
 compile_and_run tests/sensor_runtime_test.cpp
+compile_and_run tests/core_progress_watchdog_test.cpp
 compile_and_run tests/configuration_runtime_test.cpp
 compile_and_run tests/commissioning_runtime_test.cpp
 compile_and_run tests/system_operation_runtime_test.cpp

@@ -28,15 +28,13 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
 2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
    odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
    przypisania adresu i końcowego handshake po restarcie.
-3. Watchdog jest karmiony przez core 0 bez późniejszej kontroli postępu core 1.
-   Zakleszczony rdzeń komunikacyjny może pozostawić pozornie żywy firmware.
-4. Production/Diagnostic zmienia dziś stan lifecycle, lecz nie steruje jeszcze
+3. Production/Diagnostic zmienia dziś stan lifecycle, lecz nie steruje jeszcze
    kompletną, budżetowaną telemetrią po RS485. Diagnostics jest read-only;
    osobna polityka kompaktowego Health nadal wymaga implementacji.
-5. Fizycznie potwierdzono jeden node na jednym kanale. Nadal trzeba zmierzyć
+4. Fizycznie potwierdzono jeden node na jednym kanale. Nadal trzeba zmierzyć
    wiele node na kanale, macierz 1/4/8 portów, długi przewód, zakłócenia,
    restart procesu i utratę zasilania.
-6. Ścieżka Archive ma kontrakt, indeks pokrycia i retencję, ale nie ma jeszcze
+5. Ścieżka Archive ma kontrakt, indeks pokrycia i retencję, ale nie ma jeszcze
    produkcyjnego compactor/uploadera ani benchmarku na docelowym SSD.
 
 ## Przepustowość nowego Measurement Service
@@ -160,7 +158,7 @@ a nie strojenia instalacji.
    kanału, z operacjami per channel/per node i jawną polityką Maintenance.
 2. Wystawić Configuration/Commissioning przez API, dodać audit/idempotency i
    wykonać pełny HIL firmware 0.5.8.
-3. Usunąć flash write z pozostałych hot path oraz dodać heartbeat core 1 do
-   polityki watchdog/fault.
-4. Wykonać HIL wielu node, długiego przewodu, zakłóceń, wolnego storage i soak.
+3. Usunąć flash write z pozostałych hot path.
+4. Wykonać HIL restartu po zatrzymaniu heartbeat core 1, wielu node, długiego
+   przewodu, zakłóceń, wolnego storage i soak.
 5. Dodać kompaktową politykę Health z osobnym budżetem Production.

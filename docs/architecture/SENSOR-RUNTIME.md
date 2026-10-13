@@ -58,6 +58,12 @@ Diagnostics, naprawę Configuration, commissioning, update i restart. Tylko
 awaria samego endpointu RS485 powoduje automatyczny reboot zamiast nieskończonego
 podtrzymywania niedostępnej aplikacji.
 
+Core 1 publikuje lekki heartbeat po każdym bounded kroku protocol runtime. Po
+uruchomieniu obu rdzeni core 0 karmi sprzętowy watchdog tylko wtedy, gdy ten
+heartbeat wykazał postęp w ostatnim konfigurowalnym oknie. Zawieszenie rdzenia
+RS485 powoduje więc automatyczny restart, zamiast pozostawić zasilony, lecz
+zdalnie niedostępny node.
+
 Start wykonuje `prepare_for_runtime`, a dopiero po sukcesie wznawia akwizycję.
 Stop wykonuje bounded `finish_recording`: blokuje nowe kroki, opróżnia pełne
 próbki z ograniczonego sprzętowego FIFO i publikuje końcowy

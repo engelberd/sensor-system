@@ -26,6 +26,7 @@
 #include "processing/sample_sink_fanout.h"
 #include "protocol_v3/identity.h"
 #include "runtime/core0_acquisition_loop.h"
+#include "runtime/core_progress_watchdog.h"
 #include "runtime/node_v2_composition.h"
 #include "storage/acquisition_buffer.h"
 #include "transport/rs485_port.h"
@@ -38,6 +39,7 @@ namespace {
 constexpr uint32_t kSafeBootDelayMs = 5000;
 constexpr uint32_t kWatchdogTimeoutMs = 3000;
 constexpr uint64_t kCore1StartupTimeoutUs = 1000ull * 1000ull;
+constexpr uint64_t kCore1ProgressGraceUs = 1000ull * 1000ull;
 constexpr size_t kCore1StackBytes = 8u * 1024u;
 constexpr uint64_t kTrialConfirmationTimeoutUs = 30ull * 1000ull * 1000ull;
 constexpr uint32_t kSensorSpiBaud = 5 * 1000 * 1000;
@@ -54,6 +56,7 @@ using Composition = node_v2::RuntimeComposition<
 
 Composition* g_composition = nullptr;
 std::atomic<bool> g_core1_ready{false};
+std::atomic<uint32_t> g_core1_heartbeat{0};
 alignas(8) uint32_t g_core1_stack[kCore1StackBytes / sizeof(uint32_t)]{};
 
 class BootControl final : public runtime::IFirmwareUpdateControl,
@@ -122,6 +125,7 @@ void core1_entry() {
     g_core1_ready.store(true, std::memory_order_release);
     while (g_composition != nullptr) {
         (void)g_composition->core1().poll(time_us_64());
+        g_core1_heartbeat.fetch_add(1, std::memory_order_release);
         tight_loop_contents();
     }
     while (true) tight_loop_contents();
@@ -288,12 +292,18 @@ int main() {
              config_loaded && sensor_status == SensorStatus::Ok ? 1 : 0);
     const uint64_t trial_deadline_us =
         time_us_64() + kTrialConfirmationTimeoutUs;
+    runtime::CoreProgressWatchdogGate core1_watchdog(
+        time_us_64(), kCore1ProgressGraceUs);
 
     while (true) {
-        watchdog_update();
+        const uint64_t now_us = time_us_64();
+        if (core1_watchdog.should_feed(
+                g_core1_heartbeat.load(std::memory_order_acquire), now_us)) {
+            watchdog_update();
+        }
         composition.poll_core0();
         if (boot_control.confirmation_required() &&
-            time_us_64() >= trial_deadline_us) {
+            now_us >= trial_deadline_us) {
             restart_for_trial_rollback();
         }
         runtime::DeferredSystemActionKind action{};
