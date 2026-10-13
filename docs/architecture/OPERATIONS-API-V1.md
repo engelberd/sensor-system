@@ -75,6 +75,10 @@ half-duplex. Osiągnięcie celu i `Offline` są jawnymi wynikami per node. Wejś
 do Maintenance nie może jednak użyć jednej grupy z celem Maintenance: worker
 najpierw uruchomi grupę z celem `Idle`, wykona końcowy drain zatrzymanych
 journali i dopiero uruchomi drugą grupę z celem `Maintenance`.
+`MaintenanceEntryPlan` pilnuje tej kolejności jako osobna, czysta polityka.
+Między osiągnięciem `Idle` i drainem wymaga ponownego uzgodnienia strumieni,
+ponieważ awaryjny restart node mógł zmienić `boot_epoch`; worker nie może wtedy
+kontynuować starej sesji ani dopisać danych do poprzedniego strumienia.
 
 ## Integralność danych podczas serwisu
 

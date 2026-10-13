@@ -734,7 +734,9 @@ Bieżąca kolejność implementacji:
    kwarantannie wire oraz nieblokujący `SafeStateWireOperation` z weryfikacją
    nowego `boot_epoch` po restarcie. `SafeStateGroupOperation` wykonuje node
    sekwencyjnie przez jednego arbitra half-duplex. Plan startowy zachowuje pełny
-   kontrakt handshake dla późniejszego recovery;
+   kontrakt handshake dla późniejszego recovery. `MaintenanceEntryPlan` jest
+   osobną polityką kolejności quiesce → Idle → reconcile → drain → Maintenance
+   oraz awaryjnego powrotu do stabilnego Idle;
 2. podłączyć inbox, ledger i executor do workera będącego jedynym właścicielem
    RS485;
 3. jawne przejścia `Recording → Stopping → Maintenance` i powrót przez pełną
