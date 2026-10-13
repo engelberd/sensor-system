@@ -69,6 +69,13 @@ drugiego restartu: host najpierw wykonuje pełny handshake i wymaga zmiany
 `boot_epoch`. Plan startowy workera zachowuje do tego pełne wymagania hardware,
 board revision, usług, cech i ODR.
 
+`SafeStateGroupOperation` składa te executory sekwencyjnie dla jednej magistrali.
+W danej chwili aktywny jest najwyżej jeden node, zgodnie z fizycznym arbitrażem
+half-duplex. Osiągnięcie celu i `Offline` są jawnymi wynikami per node. Wejście
+do Maintenance nie może jednak użyć jednej grupy z celem Maintenance: worker
+najpierw uruchomi grupę z celem `Idle`, wykona końcowy drain zatrzymanych
+journali i dopiero uruchomi drugą grupę z celem `Maintenance`.
+
 Pierwsza wersja celowo dopuszcza Configuration i Commissioning w Maintenance.
 Configuration pozostaje też dostępne w `Faulted` jako service-safe naprawa przed
 restartem. Dzięki temu ruch serwisowy nie powoduje pływania `samples/s` w
@@ -124,7 +131,7 @@ portów urządzeń, Capture WAL lub wewnętrznych kolejek schedulera.
 
 ## Kolejna bramka
 
-1. podłączyć gotowe inbox, ledger i `SafeStateWireOperation` do właściciela
+1. podłączyć gotowe inbox, ledger i `SafeStateGroupOperation` do właściciela
    kanału;
 2. zaimplementować sekwencję quiesce → Idle → końcowy drain → Maintenance oraz
    pełne recovery przed wznowieniem schedulera;

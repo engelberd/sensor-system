@@ -732,8 +732,9 @@ Bieżąca kolejność implementacji:
 1. **Gotowa domena i executor per node:** bounded command mailbox, idempotentny
    ledger, `SafeStateConverger`, bezpieczne porzucenie control work dopiero po
    kwarantannie wire oraz nieblokujący `SafeStateWireOperation` z weryfikacją
-   nowego `boot_epoch` po restarcie. Plan startowy zachowuje pełny kontrakt
-   handshake dla późniejszego recovery;
+   nowego `boot_epoch` po restarcie. `SafeStateGroupOperation` wykonuje node
+   sekwencyjnie przez jednego arbitra half-duplex. Plan startowy zachowuje pełny
+   kontrakt handshake dla późniejszego recovery;
 2. podłączyć inbox, ledger i executor do workera będącego jedynym właścicielem
    RS485;
 3. jawne przejścia `Recording → Stopping → Maintenance` i powrót przez pełną

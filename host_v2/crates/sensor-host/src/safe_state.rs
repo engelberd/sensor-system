@@ -271,6 +271,115 @@ pub enum SafeStateEventDisposition {
     RestartObserved { identity: NodeIdentity },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SafeStateNodeContract {
+    pub requirements: HandshakeRequirements,
+    pub boot_epoch: BootEpoch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SafeStateGroupProgress {
+    Node {
+        node_address: u8,
+        progress: SafeStateWireProgress,
+    },
+    NodeReached {
+        node_address: u8,
+        target: SafeStateTarget,
+    },
+    NodeOffline {
+        node_address: u8,
+    },
+    Complete,
+}
+
+/// Sequential group owner for one half-duplex channel. It intentionally
+/// advances only one node operation at a time, so group transitions cannot
+/// create overlapping lifecycle transactions or bypass `ChannelAgent`.
+pub struct SafeStateGroupOperation {
+    nodes: Vec<SafeStateWireOperation>,
+    current: usize,
+}
+
+impl SafeStateGroupOperation {
+    pub fn new(
+        target: SafeStateTarget,
+        safe_state_policy: SafeStatePolicy,
+        wire_policy: SafeStateWirePolicy,
+        contracts: &[SafeStateNodeContract],
+    ) -> Result<Self, SafeStateWireError> {
+        if contracts.is_empty() {
+            return Err(SafeStateWireError::EmptyGroup);
+        }
+        let mut nodes = Vec::with_capacity(contracts.len());
+        for contract in contracts {
+            if nodes.iter().any(|operation: &SafeStateWireOperation| {
+                operation.node_address == contract.requirements.node_address
+            }) {
+                return Err(SafeStateWireError::DuplicateNodeAddress(
+                    contract.requirements.node_address,
+                ));
+            }
+            nodes.push(SafeStateWireOperation::new(
+                target,
+                safe_state_policy,
+                wire_policy,
+                contract.requirements,
+                contract.boot_epoch,
+            )?);
+        }
+        Ok(Self { nodes, current: 0 })
+    }
+
+    pub fn drive(
+        &mut self,
+        agent: &mut ChannelAgent,
+        now: MonotonicMicros,
+    ) -> Result<SafeStateGroupProgress, SafeStateWireError> {
+        let Some(operation) = self.nodes.get_mut(self.current) else {
+            return Ok(SafeStateGroupProgress::Complete);
+        };
+        let node_address = operation.node_address;
+        match operation.drive(agent, now)? {
+            SafeStateWireProgress::Reached(target) => {
+                self.current += 1;
+                Ok(SafeStateGroupProgress::NodeReached {
+                    node_address,
+                    target,
+                })
+            }
+            SafeStateWireProgress::Offline => {
+                Ok(SafeStateGroupProgress::NodeOffline { node_address })
+            }
+            progress => Ok(SafeStateGroupProgress::Node {
+                node_address,
+                progress,
+            }),
+        }
+    }
+
+    pub fn handle_event(
+        &mut self,
+        event: &ChannelEvent,
+        now: MonotonicMicros,
+    ) -> Result<SafeStateEventDisposition, SafeStateWireError> {
+        let Some(operation) = self.nodes.get_mut(self.current) else {
+            return Ok(SafeStateEventDisposition::Ignored);
+        };
+        operation.handle_event(event, now)
+    }
+
+    pub fn contracts(&self) -> Vec<SafeStateNodeContract> {
+        self.nodes
+            .iter()
+            .map(|operation| SafeStateNodeContract {
+                requirements: operation.requirements,
+                boot_epoch: operation.current_boot_epoch(),
+            })
+            .collect()
+    }
+}
+
 /// Incremental wire adapter for one `SafeStateConverger`. It never blocks and
 /// never owns the port. The channel worker calls `drive`, performs one normal
 /// `ChannelEndpoint::step`, and passes the resulting `ChannelEvent` back to
@@ -569,6 +678,8 @@ fn checked_deadline(
 #[derive(Debug)]
 pub enum SafeStateWireError {
     ZeroBootEpoch,
+    EmptyGroup,
+    DuplicateNodeAddress(u8),
     WireActionPending,
     ChannelNotExclusive,
     TimeOverflow,
@@ -622,7 +733,11 @@ mod tests {
     }
 
     fn requirements() -> HandshakeRequirements {
-        HandshakeRequirements::recording_node(HARDWARE_ID, 7, 2, 0)
+        requirements_for(7)
+    }
+
+    fn requirements_for(node_address: u8) -> HandshakeRequirements {
+        HandshakeRequirements::recording_node(HARDWARE_ID, node_address, 2, 0)
     }
 
     fn agent() -> ChannelAgent {
@@ -898,6 +1013,57 @@ mod tests {
             SafeStateWireProgress::Submitted {
                 action: SafeStateAction::Restart,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn group_never_submits_the_second_node_before_the_first_reaches_target() {
+        let mut agent = agent();
+        let mut group = SafeStateGroupOperation::new(
+            SafeStateTarget::Idle,
+            policy(),
+            wire_policy(),
+            &[
+                SafeStateNodeContract {
+                    requirements: requirements_for(7),
+                    boot_epoch: BootEpoch::new(9),
+                },
+                SafeStateNodeContract {
+                    requirements: requirements_for(8),
+                    boot_epoch: BootEpoch::new(10),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            group.drive(&mut agent, MonotonicMicros::new(0)).unwrap(),
+            SafeStateGroupProgress::Node {
+                node_address: 7,
+                progress: SafeStateWireProgress::Submitted {
+                    action: SafeStateAction::GetState,
+                    ..
+                },
+            }
+        ));
+        let event = complete_lifecycle(&mut agent, 0, RuntimeState::Idle);
+        group.handle_event(&event, MonotonicMicros::new(1)).unwrap();
+        assert_eq!(
+            group.drive(&mut agent, MonotonicMicros::new(2)).unwrap(),
+            SafeStateGroupProgress::NodeReached {
+                node_address: 7,
+                target: SafeStateTarget::Idle,
+            }
+        );
+        assert!(matches!(
+            group.drive(&mut agent, MonotonicMicros::new(3)).unwrap(),
+            SafeStateGroupProgress::Node {
+                node_address: 8,
+                progress: SafeStateWireProgress::Submitted {
+                    action: SafeStateAction::GetState,
+                    ..
+                },
             }
         ));
     }
