@@ -57,7 +57,7 @@ runtime::ConfigurationCommand command() {
     return value;
 }
 
-void applies_only_in_maintenance_and_advances_revision() {
+void applies_only_in_service_states_and_advances_revision() {
     FakeSensorRuntime sensor{};
     FakeAcquisition acquisition{};
     FakeConfigManager config{};
@@ -77,6 +77,14 @@ void applies_only_in_maintenance_and_advances_revision() {
     assert(config.value.odr_hz == 500);
     assert(config.value.range_g == 4);
     assert(sink.revision == 4);
+
+    sensor.value.state = runtime::SensorRuntimeState::Faulted;
+    auto next = command();
+    next.operation_id = 10;
+    next.expected_revision = 4;
+    result = runtime.handle(next);
+    assert(result.code == runtime::ConfigurationResultCode::Applied);
+    assert(result.revision == 5);
 }
 
 void rejects_stale_revision_before_touching_hardware() {
@@ -132,7 +140,7 @@ void failed_sensor_apply_reports_failed_rollback() {
 }  // namespace
 
 int main() {
-    applies_only_in_maintenance_and_advances_revision();
+    applies_only_in_service_states_and_advances_revision();
     rejects_stale_revision_before_touching_hardware();
     storage_failure_restores_the_previous_runtime_config();
     failed_sensor_apply_reports_failed_rollback();

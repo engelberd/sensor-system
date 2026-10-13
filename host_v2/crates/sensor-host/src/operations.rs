@@ -169,8 +169,14 @@ pub fn admit_operation(
         | OperationKind::ValidateConfiguration { .. }
         | OperationKind::ApplyConfiguration { .. }
         | OperationKind::ResetConfiguration { .. }
-        | OperationKind::ScanUnassigned { .. }
-        | OperationKind::AssignAddress { .. }
+            if matches!(
+                mode,
+                ChannelOperatingMode::Maintenance | ChannelOperatingMode::Faulted
+            ) =>
+        {
+            Ok(())
+        }
+        OperationKind::ScanUnassigned { .. } | OperationKind::AssignAddress { .. }
             if mode == ChannelOperatingMode::Maintenance =>
         {
             Ok(())
@@ -489,6 +495,10 @@ mod tests {
         );
         assert_eq!(
             admit_operation(&request, ChannelOperatingMode::Maintenance),
+            Ok(())
+        );
+        assert_eq!(
+            admit_operation(&request, ChannelOperatingMode::Faulted),
             Ok(())
         );
 

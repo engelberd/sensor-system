@@ -882,11 +882,11 @@ tymczasowy `RuntimeCapacityProfile` centralizuje wartości potrzebne do builda i
 pilnuje budżetu ingress/journala przez `static_assert`.
 
 Odroczone przejście do bootloadera i zdalny restart po RS485 są gotowe.
-`PrepareFirmwareUpdate` jest dozwolone z `Maintenance` oraz `Faulted`, a
-`RestartNode` z `Idle`, `Maintenance` i `Faulted`. `Recording` i `Stopping`
-odrzucają obie operacje. Akcja następuje dopiero po zakończeniu transmisji
-odpowiedzi. Odpowiedzialność pozostaje poza `SensorRuntime`, w osobnym system
-operation routerze core 0 i koordynatorze core 1.
+`PrepareFirmwareUpdate` jest dozwolone z `Maintenance` oraz `Faulted`.
+`RestartNode` w firmware 0.5.8 jest ratunkowo dostępny w każdym stanie, również
+przy zakleszczonym `Stopping` lub fault handlera Lifecycle. Akcja następuje
+dopiero po zakończeniu transmisji odpowiedzi. Zwykłe operacje nadal dochodzą do
+`Idle` i `Maintenance` bez restartu; eskalacja ma jawnie zakończyć boot epoch.
 
 Ogólny kontrakt post-transmit jest już gotowy w dispatcherze, response outbox i
 `TransportEndpoint`. Zachowuje token do zakończenia TX, zatwierdza go po

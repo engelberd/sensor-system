@@ -43,11 +43,20 @@ interwencji.
 `OperationMailbox`. Przejścia są idempotentne. Wynik zawiera `operation_id`, kod,
 lifecycle, profil obserwowalności i ostatni `SensorStatus`.
 
-`RestartNode` jest osobną operacją systemową. Jest dozwolony wyłącznie w
-`Idle`, `Maintenance` i `Faulted`; `Recording` oraz `Stopping` zwracają
-`InvalidState`. Restart zostaje uzbrojony dopiero po fizycznym zakończeniu TX
-odpowiedzi. `PrepareFirmwareUpdate` ma tę samą gwarancję post-transmit i jest
-dopuszczone w `Maintenance` oraz `Faulted`.
+`RestartNode` jest ostatnią operacją ratunkową RS485. Firmware 0.5.8 przyjmuje ją
+w każdym stanie, także `Recording` i `Stopping`, ponieważ instalacja nie zakłada
+dostępu do USB ani zasilania. Zwykła ścieżka hosta nadal najpierw wykonuje
+quiesce, `Stop`, drain i wejście do `Maintenance`; restart z aktywnego stanu jest
+eskalacją po wyczerpaniu deadline, z jawnym continuity break. Restart zostaje
+uzbrojony dopiero po fizycznym zakończeniu TX odpowiedzi i działa nawet po
+wewnętrznym fault handlera Lifecycle. `PrepareFirmwareUpdate` zachowuje węższą
+politykę i jest dopuszczone w `Maintenance` oraz `Faulted`.
+
+Brak trwałej konfiguracji oraz błąd inicjalizacji sensora nie wyłączają protocol
+5. Node uruchamia service-safe RS485: nie zaczyna pomiaru, ale pozostawia
+Diagnostics, naprawę Configuration, commissioning, update i restart. Tylko
+awaria samego endpointu RS485 powoduje automatyczny reboot zamiast nieskończonego
+podtrzymywania niedostępnej aplikacji.
 
 Start wykonuje `prepare_for_runtime`, a dopiero po sukcesie wznawia akwizycję.
 Stop wykonuje bounded `finish_recording`: blokuje nowe kroki, opróżnia pełne

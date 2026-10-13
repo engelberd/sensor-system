@@ -246,18 +246,21 @@ int main() {
         &boot_control,
         &diagnostics_service);
 
-    const bool runtime_ready =
-        config_loaded && sensor_status == SensorStatus::Ok && rs485_ready &&
-        composition.configuration_valid();
-    if (!runtime_ready) {
+    const bool protocol_ready =
+        rs485_ready && composition.configuration_valid();
+    if (!protocol_ready) {
         gpio_put(PICO_DEFAULT_LED_PIN, 0);
         if (boot_control.confirmation_required()) {
             restart_for_trial_rollback();
         }
-        while (true) {
-            watchdog_update();
-            sleep_ms(100);
-        }
+        // No remote recovery is possible without a valid protocol endpoint.
+        // Reboot instead of feeding the watchdog forever on a transient boot
+        // failure. The safe-boot delay prevents a tight reset loop.
+        watchdog_reboot(0, 0, 100);
+        while (true) tight_loop_contents();
+    }
+    if (sensor_status != SensorStatus::Ok) {
+        composition.enter_service_safe_fault(sensor_status);
     }
 
     g_composition = &composition;
@@ -275,13 +278,14 @@ int main() {
         if (boot_control.confirmation_required()) {
             restart_for_trial_rollback();
         }
-        while (true) {
-            watchdog_update();
-            sleep_ms(100);
-        }
+        watchdog_reboot(0, 0, 100);
+        while (true) tight_loop_contents();
     }
-    (void)boot::app_sync_boot_settings(config.node_id);
-    gpio_put(PICO_DEFAULT_LED_PIN, 1);
+    if (config_loaded) {
+        (void)boot::app_sync_boot_settings(config.node_id);
+    }
+    gpio_put(PICO_DEFAULT_LED_PIN,
+             config_loaded && sensor_status == SensorStatus::Ok ? 1 : 0);
     const uint64_t trial_deadline_us =
         time_us_64() + kTrialConfirmationTimeoutUs;
 

@@ -92,10 +92,7 @@ public:
                 (result.state == runtime::SensorRuntimeState::Maintenance ||
                  result.state == runtime::SensorRuntimeState::Faulted)) {
                 action = runtime::DeferredSystemActionKind::EnterBootloader;
-            } else if (active_.message == kRestartNodeMessageId &&
-                       (result.state == runtime::SensorRuntimeState::Idle ||
-                        result.state == runtime::SensorRuntimeState::Maintenance ||
-                        result.state == runtime::SensorRuntimeState::Faulted)) {
+            } else if (active_.message == kRestartNodeMessageId) {
                 action = runtime::DeferredSystemActionKind::RestartNode;
             }
         }
@@ -109,6 +106,14 @@ public:
         size_t request_payload_size, uint8_t* response_payload,
         size_t response_capacity) override {
         (void)poll_result();
+        // Emergency restart deliberately bypasses both core-0 admission and a
+        // faulted/stuck lifecycle mailbox. The deferred action is still armed
+        // only after the complete response was transmitted on RS485.
+        if (message == kRestartNodeMessageId) {
+            return handle_emergency_restart(
+                request_payload, request_payload_size,
+                response_payload, response_capacity);
+        }
         if (faulted_) {
             return error(ResponseStatus::InternalError,
                          response_payload, response_capacity);
@@ -251,6 +256,53 @@ private:
         bool post_transmit_pending = false;
         bool valid = false;
     };
+
+    LifecycleHandlerResult handle_emergency_restart(
+        const uint8_t* request_payload,
+        size_t request_payload_size,
+        uint8_t* response_payload,
+        size_t response_capacity) {
+        uint32_t operation_id = 0;
+        if (decode_restart_node_request(
+                request_payload, request_payload_size, operation_id) !=
+            LifecycleCodecStatus::Ok) {
+            return error(ResponseStatus::MalformedRequest,
+                         response_payload, response_capacity);
+        }
+        const RequestKey request{
+            operation_id, kRestartNodeMessageId,
+            runtime::ObservabilityProfile::Production, true};
+        CacheEntry* cached = find_cached(operation_id);
+        if (cached != nullptr) {
+            if (!same_request(cached->request, request)) {
+                increment(conflict_responses_);
+                return error(ResponseStatus::Conflict,
+                             response_payload, response_capacity);
+            }
+            return encode_cached(*cached, response_payload, response_capacity);
+        }
+        if (has_active_ && active_.operation_id == operation_id &&
+            !same_request(active_, request)) {
+            increment(conflict_responses_);
+            return error(ResponseStatus::Conflict,
+                         response_payload, response_capacity);
+        }
+        const runtime::SensorRuntimeResult result{
+            operation_id,
+            runtime::SensorRuntimeResultCode::Ok,
+            has_last_result_ ? last_result_.state
+                             : runtime::SensorRuntimeState::Idle,
+            has_last_result_ ? last_result_.observability
+                             : runtime::ObservabilityProfile::Production,
+            has_last_result_ ? last_result_.sensor_status : SensorStatus::Ok,
+        };
+        cache_result(
+            request, result, runtime::DeferredSystemActionKind::RestartNode);
+        increment(accepted_operations_);
+        increment(completed_operations_);
+        return encode_cached(
+            *find_cached(operation_id), response_payload, response_capacity);
+    }
 
     static void increment(uint32_t& value) {
         if (value != UINT32_MAX) ++value;

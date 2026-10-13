@@ -49,6 +49,7 @@ pub mod retention_checkpoint;
 pub mod retention_cleanup;
 pub mod runtime_profile;
 pub mod runtime_status;
+pub mod safe_state;
 pub mod simulation;
 pub mod storage_health;
 pub mod stream_recovery;

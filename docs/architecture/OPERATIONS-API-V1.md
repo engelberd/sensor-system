@@ -47,8 +47,22 @@ jawnie rozstrzygnąć aktywną transakcję, trwale zapisać odebrane dane, zatrz
 node i dopiero wtedy udostępnić operacje serwisowe. Powrót wymaga handshake,
 sprawdzenia konfiguracji, recovery cursorów oraz ponownego admission control.
 
-Pierwsza wersja celowo dopuszcza Configuration i Commissioning wyłącznie w
-Maintenance. Dzięki temu ruch serwisowy nie powoduje pływania `samples/s` w
+Każdy node ma niezależny `SafeStateConverger`. Nie ufa etykiecie stanu hosta:
+po restarcie procesu lub niepewnym timeoutcie zaczyna od `GetState`. Normalna
+ścieżka do serwisu to `Recording/Stopping → Stop → Idle → EnterMaintenance`.
+Jeśli operacja grupowa nie może doprowadzić wszystkich node do Maintenance,
+host zmienia cel na stabilne `Idle`: node już serwisowane otrzymują
+`ExitMaintenance`, a nadal nagrywające `Stop`.
+
+Po wyczerpaniu ograniczonej liczby zwykłych prób host wysyła ratunkowy
+`RestartNode`, czeka na nowy handshake/boot epoch i ponownie odczytuje stan.
+Wyczerpanie również prób restartu kończy się stabilnym `Offline` oraz wynikiem
+per node. `EnteringMaintenance` i `ResumingRecording` nigdy nie są trwałym
+stanem końcowym operacji.
+
+Pierwsza wersja celowo dopuszcza Configuration i Commissioning w Maintenance.
+Configuration pozostaje też dostępne w `Faulted` jako service-safe naprawa przed
+restartem. Dzięki temu ruch serwisowy nie powoduje pływania `samples/s` w
 Production. Późniejsze read-only sondy mogą otrzymać osobny budżet, jeśli
 pomiary wykażą, że jest to potrzebne.
 
@@ -59,10 +73,10 @@ pomiary wykażą, że jest to potrzebne.
 | ReadStatus | channel lub node | każdy |
 | EnterMaintenance | channel | Recording |
 | ResumeRecording | channel | Maintenance |
-| GetConfiguration | node | Maintenance |
-| ValidateConfiguration | node | Maintenance |
-| ApplyConfiguration | node | Maintenance |
-| ResetConfiguration | node | Maintenance |
+| GetConfiguration | node | Maintenance lub Faulted |
+| ValidateConfiguration | node | Maintenance lub Faulted |
+| ApplyConfiguration | node | Maintenance lub Faulted |
+| ResetConfiguration | node | Maintenance lub Faulted |
 | ScanUnassigned | channel | Maintenance |
 | AssignAddress | channel + exact hardware ID | Maintenance |
 

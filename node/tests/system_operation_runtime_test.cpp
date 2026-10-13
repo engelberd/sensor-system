@@ -82,10 +82,12 @@ void test_update_requires_quiescent_or_faulted_state() {
     assert(faulted.code == runtime::SensorRuntimeResultCode::Ok);
 }
 
-void test_restart_is_remote_recovery_but_never_interrupts_recording() {
+void test_restart_is_remote_recovery_from_every_runtime_state() {
     FakeSensorRuntime sensor;
     for (const auto state : {
              runtime::SensorRuntimeState::Idle,
+             runtime::SensorRuntimeState::Recording,
+             runtime::SensorRuntimeState::Stopping,
              runtime::SensorRuntimeState::Maintenance,
              runtime::SensorRuntimeState::Faulted}) {
         const auto result = execute(
@@ -93,14 +95,6 @@ void test_restart_is_remote_recovery_but_never_interrupts_recording() {
             runtime::SystemOperation::RestartNode);
         assert(result.code == runtime::SensorRuntimeResultCode::Ok);
         assert(result.state == state);
-    }
-    for (const auto state : {
-             runtime::SensorRuntimeState::Recording,
-             runtime::SensorRuntimeState::Stopping}) {
-        const auto result = execute(
-            sensor, state, 30 + static_cast<uint32_t>(state),
-            runtime::SystemOperation::RestartNode);
-        assert(result.code == runtime::SensorRuntimeResultCode::InvalidState);
     }
 }
 
@@ -157,7 +151,7 @@ void test_trial_confirmation_requires_health_and_maps_storage_result() {
 
 int main() {
     test_update_requires_quiescent_or_faulted_state();
-    test_restart_is_remote_recovery_but_never_interrupts_recording();
+    test_restart_is_remote_recovery_from_every_runtime_state();
     test_deferred_action_is_bounded_and_consumed_once();
     test_trial_confirmation_requires_health_and_maps_storage_result();
     return 0;

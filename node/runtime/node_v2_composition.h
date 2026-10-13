@@ -105,6 +105,13 @@ public:
                !data_plane_.sink().state().faulted;
     }
 
+    // Keeps protocol 5 alive when sensor initialization fails. Diagnostics,
+    // configuration repair, firmware update and RS485 restart remain
+    // reachable; measurement and Start fail closed through SensorRuntime.
+    void enter_service_safe_fault(SensorStatus status) {
+        sensor_runtime_.fail(status);
+    }
+
     Core0Runtime& core0() { return core0_; }
     void poll_core0() {
         core0_.poll();

@@ -97,11 +97,10 @@ private:
                 }
             }
         } else if (command.operation == SystemOperation::RestartNode) {
-            code = snapshot.state == SensorRuntimeState::Idle ||
-                           snapshot.state == SensorRuntimeState::Maintenance ||
-                           snapshot.state == SensorRuntimeState::Faulted
-                ? SensorRuntimeResultCode::Ok
-                : SensorRuntimeResultCode::InvalidState;
+            // Restart is the last RS485 recovery primitive. It must remain
+            // available when Recording/Stopping cannot make progress and no
+            // physical power cycle or USB connection exists.
+            code = SensorRuntimeResultCode::Ok;
         }
         return {
             command.operation_id,

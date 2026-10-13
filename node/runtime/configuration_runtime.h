@@ -113,7 +113,9 @@ public:
           measurement_sink_(measurement_sink) {}
 
     ConfigurationResult handle(const ConfigurationCommand& command) {
-        if (sensor_runtime_.snapshot().state != SensorRuntimeState::Maintenance) {
+        const SensorRuntimeState state = sensor_runtime_.snapshot().state;
+        if (state != SensorRuntimeState::Maintenance &&
+            state != SensorRuntimeState::Faulted) {
             return result(command.operation_id, ConfigurationResultCode::WrongMode);
         }
         if (command.expected_revision != config_manager_.generation()) {

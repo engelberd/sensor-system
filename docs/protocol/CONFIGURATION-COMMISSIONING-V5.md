@@ -45,7 +45,9 @@ wynik walidacji zamiast cichego zaokrąglenia.
 | ResetConfig | 4 | operation ID + expected revision | taki sam wynik jak ApplyConfig |
 
 `GetConfig` i `ValidateConfig` nie mają skutków ubocznych. `ApplyConfig` i
-`ResetConfig` są dozwolone wyłącznie w Maintenance. `expected_revision`
+`ResetConfig` są normalnie dozwolone w Maintenance. W `Faulted` pozostają
+dostępne jako service-safe naprawa konfiguracji przed zdalnym restartem.
+`expected_revision`
 realizuje optimistic concurrency: stary odczyt nie może nadpisać nowszej
 konfiguracji. Retry zachowuje `operation_id`, ale każda próba wire otrzymuje
 nowy `transaction_id`.

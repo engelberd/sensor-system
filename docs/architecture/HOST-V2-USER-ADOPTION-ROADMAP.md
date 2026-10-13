@@ -236,9 +236,10 @@ Firmware 0.5.6 zapisał lokalny fault snapshot, lecz nie udostępniał go po
 RS485. Firmware 0.5.7 dodaje osobny, read-only Diagnostics Service v3 dostępny
 również w `Faulted`, klient `sensor-hil diagnostics` oraz stałą zdalną ścieżkę
 ratunkową. `PrepareFirmwareUpdate` działa również w `Faulted`, a jawne
-`RestartNode` działa w `Idle`, `Maintenance` i `Faulted`; obie akcje są
-odrzucone podczas `Recording/Stopping` i wykonywane dopiero po zakończeniu TX
-odpowiedzi. Z kodu wynika, że
+`RestartNode` w 0.5.7 działa w `Idle`, `Maintenance` i `Faulted`. Firmware 0.5.8
+rozszerza go o ratunkowy restart z każdego stanu, także zakleszczonego
+`Stopping`; nadal wykonuje go dopiero po zakończeniu TX odpowiedzi. Z kodu
+wynika, że
 `InvalidSample` oznacza w tym miejscu albo naruszenie kolejności osi FIFO
 ADXL355, albo nieważne powiązanie FIFO z timestampami DRDY. Regularny
 `AcquisitionEngine::update()` nadal odrzuca wynik serwisowania FIFO; błąd staje

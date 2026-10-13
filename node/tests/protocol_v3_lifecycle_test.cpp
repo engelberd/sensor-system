@@ -255,6 +255,17 @@ void test_unexpected_result_fails_closed() {
         sizeof(response));
     assert(handled.payload_size == 1);
     assert(response[0] == static_cast<uint8_t>(ResponseStatus::InternalError));
+
+    // The one command that must survive a broken lifecycle mailbox is the
+    // deferred RS485 restart used when no physical power cycle is available.
+    const LifecycleHandlerResult restart =
+        call_restart(handler, 100, response, sizeof(response));
+    assert(decode_success(response, restart.payload_size).code ==
+           runtime::SensorRuntimeResultCode::Ok);
+    assert(restart.post_transmit_required);
+    assert(handler.settle_transmission(restart.post_transmit_token, true));
+    assert(system_action.peek() ==
+           runtime::DeferredSystemActionKind::RestartNode);
 }
 
 void test_update_action_is_armed_only_after_successful_transmission() {
@@ -356,18 +367,9 @@ void test_faulted_update_and_restart_arm_distinct_post_transmit_actions() {
 
     handled = call_restart(handler, 71, response, sizeof(response));
     assert(decode_success(response, handled.payload_size).code ==
-           runtime::SensorRuntimeResultCode::InProgress);
-    assert(system_mailbox.try_receive_command(command));
-    assert(command.operation == runtime::SystemOperation::RestartNode);
-    assert(system_mailbox.try_send_result({
-        71,
-        runtime::SensorRuntimeResultCode::Ok,
-        runtime::SensorRuntimeState::Faulted,
-        runtime::ObservabilityProfile::Production,
-        SensorStatus::InvalidSample,
-    }));
-    handled = call_restart(handler, 71, response, sizeof(response));
+           runtime::SensorRuntimeResultCode::Ok);
     assert(handled.post_transmit_required);
+    assert(system_mailbox.commands_waiting_approx() == 0);
     assert(handler.settle_transmission(handled.post_transmit_token, true));
     assert(system_action.peek() ==
            runtime::DeferredSystemActionKind::RestartNode);
