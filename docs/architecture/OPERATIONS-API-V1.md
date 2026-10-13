@@ -76,6 +76,21 @@ do Maintenance nie może jednak użyć jednej grupy z celem Maintenance: worker
 najpierw uruchomi grupę z celem `Idle`, wykona końcowy drain zatrzymanych
 journali i dopiero uruchomi drugą grupę z celem `Maintenance`.
 
+## Integralność danych podczas serwisu
+
+W zwykłym `Recording` brak próbki jest zdarzeniem integralności. Host ponawia
+transfer po krótkich błędach komunikacji i korzysta z retencji journala node,
+dopóki nie grozi jej przepełnienie. Każda rzeczywista luka pozostaje jawna w
+Capture.
+
+Jawna operacja operatora `EnterMaintenance`, restart lub odłączenie sprzętu
+ustanawia granicę serwisową. Worker nadal wykonuje Stop i ograniczony końcowy
+drain, ale produkt nie obiecuje bezstratności podczas ręcznej ingerencji i nie
+blokuje bez końca dostępu serwisowego dla kilku próbek. Nierozliczony fragment
+jest zapisywany jako gap albo continuity break wraz z powodem serwisowym. Taka
+polityka nie osłabia normalnego nagrywania: luka bez jawnej operacji pozostaje
+błędem wymagającym diagnostyki.
+
 Pierwsza wersja celowo dopuszcza Configuration i Commissioning w Maintenance.
 Configuration pozostaje też dostępne w `Faulted` jako service-safe naprawa przed
 restartem. Dzięki temu ruch serwisowy nie powoduje pływania `samples/s` w
