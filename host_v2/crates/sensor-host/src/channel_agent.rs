@@ -166,6 +166,22 @@ pub enum ChannelEvent {
     UnsolicitedResponse,
 }
 
+/// Stable identity of control work which an owning state machine may abandon
+/// after its own bounded deadline. Sample transfer and time synchronization
+/// deliberately have no key here: their settlement belongs to
+/// `ChannelWorkCoordinator`, not to the operations control plane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlWorkKey {
+    Handshake { node_address: u8 },
+    Lifecycle { node_address: u8, operation_id: u32 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbandonedControlWork {
+    Queued(ControlWorkKey),
+    Active(ControlWorkKey),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PendingWork {
     Handshake(NodeHandshake),
@@ -194,6 +210,25 @@ impl PendingWork {
             Self::Commissioning(_) => sensor_protocol::COMMISSIONING_ADDRESS,
             Self::Measurement(transfer) => transfer.node_address(),
             Self::TimeSync(attempt) => attempt.node_address,
+        }
+    }
+
+    fn matches_control_key(&self, key: ControlWorkKey) -> bool {
+        match (self, key) {
+            (Self::Handshake(handshake), ControlWorkKey::Handshake { node_address }) => {
+                handshake.requirements().node_address == node_address
+            }
+            (
+                Self::Lifecycle(operation),
+                ControlWorkKey::Lifecycle {
+                    node_address,
+                    operation_id,
+                },
+            ) => {
+                operation.node_address() == node_address
+                    && operation.command().operation_id == operation_id
+            }
+            _ => false,
         }
     }
 }
@@ -919,6 +954,38 @@ impl ChannelAgent {
             .map(MeasurementTransfer::node_address)
     }
 
+    /// Abandons only explicitly identified control work. An active wire
+    /// attempt must first finish, time out and leave late-response quarantine;
+    /// otherwise removing its logical owner could let a delayed response be
+    /// mistaken for later work. The caller should keep stepping the endpoint
+    /// and retry after `QuarantineEnded`.
+    pub fn abandon_control_work(
+        &mut self,
+        key: ControlWorkKey,
+    ) -> Result<AbandonedControlWork, ChannelAgentError> {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.work.matches_control_key(key))
+        {
+            if self.outbound.is_some() || !self.transactions.is_idle() {
+                return Err(ChannelAgentError::ControlAttemptInFlight(key));
+            }
+            self.active = None;
+            return Ok(AbandonedControlWork::Active(key));
+        }
+
+        let Some(position) = self
+            .pending
+            .iter()
+            .position(|work| work.matches_control_key(key))
+        else {
+            return Err(ChannelAgentError::ControlWorkNotFound(key));
+        };
+        self.pending.remove(position);
+        Ok(AbandonedControlWork::Queued(key))
+    }
+
     fn handoff_active_measurement(&mut self) -> Result<u8, ChannelAgentError> {
         let active = self
             .active
@@ -1002,6 +1069,8 @@ pub enum ChannelAgentError {
     InvalidTimeNodeAddress(u8),
     InvalidStreamStateNodeAddress(u8),
     ZeroTimeBootEpoch,
+    ControlAttemptInFlight(ControlWorkKey),
+    ControlWorkNotFound(ControlWorkKey),
     TimeBootEpochMismatch,
     TimeRequestNotTransmitted,
 }
@@ -1566,6 +1635,131 @@ mod tests {
         let second = take_transmit(&mut agent, 151);
         assert_ne!(first.transaction_id, second.transaction_id);
         assert_eq!(first.payload(), second.payload());
+    }
+
+    #[test]
+    fn timed_out_lifecycle_can_only_be_abandoned_after_quarantine() {
+        let mut agent = ChannelAgent::new(20, 200, duration(50), policy()).unwrap();
+        let operation_id = agent
+            .submit_lifecycle(7, RuntimeOperation::Stop, ObservabilityProfile::Production)
+            .unwrap();
+        let key = ControlWorkKey::Lifecycle {
+            node_address: 7,
+            operation_id,
+        };
+
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let request = take_transmit(&mut agent, 0);
+        assert!(matches!(
+            agent.abandon_control_work(key),
+            Err(ChannelAgentError::ControlAttemptInFlight(found)) if found == key
+        ));
+        assert!(matches!(
+            agent.poll(MonotonicMicros::new(101)).unwrap(),
+            ChannelEvent::LifecycleTimedOut { .. }
+        ));
+        assert!(matches!(
+            agent.abandon_control_work(key),
+            Err(ChannelAgentError::ControlAttemptInFlight(found)) if found == key
+        ));
+
+        let late = response(
+            &request,
+            RuntimeResult {
+                operation_id,
+                code: RuntimeResultCode::Ok,
+                state: RuntimeState::Idle,
+                observability: ObservabilityProfile::Production,
+                sensor_status: SensorStatusCode::Ok,
+            },
+        );
+        assert_eq!(
+            agent.receive(MonotonicMicros::new(120), &late).unwrap(),
+            ChannelEvent::LateResponse
+        );
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(150)).unwrap(),
+            ChannelEvent::QuarantineEnded
+        );
+        assert_eq!(
+            agent.abandon_control_work(key).unwrap(),
+            AbandonedControlWork::Active(key)
+        );
+        assert_eq!(agent.queued_work_items(), 0);
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(151)).unwrap(),
+            ChannelEvent::Idle
+        );
+    }
+
+    #[test]
+    fn queued_lifecycle_can_be_removed_without_disturbing_fifo_neighbors() {
+        let mut agent = ChannelAgent::new(20, 200, duration(50), policy()).unwrap();
+        let first_id = agent
+            .submit_lifecycle(
+                7,
+                RuntimeOperation::GetState,
+                ObservabilityProfile::Production,
+            )
+            .unwrap();
+        let removed_id = agent
+            .submit_lifecycle(8, RuntimeOperation::Stop, ObservabilityProfile::Production)
+            .unwrap();
+        let third_id = agent
+            .submit_lifecycle(
+                9,
+                RuntimeOperation::RestartNode,
+                ObservabilityProfile::Production,
+            )
+            .unwrap();
+        let key = ControlWorkKey::Lifecycle {
+            node_address: 8,
+            operation_id: removed_id,
+        };
+
+        assert_eq!(
+            agent.abandon_control_work(key).unwrap(),
+            AbandonedControlWork::Queued(key)
+        );
+        assert_eq!(agent.queued_work_items(), 2);
+
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let first = take_transmit(&mut agent, 0);
+        assert_eq!(first.destination, 7);
+        assert_eq!(
+            u32::from_le_bytes(first.payload().try_into().unwrap()),
+            first_id
+        );
+        let first_response = response(
+            &first,
+            RuntimeResult {
+                operation_id: first_id,
+                code: RuntimeResultCode::Ok,
+                state: RuntimeState::Idle,
+                observability: ObservabilityProfile::Production,
+                sensor_status: SensorStatusCode::Ok,
+            },
+        );
+        agent
+            .receive(MonotonicMicros::new(1), &first_response)
+            .unwrap();
+
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(2)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let third = take_transmit(&mut agent, 2);
+        assert_eq!(third.destination, 9);
+        assert_eq!(
+            u32::from_le_bytes(third.payload().try_into().unwrap()),
+            third_id
+        );
     }
 
     #[test]

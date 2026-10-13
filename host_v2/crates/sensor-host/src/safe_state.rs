@@ -1,6 +1,13 @@
 use core::fmt;
 
-use sensor_protocol::RuntimeState;
+use sensor_core::BootEpoch;
+use sensor_protocol::{
+    NodeIdentity, ObservabilityProfile, RuntimeOperation, RuntimeResultCode, RuntimeState,
+};
+
+use crate::channel_agent::{ChannelAgent, ChannelAgentError, ChannelEvent, ControlWorkKey};
+use crate::handshake::HandshakeRequirements;
+use crate::transaction::{DurationMicros, MonotonicMicros};
 
 /// Stable quiescent state requested by the channel owner. Maintenance is the
 /// normal service target; Idle is the convergence target after an aborted or
@@ -211,15 +218,463 @@ impl fmt::Display for SafeStateError {
 
 impl std::error::Error for SafeStateError {}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SafeStateWirePolicy {
+    pub action_deadline: DurationMicros,
+    pub restart_settle_delay: DurationMicros,
+    pub restart_confirmation_deadline: DurationMicros,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WirePhase {
+    Ready,
+    Lifecycle {
+        action: SafeStateAction,
+        operation_id: u32,
+        deadline: MonotonicMicros,
+    },
+    RestartDelay {
+        previous_boot_epoch: BootEpoch,
+        probe_not_before: MonotonicMicros,
+        deadline: MonotonicMicros,
+    },
+    RestartHandshake {
+        previous_boot_epoch: BootEpoch,
+        deadline: MonotonicMicros,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SafeStateWireProgress {
+    Waiting,
+    Submitted {
+        action: SafeStateAction,
+        operation_id: u32,
+    },
+    RestartHandshakeSubmitted,
+    RestartConfirmationStarted,
+    AwaitingWireSettlement {
+        action: SafeStateAction,
+    },
+    AttemptFailed {
+        action: SafeStateAction,
+    },
+    Reached(SafeStateTarget),
+    Offline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SafeStateEventDisposition {
+    Ignored,
+    Progressed,
+    AttemptFailed(SafeStateAction),
+    RestartObserved { identity: NodeIdentity },
+}
+
+/// Incremental wire adapter for one `SafeStateConverger`. It never blocks and
+/// never owns the port. The channel worker calls `drive`, performs one normal
+/// `ChannelEndpoint::step`, and passes the resulting `ChannelEvent` back to
+/// `handle_event`. Deadlines can abandon logical control work only after the
+/// transaction core has made the wire idle and expired its late-response
+/// quarantine.
+pub struct SafeStateWireOperation {
+    node_address: u8,
+    requirements: HandshakeRequirements,
+    current_boot_epoch: BootEpoch,
+    policy: SafeStateWirePolicy,
+    converger: SafeStateConverger,
+    phase: WirePhase,
+}
+
+impl SafeStateWireOperation {
+    pub fn new(
+        target: SafeStateTarget,
+        safe_state_policy: SafeStatePolicy,
+        wire_policy: SafeStateWirePolicy,
+        requirements: HandshakeRequirements,
+        current_boot_epoch: BootEpoch,
+    ) -> Result<Self, SafeStateWireError> {
+        if current_boot_epoch.get() == 0 {
+            return Err(SafeStateWireError::ZeroBootEpoch);
+        }
+        Ok(Self {
+            node_address: requirements.node_address,
+            requirements,
+            current_boot_epoch,
+            policy: wire_policy,
+            converger: SafeStateConverger::new(target, safe_state_policy)
+                .map_err(SafeStateWireError::Convergence)?,
+            phase: WirePhase::Ready,
+        })
+    }
+
+    pub const fn status(&self) -> SafeStateStatus {
+        self.converger.status()
+    }
+
+    pub const fn current_boot_epoch(&self) -> BootEpoch {
+        self.current_boot_epoch
+    }
+
+    pub fn fall_back_to_idle(&mut self) -> Result<(), SafeStateWireError> {
+        if self.phase != WirePhase::Ready {
+            return Err(SafeStateWireError::WireActionPending);
+        }
+        self.converger
+            .fall_back_to_idle()
+            .map_err(SafeStateWireError::Convergence)
+    }
+
+    pub fn drive(
+        &mut self,
+        agent: &mut ChannelAgent,
+        now: MonotonicMicros,
+    ) -> Result<SafeStateWireProgress, SafeStateWireError> {
+        match self.phase {
+            WirePhase::Ready => self.submit_next_action(agent, now),
+            WirePhase::Lifecycle {
+                action,
+                operation_id,
+                deadline,
+            } if now >= deadline => {
+                let key = ControlWorkKey::Lifecycle {
+                    node_address: self.node_address,
+                    operation_id,
+                };
+                match agent.abandon_control_work(key) {
+                    Ok(_) => {
+                        if action == SafeStateAction::Restart {
+                            self.begin_restart_confirmation(now)?;
+                            return Ok(SafeStateWireProgress::RestartConfirmationStarted);
+                        }
+                        self.converger
+                            .fail(action)
+                            .map_err(SafeStateWireError::Convergence)?;
+                        self.phase = WirePhase::Ready;
+                        Ok(SafeStateWireProgress::AttemptFailed { action })
+                    }
+                    Err(ChannelAgentError::ControlAttemptInFlight(_)) => {
+                        Ok(SafeStateWireProgress::AwaitingWireSettlement { action })
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            }
+            WirePhase::Lifecycle { .. } => Ok(SafeStateWireProgress::Waiting),
+            WirePhase::RestartDelay {
+                previous_boot_epoch: _,
+                probe_not_before: _,
+                deadline,
+            }
+            | WirePhase::RestartHandshake {
+                previous_boot_epoch: _,
+                deadline,
+            } if now >= deadline => self.fail_restart_confirmation(agent),
+            WirePhase::RestartDelay {
+                previous_boot_epoch,
+                probe_not_before,
+                deadline,
+            } if now >= probe_not_before => {
+                if agent.queued_work_items() != 0 {
+                    return Err(SafeStateWireError::ChannelNotExclusive);
+                }
+                agent.submit_handshake(self.requirements)?;
+                self.phase = WirePhase::RestartHandshake {
+                    previous_boot_epoch,
+                    deadline,
+                };
+                Ok(SafeStateWireProgress::RestartHandshakeSubmitted)
+            }
+            WirePhase::RestartDelay { .. } | WirePhase::RestartHandshake { .. } => {
+                Ok(SafeStateWireProgress::Waiting)
+            }
+        }
+    }
+
+    pub fn handle_event(
+        &mut self,
+        event: &ChannelEvent,
+        now: MonotonicMicros,
+    ) -> Result<SafeStateEventDisposition, SafeStateWireError> {
+        match (self.phase, event) {
+            (
+                WirePhase::Lifecycle {
+                    action,
+                    operation_id,
+                    ..
+                },
+                ChannelEvent::LifecycleComplete {
+                    node_address,
+                    result,
+                },
+            ) if *node_address == self.node_address && result.operation_id == operation_id => {
+                if result.code != RuntimeResultCode::Ok
+                    || !runtime_result_matches_action(action, result.state)
+                {
+                    self.converger
+                        .fail(action)
+                        .map_err(SafeStateWireError::Convergence)?;
+                    self.phase = WirePhase::Ready;
+                    return Ok(SafeStateEventDisposition::AttemptFailed(action));
+                }
+                if action == SafeStateAction::Restart {
+                    self.begin_restart_confirmation(now)?;
+                } else {
+                    self.converger
+                        .complete(action, result.state)
+                        .map_err(SafeStateWireError::Convergence)?;
+                    self.phase = WirePhase::Ready;
+                }
+                Ok(SafeStateEventDisposition::Progressed)
+            }
+            (
+                WirePhase::RestartHandshake {
+                    previous_boot_epoch,
+                    deadline,
+                },
+                ChannelEvent::HandshakeComplete {
+                    node_address,
+                    identity,
+                    ..
+                },
+            ) if *node_address == self.node_address => {
+                if identity.boot_epoch == previous_boot_epoch {
+                    self.phase = WirePhase::RestartDelay {
+                        previous_boot_epoch,
+                        probe_not_before: checked_deadline(now, self.policy.restart_settle_delay)?,
+                        deadline,
+                    };
+                    return Ok(SafeStateEventDisposition::Progressed);
+                }
+                self.current_boot_epoch = identity.boot_epoch;
+                self.converger
+                    .complete(SafeStateAction::Restart, RuntimeState::Idle)
+                    .map_err(SafeStateWireError::Convergence)?;
+                self.phase = WirePhase::Ready;
+                Ok(SafeStateEventDisposition::RestartObserved {
+                    identity: *identity,
+                })
+            }
+            _ => Ok(SafeStateEventDisposition::Ignored),
+        }
+    }
+
+    fn submit_next_action(
+        &mut self,
+        agent: &mut ChannelAgent,
+        now: MonotonicMicros,
+    ) -> Result<SafeStateWireProgress, SafeStateWireError> {
+        match self.converger.status() {
+            SafeStateStatus::Reached(target) => {
+                return Ok(SafeStateWireProgress::Reached(target));
+            }
+            SafeStateStatus::Offline => return Ok(SafeStateWireProgress::Offline),
+            SafeStateStatus::Converging => {}
+        }
+        if agent.queued_work_items() != 0 {
+            return Err(SafeStateWireError::ChannelNotExclusive);
+        }
+        let Some(action) = self
+            .converger
+            .next_action()
+            .map_err(SafeStateWireError::Convergence)?
+        else {
+            return match self.converger.status() {
+                SafeStateStatus::Reached(target) => Ok(SafeStateWireProgress::Reached(target)),
+                SafeStateStatus::Offline => Ok(SafeStateWireProgress::Offline),
+                SafeStateStatus::Converging => Err(SafeStateWireError::InvariantViolation),
+            };
+        };
+        let operation_id = agent.submit_lifecycle(
+            self.node_address,
+            runtime_operation(action),
+            ObservabilityProfile::Production,
+        )?;
+        self.phase = WirePhase::Lifecycle {
+            action,
+            operation_id,
+            deadline: checked_deadline(now, self.policy.action_deadline)?,
+        };
+        Ok(SafeStateWireProgress::Submitted {
+            action,
+            operation_id,
+        })
+    }
+
+    fn fail_restart_confirmation(
+        &mut self,
+        agent: &mut ChannelAgent,
+    ) -> Result<SafeStateWireProgress, SafeStateWireError> {
+        if matches!(self.phase, WirePhase::RestartHandshake { .. }) {
+            let key = ControlWorkKey::Handshake {
+                node_address: self.node_address,
+            };
+            match agent.abandon_control_work(key) {
+                Ok(_) => {}
+                Err(ChannelAgentError::ControlAttemptInFlight(_)) => {
+                    return Ok(SafeStateWireProgress::AwaitingWireSettlement {
+                        action: SafeStateAction::Restart,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.converger
+            .fail(SafeStateAction::Restart)
+            .map_err(SafeStateWireError::Convergence)?;
+        self.phase = WirePhase::Ready;
+        Ok(SafeStateWireProgress::AttemptFailed {
+            action: SafeStateAction::Restart,
+        })
+    }
+
+    fn begin_restart_confirmation(
+        &mut self,
+        now: MonotonicMicros,
+    ) -> Result<(), SafeStateWireError> {
+        self.phase = WirePhase::RestartDelay {
+            previous_boot_epoch: self.current_boot_epoch,
+            probe_not_before: checked_deadline(now, self.policy.restart_settle_delay)?,
+            deadline: checked_deadline(now, self.policy.restart_confirmation_deadline)?,
+        };
+        Ok(())
+    }
+}
+
+fn runtime_operation(action: SafeStateAction) -> RuntimeOperation {
+    match action {
+        SafeStateAction::GetState => RuntimeOperation::GetState,
+        SafeStateAction::Stop => RuntimeOperation::Stop,
+        SafeStateAction::EnterMaintenance => RuntimeOperation::EnterMaintenance,
+        SafeStateAction::ExitMaintenance => RuntimeOperation::ExitMaintenance,
+        SafeStateAction::Restart => RuntimeOperation::RestartNode,
+    }
+}
+
+fn runtime_result_matches_action(action: SafeStateAction, state: RuntimeState) -> bool {
+    match action {
+        SafeStateAction::GetState | SafeStateAction::Restart => true,
+        SafeStateAction::Stop | SafeStateAction::ExitMaintenance => state == RuntimeState::Idle,
+        SafeStateAction::EnterMaintenance => state == RuntimeState::Maintenance,
+    }
+}
+
+fn checked_deadline(
+    now: MonotonicMicros,
+    duration: DurationMicros,
+) -> Result<MonotonicMicros, SafeStateWireError> {
+    now.checked_add(duration)
+        .ok_or(SafeStateWireError::TimeOverflow)
+}
+
+#[derive(Debug)]
+pub enum SafeStateWireError {
+    ZeroBootEpoch,
+    WireActionPending,
+    ChannelNotExclusive,
+    TimeOverflow,
+    InvariantViolation,
+    Convergence(SafeStateError),
+    Agent(ChannelAgentError),
+}
+
+impl From<ChannelAgentError> for SafeStateWireError {
+    fn from(value: ChannelAgentError) -> Self {
+        Self::Agent(value)
+    }
+}
+
+impl fmt::Display for SafeStateWireError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "safe-state wire error: {self:?}")
+    }
+}
+
+impl std::error::Error for SafeStateWireError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_agent::{ChannelEvent, ChannelPolicy};
+    use sensor_core::HardwareId;
+    use sensor_protocol::{
+        encode_lifecycle_response, Frame, FrameRole, RuntimeResult, SensorStatusCode, HOST_ADDRESS,
+    };
+
+    const HARDWARE_ID: HardwareId = HardwareId::from_bytes([1, 2, 3, 4, 5, 6, 7, 8]);
 
     fn policy() -> SafeStatePolicy {
         SafeStatePolicy {
             orderly_attempts: 2,
             restart_attempts: 2,
         }
+    }
+
+    fn duration(value: u64) -> DurationMicros {
+        DurationMicros::new(value).unwrap()
+    }
+
+    fn wire_policy() -> SafeStateWirePolicy {
+        SafeStateWirePolicy {
+            action_deadline: duration(10),
+            restart_settle_delay: duration(5),
+            restart_confirmation_deadline: duration(100),
+        }
+    }
+
+    fn requirements() -> HandshakeRequirements {
+        HandshakeRequirements::recording_node(HARDWARE_ID, 7, 2, 0)
+    }
+
+    fn agent() -> ChannelAgent {
+        ChannelAgent::new(
+            10,
+            100,
+            duration(5),
+            ChannelPolicy {
+                transaction_timeout: duration(10),
+                retry_delay: duration(1),
+                measurement_attempts_per_slot: 1,
+                max_pending_work_items: 4,
+            },
+        )
+        .unwrap()
+    }
+
+    fn complete_lifecycle(
+        agent: &mut ChannelAgent,
+        transmitted_at: u64,
+        state: RuntimeState,
+    ) -> ChannelEvent {
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(transmitted_at)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let request = agent.take_outbound().unwrap();
+        agent
+            .transmit_completed(MonotonicMicros::new(transmitted_at))
+            .unwrap();
+        let operation_id = u32::from_le_bytes(request.payload()[..4].try_into().unwrap());
+        let payload = encode_lifecycle_response(RuntimeResult {
+            operation_id,
+            code: RuntimeResultCode::Ok,
+            state,
+            observability: ObservabilityProfile::Production,
+            sensor_status: SensorStatusCode::Ok,
+        })
+        .unwrap();
+        let response = Frame::new(
+            FrameRole::Response,
+            HOST_ADDRESS,
+            request.destination,
+            request.service,
+            request.message,
+            request.transaction_id,
+            &payload,
+        )
+        .unwrap();
+        agent
+            .receive(MonotonicMicros::new(transmitted_at + 1), &response)
+            .unwrap()
     }
 
     #[test]
@@ -321,5 +776,129 @@ mod tests {
             })
         );
         assert_eq!(state.pending(), Some(SafeStateAction::GetState));
+    }
+
+    #[test]
+    fn wire_operation_reaches_maintenance_without_blocking_or_assuming_state() {
+        let mut agent = agent();
+        let mut operation = SafeStateWireOperation::new(
+            SafeStateTarget::Maintenance,
+            policy(),
+            wire_policy(),
+            requirements(),
+            BootEpoch::new(9),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            operation
+                .drive(&mut agent, MonotonicMicros::new(0))
+                .unwrap(),
+            SafeStateWireProgress::Submitted {
+                action: SafeStateAction::GetState,
+                ..
+            }
+        ));
+        let event = complete_lifecycle(&mut agent, 0, RuntimeState::Recording);
+        assert_eq!(
+            operation
+                .handle_event(&event, MonotonicMicros::new(1))
+                .unwrap(),
+            SafeStateEventDisposition::Progressed
+        );
+
+        assert!(matches!(
+            operation
+                .drive(&mut agent, MonotonicMicros::new(2))
+                .unwrap(),
+            SafeStateWireProgress::Submitted {
+                action: SafeStateAction::Stop,
+                ..
+            }
+        ));
+        let event = complete_lifecycle(&mut agent, 2, RuntimeState::Idle);
+        operation
+            .handle_event(&event, MonotonicMicros::new(3))
+            .unwrap();
+
+        assert!(matches!(
+            operation
+                .drive(&mut agent, MonotonicMicros::new(4))
+                .unwrap(),
+            SafeStateWireProgress::Submitted {
+                action: SafeStateAction::EnterMaintenance,
+                ..
+            }
+        ));
+        let event = complete_lifecycle(&mut agent, 4, RuntimeState::Maintenance);
+        operation
+            .handle_event(&event, MonotonicMicros::new(5))
+            .unwrap();
+        assert_eq!(
+            operation
+                .drive(&mut agent, MonotonicMicros::new(6))
+                .unwrap(),
+            SafeStateWireProgress::Reached(SafeStateTarget::Maintenance)
+        );
+    }
+
+    #[test]
+    fn wire_deadline_waits_for_quarantine_then_escalates_to_restart() {
+        let mut agent = agent();
+        let mut operation = SafeStateWireOperation::new(
+            SafeStateTarget::Idle,
+            SafeStatePolicy {
+                orderly_attempts: 1,
+                restart_attempts: 2,
+            },
+            wire_policy(),
+            requirements(),
+            BootEpoch::new(9),
+        )
+        .unwrap();
+
+        operation
+            .drive(&mut agent, MonotonicMicros::new(0))
+            .unwrap();
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        agent.take_outbound().unwrap();
+        agent.transmit_completed(MonotonicMicros::new(0)).unwrap();
+
+        assert_eq!(
+            operation
+                .drive(&mut agent, MonotonicMicros::new(11))
+                .unwrap(),
+            SafeStateWireProgress::AwaitingWireSettlement {
+                action: SafeStateAction::GetState,
+            }
+        );
+        assert!(matches!(
+            agent.poll(MonotonicMicros::new(11)).unwrap(),
+            ChannelEvent::LifecycleTimedOut { .. }
+        ));
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(15)).unwrap(),
+            ChannelEvent::QuarantineEnded
+        );
+        assert_eq!(
+            operation
+                .drive(&mut agent, MonotonicMicros::new(15))
+                .unwrap(),
+            SafeStateWireProgress::AttemptFailed {
+                action: SafeStateAction::GetState,
+            }
+        );
+        assert!(matches!(
+            operation
+                .drive(&mut agent, MonotonicMicros::new(16))
+                .unwrap(),
+            SafeStateWireProgress::Submitted {
+                action: SafeStateAction::Restart,
+                ..
+            }
+        ));
     }
 }

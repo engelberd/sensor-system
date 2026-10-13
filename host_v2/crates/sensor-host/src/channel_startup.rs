@@ -4,14 +4,15 @@ use crate::channel_admission::{
     AdmissionError, AdmissionPolicy, AdmissionReport, ChannelAdmission, NodeTrafficDemand,
     PeriodicTraffic,
 };
-use sensor_protocol::{ObservabilityProfile, RuntimeState};
+use sensor_protocol::{ObservabilityProfile, RuntimeState, ServiceId};
 
 use crate::channel_recovery::RecoveredNode;
 use crate::channel_runtime::{
     ChannelRuntime, ChannelRuntimeError, NodeScheduleConfig, TimeSyncScheduleConfig,
 };
 use crate::channel_scheduler::{ChannelScheduler, ChannelSchedulerPolicy};
-use crate::discovery::{DiscoveredNode, DiscoveryInventory};
+use crate::discovery::{DiscoveredNode, DiscoveryInventory, REQUIRED_RECORDING_FEATURES};
+use crate::handshake::HandshakeRequirements;
 use crate::measurement_coordinator::{ChannelWorkCoordinator, MeasurementCoordinatorError};
 use crate::transaction::{DurationMicros, MonotonicMicros};
 
@@ -55,6 +56,10 @@ impl ChannelStartupPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NodeStartupPlan {
     pub discovered: DiscoveredNodeRef,
+    /// The complete fail-closed identity/capability contract is retained for
+    /// post-restart recovery. The running worker must never rebuild a weaker
+    /// handshake from only an address and boot epoch.
+    pub requirements: HandshakeRequirements,
     pub schedule: NodeScheduleConfig,
     pub time_sync: TimeSyncScheduleConfig,
 }
@@ -290,6 +295,14 @@ fn node_plan(
     }
     .validate()
     .map_err(ChannelStartupError::Runtime)?;
+    let mut requirements = HandshakeRequirements::recording_node(
+        identity.hardware_id,
+        discovered.node_address(),
+        identity.board_revision,
+        REQUIRED_RECORDING_FEATURES,
+    )
+    .with_output_rate(discovered.output_rate());
+    requirements.required_services |= ServiceId::Time.capability_bit();
     Ok(NodeStartupPlan {
         discovered: DiscoveredNodeRef {
             channel_id: discovered.channel_id(),
@@ -297,6 +310,7 @@ fn node_plan(
             hardware_id: identity.hardware_id,
             boot_epoch: identity.boot_epoch,
         },
+        requirements,
         schedule,
         time_sync: policy.time_sync_schedule,
     })
@@ -448,6 +462,13 @@ mod tests {
             .nodes()
             .iter()
             .all(|node| node.schedule.target_chunk_samples == 32));
+        assert!(plans[0].nodes().iter().all(|node| {
+            node.requirements.hardware_id == node.discovered.hardware_id
+                && node.requirements.node_address == node.discovered.node_address
+                && node.requirements.board_revision == 2
+                && node.requirements.required_output_rate == Some(OutputRateCode::Hz125)
+                && node.requirements.required_services & ServiceId::Time.capability_bit() != 0
+        }));
     }
 
     #[test]

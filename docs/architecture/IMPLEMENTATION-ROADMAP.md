@@ -729,14 +729,20 @@ otwiera portów, a przerwany update pozostawia bootowalny slot.
 
 Bieżąca kolejność implementacji:
 
-1. bounded command/result path do workera będącego jedynym właścicielem RS485;
-2. jawne przejścia `Recording → Stopping → Maintenance` i powrót przez pełną
+1. **Gotowa domena i executor per node:** bounded command mailbox, idempotentny
+   ledger, `SafeStateConverger`, bezpieczne porzucenie control work dopiero po
+   kwarantannie wire oraz nieblokujący `SafeStateWireOperation` z weryfikacją
+   nowego `boot_epoch` po restarcie. Plan startowy zachowuje pełny kontrakt
+   handshake dla późniejszego recovery;
+2. podłączyć inbox, ledger i executor do workera będącego jedynym właścicielem
+   RS485;
+3. jawne przejścia `Recording → Stopping → Maintenance` i powrót przez pełną
    walidację/admission;
-3. odczyt oraz mutacje Configuration per node;
-4. wyłączne okno Commissioning per channel i handshake przydzielonego node;
-5. lokalne IPC, rejestr/audit operacji i adapter `hostctl`;
-6. operacje grupowe z wynikiem per target;
-7. dopiero potem dashboard jako cienki klient tego samego API.
+4. odczyt oraz mutacje Configuration per node;
+5. wyłączne okno Commissioning per channel i handshake przydzielonego node;
+6. lokalne IPC, rejestr/audit operacji i adapter `hostctl`;
+7. operacje grupowe z wynikiem per target;
+8. dopiero potem dashboard jako cienki klient tego samego API.
 
 ### Etap 11 — Archive, narzędzia i migracja produkcyjna
 
@@ -936,16 +942,19 @@ Następne fragmenty mają stałą kolejność zależności:
 
 1. **Gotowe:** proces `sensor-host run` wokół `HostCoordinator`, sygnały,
    okresowy health, globalna reakcja storage i raport końcowego shutdownu.
-2. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
+2. Dokończyć bieżącą bramkę Operations API: podłączyć gotowy mailbox, ledger i
+   executor safe-state do workera, następnie wykonać kontrolowane
+   Maintenance/Resume bez omijania recovery kursorów.
+3. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
    awarię jednej linii, opóźniony storage oraz globalny storage fault.
-3. Uruchomić Raspberry Pi kolejno z 1, 4 i 8 kanałami. Zmierzyć RTT, turnaround,
+4. Uruchomić Raspberry Pi kolejno z 1, 4 i 8 kanałami. Zmierzyć RTT, turnaround,
    decode errors, retry, RSS, CPU, I/O wait, fsync latency, backlog i TimeSync.
-4. Powtórzyć HIL z wieloma node na jednym kanale, długim przewodem,
+5. Powtórzyć HIL z wieloma node na jednym kanale, długim przewodem,
    kontrolowanymi zakłóceniami, restartem procesu hosta i utratą zasilania.
-5. Dokończyć ścieżkę Archive: zbudować blokowy compactor/uploader na gotowym
+6. Dokończyć ścieżkę Archive: zbudować blokowy compactor/uploader na gotowym
    indeksie pokrycia i checkpointach, a następnie powtórzyć benchmark na M.2.
-6. Na końcu dostroić wyłącznie profile pojemności na podstawie pomiarów i
-   dobudować Operations API; nie zmieniać przy tym domeny ani formatu Capture.
+7. Na końcu dostroić wyłącznie profile pojemności na podstawie pomiarów; nie
+   zmieniać przy tym domeny ani formatu Capture.
 
 Fizycznie zatwierdzony obraz protocol 5 ma wersję `0.5.6`, capabilities schema
 2 i reklamuje Time Service. Migracja `0.5.4` → `0.5.5` przeszła w całości po RS485: fail-closed identity,

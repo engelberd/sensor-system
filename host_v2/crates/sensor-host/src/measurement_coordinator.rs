@@ -704,6 +704,18 @@ impl ChannelWorkCoordinator {
         Ok(())
     }
 
+    /// Re-enables normal scheduling after a completed service interval. The
+    /// caller must first restore every node/session contract and leave no
+    /// post-Stop drain active. This method changes only scheduler admission;
+    /// it never starts a node or invents cursor recovery.
+    pub fn resume_scheduling(&mut self) -> Result<(), MeasurementCoordinatorError> {
+        if !self.is_quiescent() || self.shutdown_drain_nodes.is_some() {
+            return Err(MeasurementCoordinatorError::ResumeNotReady);
+        }
+        self.quiescing = false;
+        Ok(())
+    }
+
     pub const fn is_quiescing(&self) -> bool {
         self.quiescing
     }
@@ -864,6 +876,7 @@ pub enum MeasurementCoordinatorError {
     ShutdownDrainNotReady,
     ShutdownDrainIncomplete,
     ShutdownDrainOrder,
+    ResumeNotReady,
 }
 
 impl fmt::Display for MeasurementCoordinatorError {
@@ -1226,6 +1239,8 @@ mod tests {
         assert!(coordinator.is_shutdown_drain_complete());
         coordinator.finish_shutdown_drain().unwrap();
         assert!(coordinator.is_quiescent());
+        coordinator.resume_scheduling().unwrap();
+        assert!(!coordinator.is_quiescing());
     }
 
     #[test]

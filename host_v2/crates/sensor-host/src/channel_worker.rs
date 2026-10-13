@@ -25,6 +25,7 @@ use crate::channel_startup::{
 };
 use crate::channel_supervisor::SupervisedChannelTask;
 use crate::discovery::DiscoveryTargetId;
+use crate::handshake::HandshakeRequirements;
 use crate::measurement_coordinator::MeasurementCoordinatorError;
 use crate::node_metrics::NodeMetricsReader;
 use crate::persistence_executor::{
@@ -59,11 +60,18 @@ impl ControlledChannelShutdownPolicy {
 
 pub struct ProductionChannelTask<P, C, T> {
     recording: ProductionChannelLoop<P, C, T>,
-    nodes: Vec<DiscoveryTargetId>,
+    nodes: Vec<ChannelControlNode>,
     shutdown_policy: ControlledChannelShutdownPolicy,
     metrics: ChannelMetricsPublisher,
     metrics_reader: ChannelMetricsReader,
     node_metrics_readers: Vec<NodeMetricsReader>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelControlNode {
+    pub id: DiscoveryTargetId,
+    pub requirements: HandshakeRequirements,
+    pub boot_epoch: sensor_core::BootEpoch,
 }
 
 impl<P, C, T> ProductionChannelTask<P, C, T>
@@ -81,9 +89,13 @@ where
         let nodes = startup
             .nodes()
             .iter()
-            .map(|node| DiscoveryTargetId {
-                channel_id: node.discovered.channel_id,
-                node_address: node.discovered.node_address,
+            .map(|node| ChannelControlNode {
+                id: DiscoveryTargetId {
+                    channel_id: node.discovered.channel_id,
+                    node_address: node.discovered.node_address,
+                },
+                requirements: node.requirements,
+                boot_epoch: node.discovered.boot_epoch,
             })
             .collect();
         let storage_metrics = recording.persistence().metrics_reader();
@@ -107,6 +119,10 @@ where
     pub fn node_metrics_readers(&self) -> Vec<NodeMetricsReader> {
         self.node_metrics_readers.clone()
     }
+
+    pub fn control_nodes(&self) -> &[ChannelControlNode] {
+        &self.nodes
+    }
 }
 
 impl<P, C, T> SupervisedChannelTask for ProductionChannelTask<P, C, T>
@@ -126,7 +142,8 @@ where
     }
 
     fn shutdown(self) -> Self::Shutdown {
-        controlled_shutdown_channel(self.recording, &self.nodes, self.shutdown_policy)
+        let node_ids = self.nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+        controlled_shutdown_channel(self.recording, &node_ids, self.shutdown_policy)
     }
 }
 

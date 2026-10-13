@@ -60,6 +60,15 @@ Wyczerpanie również prób restartu kończy się stabilnym `Offline` oraz wynik
 per node. `EnteringMaintenance` i `ResumingRecording` nigdy nie są trwałym
 stanem końcowym operacji.
 
+Warstwa wykonawcza tej polityki jest już gotowa jako nieblokujący
+`SafeStateWireOperation`. Każda akcja ma deadline właściciela operacji. Po jego
+przekroczeniu logiczne polecenie może zostać porzucone dopiero po timeoutcie
+wire i zakończeniu kwarantanny spóźnionej odpowiedzi. Transfer próbki nie może
+być anulowany tym mechanizmem. Niepewny wynik `RestartNode` nie powoduje od razu
+drugiego restartu: host najpierw wykonuje pełny handshake i wymaga zmiany
+`boot_epoch`. Plan startowy workera zachowuje do tego pełne wymagania hardware,
+board revision, usług, cech i ODR.
+
 Pierwsza wersja celowo dopuszcza Configuration i Commissioning w Maintenance.
 Configuration pozostaje też dostępne w `Faulted` jako service-safe naprawa przed
 restartem. Dzięki temu ruch serwisowy nie powoduje pływania `samples/s` w
@@ -115,8 +124,10 @@ portów urządzeń, Capture WAL lub wewnętrznych kolejek schedulera.
 
 ## Kolejna bramka
 
-1. podłączyć inbox i ledger do właściciela kanału;
-2. zaimplementować kontrolowane wejście/wyjście z Maintenance;
+1. podłączyć gotowe inbox, ledger i `SafeStateWireOperation` do właściciela
+   kanału;
+2. zaimplementować sekwencję quiesce → Idle → końcowy drain → Maintenance oraz
+   pełne recovery przed wznowieniem schedulera;
 3. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
 4. dodać lokalne IPC i adapter `hostctl`;
 5. wykonać HIL firmware 0.5.8, następnie operacje grupowe i audit trwały.

@@ -135,6 +135,10 @@ where
         &self.measurements
     }
 
+    pub fn endpoint_mut(&mut self) -> &mut ChannelEndpoint<P, C> {
+        &mut self.endpoint
+    }
+
     pub fn begin_quiesce(&mut self) {
         self.measurements.begin_quiesce();
     }
@@ -153,6 +157,10 @@ where
 
     pub fn finish_shutdown_drain(&mut self) -> Result<(), MeasurementCoordinatorError> {
         self.measurements.finish_shutdown_drain()
+    }
+
+    pub fn resume_scheduling(&mut self) -> Result<(), MeasurementCoordinatorError> {
+        self.measurements.resume_scheduling()
     }
 
     pub fn into_parts(self) -> (ChannelEndpoint<P, C>, ChannelWorkCoordinator, S, T) {
