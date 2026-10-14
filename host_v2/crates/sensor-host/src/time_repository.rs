@@ -44,6 +44,12 @@ pub struct TimeDurableReceipt {
     pub record_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TimeStreamRollover {
+    pub stream: TimeStreamKey,
+    pub durable_record_count: u64,
+}
+
 /// Fixed-topology owner of all Time WAL streams for one host clock epoch.
 ///
 /// Runtime writes cannot create an unconfigured stream. A node or host reboot
@@ -105,6 +111,44 @@ impl TimeRepository {
         Ok(self.stream(stream)?.recovery().record_count)
     }
 
+    /// Adds the next boot epoch while retaining the previous Time WAL as
+    /// immutable clock evidence. Repeating a completed rollover is idempotent.
+    pub fn rollover_stream(
+        &mut self,
+        previous: TimeStreamKey,
+        next: TimeStreamSpec,
+    ) -> Result<TimeStreamRollover, TimeRepositoryError> {
+        self.stream(previous)?;
+        let next_key = TimeStreamKey::from_config(next.config);
+        if previous.hardware_id != next_key.hardware_id
+            || previous.node_address != next_key.node_address
+        {
+            return Err(TimeRepositoryError::RolloverIdentityMismatch {
+                previous,
+                next: next_key,
+            });
+        }
+        if previous.boot_epoch == next_key.boot_epoch {
+            return Err(TimeRepositoryError::UnchangedBootEpoch(next_key));
+        }
+        if next.config.host_clock_id != self.host_clock_id {
+            return Err(TimeRepositoryError::MixedHostClockIds);
+        }
+        if let Ok(existing) = self.stream(next_key) {
+            return Ok(TimeStreamRollover {
+                stream: next_key,
+                durable_record_count: existing.recovery().record_count,
+            });
+        }
+        let stream = TimeWalSink::open(next.path, next.config).map_err(TimeRepositoryError::Wal)?;
+        let durable_record_count = stream.recovery().record_count;
+        self.streams.push(stream);
+        Ok(TimeStreamRollover {
+            stream: next_key,
+            durable_record_count,
+        })
+    }
+
     pub fn persist(
         &mut self,
         record: TimeObservationRecord,
@@ -151,6 +195,11 @@ pub enum TimeRepositoryError {
     MixedHostClockIds,
     DuplicateStream(TimeStreamKey),
     UnknownStream(TimeStreamKey),
+    RolloverIdentityMismatch {
+        previous: TimeStreamKey,
+        next: TimeStreamKey,
+    },
+    UnchangedBootEpoch(TimeStreamKey),
 }
 
 impl fmt::Display for TimeRepositoryError {
@@ -292,5 +341,36 @@ mod tests {
             ]),
             Err(TimeRepositoryError::MixedHostClockIds)
         ));
+    }
+
+    #[test]
+    fn rollover_adds_a_new_epoch_and_is_idempotent() {
+        let temp = TempDirectory::new();
+        let previous = config(1, 1);
+        let previous_key = TimeStreamKey::from_config(previous);
+        let mut repository = TimeRepository::open([TimeStreamSpec {
+            path: temp.0.join("previous.wal"),
+            config: previous,
+        }])
+        .unwrap();
+        repository.persist(record(previous, 1_000)).unwrap();
+        let mut next = previous;
+        next.boot_epoch = BootEpoch::new(8);
+        let spec = TimeStreamSpec {
+            path: temp.0.join("next.wal"),
+            config: next,
+        };
+
+        let rollover = repository
+            .rollover_stream(previous_key, spec.clone())
+            .unwrap();
+        assert_eq!(rollover.stream.boot_epoch, BootEpoch::new(8));
+        assert_eq!(rollover.durable_record_count, 0);
+        assert_eq!(repository.stream_count(), 2);
+        assert_eq!(
+            repository.rollover_stream(previous_key, spec).unwrap(),
+            rollover
+        );
+        assert_eq!(repository.stream_count(), 2);
     }
 }

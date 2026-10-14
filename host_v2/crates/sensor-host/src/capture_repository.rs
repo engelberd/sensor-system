@@ -28,6 +28,12 @@ pub struct CaptureRepository {
     streams: Vec<CaptureSegmentStream>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureStreamRollover {
+    pub sealed_previous: Option<CaptureWindowManifest>,
+    pub durable: SequenceCursor,
+}
+
 /// Opaque group bound to one configured sensor stream and one physical WAL.
 pub struct CaptureRepositoryBatch {
     hardware_id: HardwareId,
@@ -135,6 +141,58 @@ impl CaptureRepository {
         self.stream_mut(hardware_id, boot_epoch)?
             .finish_window()
             .map_err(CaptureRepositoryError::Segment)
+    }
+
+    /// Seals the previous boot epoch and installs the explicitly reconciled
+    /// successor while this repository remains the sole owner of both WALs.
+    ///
+    /// Retaining the sealed stream makes shutdown and post-mortem inspection
+    /// deterministic. Repeating a completed rollover is idempotent.
+    pub fn rollover_stream(
+        &mut self,
+        previous_boot_epoch: BootEpoch,
+        next: CaptureStreamSpec,
+    ) -> Result<CaptureStreamRollover, CaptureRepositoryError> {
+        let hardware_id = next.config.hardware_id;
+        let next_boot_epoch = next.config.boot_epoch;
+        if previous_boot_epoch == next_boot_epoch {
+            return Err(CaptureRepositoryError::UnchangedBootEpoch {
+                hardware_id,
+                boot_epoch: next_boot_epoch,
+            });
+        }
+        let previous_index = self
+            .streams
+            .iter()
+            .position(|stream| {
+                stream.hardware_id() == hardware_id && stream.boot_epoch() == previous_boot_epoch
+            })
+            .ok_or(CaptureRepositoryError::UnknownStream {
+                hardware_id,
+                boot_epoch: previous_boot_epoch,
+            })?;
+
+        if let Some(existing) = self.streams.iter().find(|stream| {
+            stream.hardware_id() == hardware_id && stream.boot_epoch() == next_boot_epoch
+        }) {
+            return Ok(CaptureStreamRollover {
+                sealed_previous: None,
+                durable: existing.durable_cursor(),
+            });
+        }
+
+        let sealed_previous = self.streams[previous_index]
+            .finish_window()
+            .map_err(CaptureRepositoryError::Segment)?;
+        let durable = next.config.recovered_cursor;
+        let successor = CaptureSegmentStream::open(next.directory, next.config)
+            .map_err(CaptureRepositoryError::Segment)?;
+        debug_assert_eq!(successor.durable_cursor(), durable);
+        self.streams.push(successor);
+        Ok(CaptureStreamRollover {
+            sealed_previous,
+            durable,
+        })
     }
 
     /// Seals every non-empty current window after all submitted writes have
@@ -297,6 +355,10 @@ pub enum CaptureRepositoryError {
         boot_epoch: BootEpoch,
     },
     UnknownStream {
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    },
+    UnchangedBootEpoch {
         hardware_id: HardwareId,
         boot_epoch: BootEpoch,
     },
@@ -501,6 +563,59 @@ mod tests {
         assert!(matches!(
             CaptureRepository::open([configured.clone(), configured]),
             Err(CaptureRepositoryError::DuplicateStream { .. })
+        ));
+    }
+
+    #[test]
+    fn rollover_seals_previous_epoch_and_routes_the_successor() {
+        let temp = TempDirectory::new();
+        let previous = spec(&temp.0, 1, 10);
+        let mut next = spec(&temp.0, 1, 11);
+        next.directory = temp.0.join("node-1-epoch-11");
+        let mut repository = CaptureRepository::open([previous.clone()]).unwrap();
+        repository
+            .persist_chunk(previous.config.hardware_id, &chunk(10, 11))
+            .unwrap();
+
+        let rollover = repository
+            .rollover_stream(previous.config.boot_epoch, next.clone())
+            .unwrap();
+        assert_eq!(rollover.durable, SequenceCursor::ORIGIN);
+        assert_eq!(rollover.sealed_previous.unwrap().sample_count, 1);
+        repository
+            .persist_chunk(next.config.hardware_id, &chunk(11, 22))
+            .unwrap();
+        assert_eq!(repository.stream_count(), 2);
+        assert!(repository
+            .durable_cursors()
+            .any(|(hardware_id, epoch, cursor)| {
+                hardware_id == next.config.hardware_id
+                    && epoch == next.config.boot_epoch
+                    && cursor == SequenceCursor::new(1)
+            }));
+
+        let repeated = repository
+            .rollover_stream(previous.config.boot_epoch, next)
+            .unwrap();
+        assert_eq!(repeated.sealed_previous, None);
+        assert_eq!(repeated.durable, SequenceCursor::new(1));
+        assert_eq!(repository.stream_count(), 2);
+    }
+
+    #[test]
+    fn rollover_requires_an_existing_previous_epoch_and_a_new_epoch() {
+        let temp = TempDirectory::new();
+        let previous = spec(&temp.0, 1, 10);
+        let mut repository = CaptureRepository::open([previous.clone()]).unwrap();
+
+        assert!(matches!(
+            repository.rollover_stream(previous.config.boot_epoch, previous.clone()),
+            Err(CaptureRepositoryError::UnchangedBootEpoch { .. })
+        ));
+        let next = spec(&temp.0, 2, 11);
+        assert!(matches!(
+            repository.rollover_stream(BootEpoch::new(10), next),
+            Err(CaptureRepositoryError::UnknownStream { .. })
         ));
     }
 }

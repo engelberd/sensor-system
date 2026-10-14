@@ -309,6 +309,10 @@ where
         self.failed_group.len()
     }
 
+    fn sink_mut(&mut self) -> &mut S {
+        &mut self.sink
+    }
+
     pub fn into_sink(self) -> S {
         self.sink
     }
@@ -451,13 +455,20 @@ enum GroupRecoveryCommand<S> {
     Shutdown,
 }
 
+type GroupManagementOperation<S> = Box<dyn FnOnce(&mut S) + Send>;
+
+enum GroupExecutorCommand<S> {
+    Write(WriteCommand),
+    Manage(GroupManagementOperation<S>),
+}
+
 /// Threaded group-commit executor. The producer never performs disk I/O.
 pub struct GroupedPersistenceExecutor<S>
 where
     S: GroupDurableMeasurementSink + Send + 'static,
     S::Error: Send + 'static,
 {
-    writes: Option<SyncSender<WriteCommand>>,
+    writes: Option<SyncSender<GroupExecutorCommand<S>>>,
     recovery: Option<SyncSender<GroupRecoveryCommand<S>>>,
     completions: Receiver<WriteCompletion<S::Error>>,
     stopped_sink: Receiver<S>,
@@ -570,6 +581,33 @@ where
             .map_err(GroupedExecutorRecoveryError::Classification)
     }
 
+    /// Runs a bounded management operation on the exclusive storage owner.
+    /// Callers must first drain all submitted writes and their completions.
+    pub(crate) fn manage_sink<R, F>(&self, operation: F) -> Result<R, PersistenceExecutorError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut S) -> R + Send + 'static,
+    {
+        if self.in_flight.load(Ordering::Acquire) != 0 {
+            return Err(PersistenceExecutorError::ManagementRequiresIdle);
+        }
+        let writes = self
+            .writes
+            .as_ref()
+            .ok_or(PersistenceExecutorError::AlreadyShutdown)?;
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let command = GroupExecutorCommand::Manage(Box::new(move |sink| {
+            let _ = result_tx.send(operation(sink));
+        }));
+        writes.try_send(command).map_err(|error| match error {
+            TrySendError::Full(_) => PersistenceExecutorError::ManagementAlreadyPending,
+            TrySendError::Disconnected(_) => PersistenceExecutorError::WorkerDisconnected,
+        })?;
+        result_rx
+            .recv()
+            .map_err(|_| PersistenceExecutorError::WorkerDisconnected)
+    }
+
     pub fn shutdown(
         mut self,
     ) -> Result<PersistenceShutdown<S, S::Error>, PersistenceExecutorError> {
@@ -618,8 +656,10 @@ where
         };
         let command = WriteCommand { id, envelope };
         let result = match self.writes.as_ref() {
-            Some(writes) => writes.try_send(command),
-            None => Err(TrySendError::Disconnected(command)),
+            Some(writes) => writes.try_send(GroupExecutorCommand::Write(command)),
+            None => Err(TrySendError::Disconnected(GroupExecutorCommand::Write(
+                command,
+            ))),
         };
         match result {
             Ok(()) => {
@@ -629,9 +669,15 @@ where
             Err(error) => {
                 self.in_flight.fetch_sub(1, Ordering::AcqRel);
                 let (kind, command) = match error {
-                    TrySendError::Full(command) => (SubmitErrorKind::QueueFull, command),
-                    TrySendError::Disconnected(command) => {
+                    TrySendError::Full(GroupExecutorCommand::Write(command)) => {
+                        (SubmitErrorKind::QueueFull, command)
+                    }
+                    TrySendError::Disconnected(GroupExecutorCommand::Write(command)) => {
                         (SubmitErrorKind::WorkerFaulted, command)
+                    }
+                    TrySendError::Full(GroupExecutorCommand::Manage(_))
+                    | TrySendError::Disconnected(GroupExecutorCommand::Manage(_)) => {
+                        unreachable!("submit_record only sends write commands")
                     }
                 };
                 Err(SubmitError::new(kind, command.envelope))
@@ -672,7 +718,7 @@ fn run_grouped_executor<S>(
     sink: S,
     capacity: usize,
     policy: GroupCommitPolicy,
-    writes: Receiver<WriteCommand>,
+    writes: Receiver<GroupExecutorCommand<S>>,
     recovery: Receiver<GroupRecoveryCommand<S>>,
     completions: SyncSender<WriteCompletion<S::Error>>,
     telemetry: GroupedWorkerTelemetry,
@@ -682,6 +728,7 @@ where
 {
     let mut worker = GroupedPersistenceWorker::new(sink, capacity, policy.max_records)
         .expect("executor validates grouped worker limits");
+    let mut pending_management: Option<GroupManagementOperation<S>> = None;
     loop {
         if worker.is_faulted() {
             match recovery.recv() {
@@ -709,8 +756,16 @@ where
         }
 
         if worker.pending_count() == 0 {
+            if let Some(operation) = pending_management.take() {
+                operation(worker.sink_mut());
+                continue;
+            }
             let first = match writes.recv() {
-                Ok(command) => command,
+                Ok(GroupExecutorCommand::Write(command)) => command,
+                Ok(GroupExecutorCommand::Manage(operation)) => {
+                    operation(worker.sink_mut());
+                    continue;
+                }
                 Err(_) => break,
             };
             let hardware_id = first.envelope.hardware_id();
@@ -725,7 +780,11 @@ where
                     .and_then(|value| value.checked_duration_since(Instant::now()))
                     .unwrap_or(Duration::ZERO);
                 let command = match writes.recv_timeout(remaining) {
-                    Ok(command) => command,
+                    Ok(GroupExecutorCommand::Write(command)) => command,
+                    Ok(GroupExecutorCommand::Manage(operation)) => {
+                        pending_management = Some(operation);
+                        break;
+                    }
                     Err(RecvTimeoutError::Timeout) => break,
                     Err(RecvTimeoutError::Disconnected) => break,
                 };
@@ -1034,6 +1093,8 @@ pub enum PersistenceExecutorError {
     Spawn(std::io::Error),
     WorkerDisconnected,
     RecoveryAlreadyPending,
+    ManagementRequiresIdle,
+    ManagementAlreadyPending,
     AlreadyShutdown,
     WorkerPanicked,
     RecoveredSinkUnavailable,
@@ -1047,6 +1108,12 @@ impl fmt::Display for PersistenceExecutorError {
             Self::WorkerDisconnected => formatter.write_str("persistence worker disconnected"),
             Self::RecoveryAlreadyPending => {
                 formatter.write_str("a recovered sink is already pending")
+            }
+            Self::ManagementRequiresIdle => {
+                formatter.write_str("persistence management requires an idle executor")
+            }
+            Self::ManagementAlreadyPending => {
+                formatter.write_str("a persistence management operation is already pending")
             }
             Self::AlreadyShutdown => formatter.write_str("persistence executor is shut down"),
             Self::WorkerPanicked => formatter.write_str("persistence worker panicked"),

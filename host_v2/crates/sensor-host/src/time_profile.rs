@@ -79,34 +79,54 @@ impl TimePersistenceInstallationProfile {
             }
         }
 
-        let host_clock_hex = bytes_hex(&host_clock_id.bytes());
         let streams = discovered
             .into_iter()
-            .map(|stream| TimeStreamSpec {
-                path: self
-                    .root
-                    .join(&stream.channel_name)
-                    .join(bytes_hex(&stream.hardware_id.bytes()))
-                    .join(format!("host-{host_clock_hex}"))
-                    .join(format!(
-                        "boot-{:016x}-node-{:02x}.wal",
-                        stream.boot_epoch.get(),
-                        stream.node_address
-                    )),
-                config: TimeWalConfig {
-                    hardware_id: stream.hardware_id,
-                    node_address: stream.node_address,
-                    boot_epoch: stream.boot_epoch,
-                    host_clock_id,
-                },
-            })
-            .collect();
+            .map(|stream| self.stream_spec(host_clock_id, stream))
+            .collect::<Result<Vec<_>, _>>()?;
         TimeRuntimeConfig::new(
             streams,
             self.queue_capacity_records,
             self.worker_name.clone(),
         )
         .map_err(TimeProfileError::Runtime)
+    }
+
+    pub fn stream_spec(
+        &self,
+        host_clock_id: HostClockId,
+        stream: DiscoveredTimeStream,
+    ) -> Result<TimeStreamSpec, TimeProfileError> {
+        if host_clock_id.is_zero() {
+            return Err(TimeProfileError::ZeroHostClockId);
+        }
+        if !valid_component(&stream.channel_name) {
+            return Err(TimeProfileError::InvalidChannelName);
+        }
+        if stream.node_address == HOST_ADDRESS || stream.node_address == BROADCAST_ADDRESS {
+            return Err(TimeProfileError::InvalidNodeAddress(stream.node_address));
+        }
+        if stream.boot_epoch.get() == 0 {
+            return Err(TimeProfileError::ZeroBootEpoch);
+        }
+        let host_clock_hex = bytes_hex(&host_clock_id.bytes());
+        Ok(TimeStreamSpec {
+            path: self
+                .root
+                .join(&stream.channel_name)
+                .join(bytes_hex(&stream.hardware_id.bytes()))
+                .join(format!("host-{host_clock_hex}"))
+                .join(format!(
+                    "boot-{:016x}-node-{:02x}.wal",
+                    stream.boot_epoch.get(),
+                    stream.node_address
+                )),
+            config: TimeWalConfig {
+                hardware_id: stream.hardware_id,
+                node_address: stream.node_address,
+                boot_epoch: stream.boot_epoch,
+                host_clock_id,
+            },
+        })
     }
 
     pub fn linux_runtime_config(

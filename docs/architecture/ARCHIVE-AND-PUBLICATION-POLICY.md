@@ -1,9 +1,14 @@
 # Polityka Archive i publikacji
 
-- Status: decyzja produktowa zamrożona; format binarny pozostaje warunkowy
+- Status: rozszerzenie po MVP; nie jest bieżącą bramką recordera
 - Ostatnia aktualizacja: 2026-10-08
 
 ## Cel
+
+MVP nie buduje Archive ani kompresji. Używa kompaktowego Capture WAL jako
+źródła prawdy oraz istniejącego, strumieniowego eksportu CSV do analizy w
+MATLAB/Python. Poniższa polityka pozostaje projektem późniejszego rozszerzenia,
+jeżeli pojawi się potrzeba automatycznej publikacji i długoterminowej kompakcji.
 
 Archive jest zweryfikowanym, skompresowanym produktem przeznaczonym do
 długoterminowego przechowywania i wysyłania na zewnętrzny serwer. Nie leży na

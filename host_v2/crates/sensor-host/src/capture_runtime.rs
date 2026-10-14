@@ -2,7 +2,9 @@ use core::fmt;
 
 use sensor_core::{BootEpoch, HardwareId, SequenceCursor};
 
-use crate::capture_repository::{CaptureRepository, CaptureRepositoryError, CaptureStreamSpec};
+use crate::capture_repository::{
+    CaptureRepository, CaptureRepositoryError, CaptureStreamRollover, CaptureStreamSpec,
+};
 use crate::persistence_executor::RecoveredCursorEvidence;
 use crate::persistence_executor::{
     GroupCommitPolicy, GroupedPersistenceExecutor, PersistenceExecutorError,
@@ -123,6 +125,44 @@ impl CaptureRuntime {
     }
 }
 
+impl GroupedPersistenceExecutor<CaptureRepository> {
+    /// Changes one sensor's boot epoch without transferring WAL ownership out
+    /// of the storage thread. The recording loop must be quiescent first.
+    pub fn rollover_capture_stream(
+        &self,
+        previous_boot_epoch: BootEpoch,
+        next: CaptureStreamSpec,
+    ) -> Result<CaptureStreamRollover, CaptureRolloverError> {
+        self.manage_sink(move |repository| repository.rollover_stream(previous_boot_epoch, next))
+            .map_err(CaptureRolloverError::Executor)?
+            .map_err(CaptureRolloverError::Repository)
+    }
+}
+
+#[derive(Debug)]
+pub enum CaptureRolloverError {
+    Repository(CaptureRepositoryError),
+    Executor(PersistenceExecutorError),
+}
+
+impl fmt::Display for CaptureRolloverError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Repository(error) => write!(formatter, "capture rollover failed: {error}"),
+            Self::Executor(error) => write!(formatter, "capture rollover executor failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for CaptureRolloverError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Repository(error) => Some(error),
+            Self::Executor(error) => Some(error),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureRuntimeConfigError {
     NoStreams,
@@ -237,6 +277,40 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn executor_rolls_capture_epoch_on_its_exclusive_storage_thread() {
+        let temp = TempDirectory::new();
+        let previous = spec(&temp.0);
+        let runtime = CaptureRuntimeConfig::new(
+            vec![previous.clone()],
+            4,
+            GroupCommitPolicy::new(2, core::time::Duration::from_millis(1)).unwrap(),
+            "capture-rollover-test",
+        )
+        .unwrap()
+        .start()
+        .unwrap();
+        let (_, executor) = runtime.into_parts();
+        let mut next = previous.clone();
+        next.directory = temp.0.join("node-1-epoch-8");
+        next.config.boot_epoch = BootEpoch::new(8);
+
+        let result = executor
+            .rollover_capture_stream(previous.config.boot_epoch, next.clone())
+            .unwrap();
+        assert_eq!(result.durable, SequenceCursor::ORIGIN);
+
+        let shutdown = executor.shutdown().unwrap();
+        assert!(shutdown
+            .sink
+            .durable_cursors()
+            .any(|(hardware_id, epoch, cursor)| {
+                hardware_id == next.config.hardware_id
+                    && epoch == next.config.boot_epoch
+                    && cursor == SequenceCursor::ORIGIN
+            }));
     }
 
     fn group_policy() -> GroupCommitPolicy {

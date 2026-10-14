@@ -139,6 +139,15 @@ uzasadnią ją pomiary lub testy awarii.
 - capabilities schema 2: typowana maska output ODR po decymacji, zgodna z
   rzeczywistym zakresem `2000..62.5 Hz`, oraz feature bits zależne od rodzaju
   obrazu A/B;
+- kontrolowane Recording → Maintenance → Recording dla niezmienionego
+  `boot_epoch`: świeży handshake, `GetState`, `GetStreamState`, odbudowa sesji
+  wyłącznie z durable Capture, ponowna admission i sekwencyjny Start;
+- idempotentne prymitywy rollover Capture i Time po zmianie `boot_epoch`.
+  Otwierają nowy WAL wyłącznie na jego wątku właściciela, zachowują stary WAL
+  jako dowód i nie dopuszczają zapisu do nieznanej epoki. Pozostaje połączenie
+  obu operacji z maszyną `ResumeRecording` przez koordynator hosta;
+- bounded walidacja Capture i strumieniowy `capture-export`, generujący
+  `samples.csv`, `events.csv` oraz `windows.csv` bez ładowania nagrania do RAM;
 
 ### Gotowe jako decyzja lub kontrakt
 
@@ -168,7 +177,8 @@ produkcyjnych. `hostctl` obsługuje wyłącznie V2; zakres i jawne braki opisuje
 [HOSTCTL-V2.md](HOSTCTL-V2.md). Produkcyjny Capture V2 ma własną walidację i
 eksport. Configuration i Commissioning Service są zaimplementowane w protocol 5
 po obu stronach wire; przed HIL i udostępnieniem operatorowi wymagają jeszcze
-Operations API. Compactor Archive i dashboard nadal pozostają do implementacji.
+Operations API. Archive, kompresja, uploader i dashboard są świadomie odłożone
+poza MVP; prostym formatem wymiany pozostaje eksport CSV z Capture.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
 Nie oznacza to jeszcze gotowości produkcyjnej dla wielu node, 1–16 channels,
@@ -232,6 +242,37 @@ Zakazane skróty:
 
 ## 6. Etapy implementacji i bramki
 
+### Granica MVP 24/7
+
+MVP jest autonomicznym lokalnym recorderem, a nie kompletną platformą danych.
+Raspberry Pi ma uruchamiać się sam, nagrywać na SSD, obsługiwać wiele kanałów,
+odzyskiwać się po typowych awariach i pozwalać na zdalne operacje serwisowe
+wyłącznie przez RS485.
+
+Do bramki MVP należą:
+
+1. rollover Capture i Time po zmianie `boot_epoch`, bez restartu procesu hosta;
+2. minimalne Operations IPC i `hostctl`: status, Maintenance, Resume, restart
+   node oraz odczyt/walidacja/zapis konfiguracji;
+3. częściowy start instalacji, ponowne dołączenie kanału oraz powrót node po
+   odłączeniu bez zatrzymania zdrowych kanałów;
+4. instalacja systemd, automatyczny start, kontrolowany shutdown, runtime status
+   i `hostctl doctor` na Raspberry Pi;
+5. fizyczna kwalifikacja 1/4/8 channels, wielu node na jednej magistrali,
+   restartu procesu/Pi, utraty zasilania i krótkich błędów łącza;
+6. bounded walidacja Capture i prosty eksport do CSV dla MATLAB/Pythona.
+
+CSV jest formatem wymiany generowanym z zapieczętowanego i zweryfikowanego
+Capture. Nie zastępuje kompaktowego WAL na gorącej ścieżce, ponieważ tekstowy
+zapis każdej próbki zwiększyłby rozmiar, liczbę konwersji i obciążenie storage.
+Istniejący `capture-export` zapisuje strumieniowo `samples.csv`, `events.csv` i
+`windows.csv` ze stałym użyciem pamięci.
+
+Poza MVP pozostają Archive, kompresja, publication outbox, uploader, dashboard,
+automatyczny dobór ODR, pełny commissioning, rozbudowany trwały audit i fizyczna
+kwalifikacja 16 kanałów. Te elementy nie blokują pierwszego recorderowego
+wdrożenia 24/7.
+
 Numery oznaczają obszary i bramki produktu. Fundament, runtime node i pion HIL
 jednej linii są zamknięte. Bieżąca ścieżka zależności prowadzi przez scheduler
 wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
@@ -246,11 +287,11 @@ wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
 | 4. Scheduler/`ChannelRuntime` | pełny pion Measurement, TimeSync i symulacja wielu node gotowe | wykonawcy Health/Diagnostic i HIL wielu node |
 | 5. Firmware protocol 5 | Configuration/Commissioning, obrazy A/B, rollback, migracja i confirm gotowe w kodzie | HIL firmware 0.5.8, soak i pomiary granic pojemności |
 | 6. Adapter RS485/HIL | handshake, update i pełny transfer jednej linii gotowe | wiele node, długi przewód, zakłócenia i restart hosta |
-| 7. Capture | WAL, recovery, segmenty, tracked profile parser, coverage index/proof, osobne checkpointy i cleanup Capture/Archive, bounded handoff, group commit i fault injection gotowe | integracja compactora/publishera, benchmark, process-kill matrix i dane rzeczywiste |
-| 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja i HIL jednego node gotowe | UTC, długi pomiar dryfu, przeplatany HIL i wiele node |
+| 7. Capture | WAL, recovery, segmenty, bounded handoff, group commit, fault injection, walidacja, CSV oraz storage-thread rollover gotowe | podłączenie rolloveru do Resume, benchmark, process-kill matrix i dane rzeczywiste |
+| 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja, HIL jednego node i storage-thread rollover gotowe | koordynacja rolloveru z workerem kanału, UTC, długi pomiar dryfu i wiele node |
 | 9. Skala 1–16 | runtime i symulacja 1/4/8 gotowe | fizyczny test macierzy i wiele node na kanał |
-| 10. Operations | codeki Configuration/Commissioning i integracja `ChannelAgent` gotowe | bounded command path, API/IPC, audit i operacje grupowe |
-| 11. Migracja | nierozpoczęty | Archive, canary, rollback i usunięcie legacy |
+| 10. Operations | bounded command path, ledger, status i wykonanie Maintenance/Resume dla niezmienionej epoki gotowe | nowa epoka, API/IPC, audit i operacje grupowe |
+| 11. Migracja | eksport CSV gotowy | canary, rollback, procedura operacyjna i usunięcie legacy |
 
 ### Etap 0 — fundament projektu — ukończony
 
@@ -762,16 +803,16 @@ Bieżąca kolejność implementacji:
 7. operacje grupowe z wynikiem per target;
 8. dopiero potem dashboard jako cienki klient tego samego API.
 
-### Etap 11 — Archive, narzędzia i migracja produkcyjna
+### Etap 11 — prosty eksport i migracja produkcyjna
 
-Zakres: walidacja sealed Capture, godzinne Archive per sensor, trwały publication
-outbox, idempotentna replikacja, Derived, polityka retencji, porównanie ze starym
-recorderem, canary i kontrolowany rollback. Reguły gotowości oparte na durable
-watermarku oraz rozdzielenie kompakcji od wysyłki opisuje
-[ARCHIVE-AND-PUBLICATION-POLICY.md](ARCHIVE-AND-PUBLICATION-POLICY.md).
+Zakres MVP: walidacja sealed Capture, strumieniowy eksport CSV, porównanie ze
+starym recorderem, canary i kontrolowany rollback. Godzinne Archive, kompresja,
+publication outbox, uploader i Derived są odłożone poza MVP. Ich wcześniejsze
+kontrakty pozostają dokumentacją możliwego rozszerzenia, a nie bieżącą bramką.
 
-Brama: wielogodzinny soak, test utraty zasilania, zgodność liczby próbek/luk i
-zatwierdzona procedura operacyjna. Stary host usuwamy dopiero po tej bramie.
+Brama: wielogodzinny soak, test utraty zasilania, zgodność liczby próbek/luk,
+poprawny eksport CSV i zatwierdzona procedura operacyjna. Stary host usuwamy
+dopiero po tej bramie.
 
 ## 7. Otwarte decyzje
 
@@ -960,17 +1001,19 @@ Następne fragmenty mają stałą kolejność zależności:
 
 1. **Gotowe:** proces `sensor-host run` wokół `HostCoordinator`, sygnały,
    okresowy health, globalna reakcja storage i raport końcowego shutdownu.
-2. Dokończyć bieżącą bramkę Operations API: podłączyć gotowy mailbox, ledger i
-   executor safe-state do workera, następnie wykonać kontrolowane
-   Maintenance/Resume bez omijania recovery kursorów.
+2. Dokończyć bieżącą bramkę nowego `boot_epoch`: worker kanału przygotowuje
+   granicę nowego Capture, koordynator rejestruje nowy Time WAL, a dopiero po
+   obu durable wynikach wymieniane są `NodeSession` i cursory schedulera.
+   Następnie wystawić gotowe Maintenance/Resume przez lokalne Operations IPC.
 3. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
    awarię jednej linii, opóźniony storage oraz globalny storage fault.
 4. Uruchomić Raspberry Pi kolejno z 1, 4 i 8 kanałami. Zmierzyć RTT, turnaround,
    decode errors, retry, RSS, CPU, I/O wait, fsync latency, backlog i TimeSync.
 5. Powtórzyć HIL z wieloma node na jednym kanale, długim przewodem,
    kontrolowanymi zakłóceniami, restartem procesu hosta i utratą zasilania.
-6. Dokończyć ścieżkę Archive: zbudować blokowy compactor/uploader na gotowym
-   indeksie pokrycia i checkpointach, a następnie powtórzyć benchmark na M.2.
+6. Potwierdzić strumieniowy eksport Capture do CSV na rzeczywistych danych i
+   otwieranie wyniku w MATLAB/Python. Archive, kompresję i uploader wykonać
+   dopiero po MVP, jeśli będą potrzebne.
 7. Na końcu dostroić wyłącznie profile pojemności na podstawie pomiarów; nie
    zmieniać przy tym domeny ani formatu Capture.
 
@@ -1013,6 +1056,8 @@ core 1, retransmisjach i najdłuższej przerwie w odpytywaniu node. Wartości
 startowe pozostaną stałymi kompozycji, aby strojenie nie przebudowywało domeny.
 
 Przejście od tego baseline do automatycznej pracy na Raspberry Pi, natywnego
-`hostctl doctor`, dashboardu i testów 24/7 opisuje
+`hostctl doctor`, Operations IPC i testów 24/7 opisuje
 [HOST-V2-USER-ADOPTION-ROADMAP.md](HOST-V2-USER-ADOPTION-ROADMAP.md). Jego Etap 1,
-wersjonowany snapshot statusu, jest następną pracą implementacyjną.
+wersjonowany snapshot statusu, jest gotowy. Bieżącą bramką jest pełny rollover
+Capture + Time po restarcie node; dashboard pozostaje poza MVP do czasu
+ustabilizowania API.

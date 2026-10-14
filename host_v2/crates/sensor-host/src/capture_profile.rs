@@ -87,21 +87,8 @@ impl CaptureInstallationProfile {
 
         let streams = discovered
             .into_iter()
-            .map(|stream| CaptureStreamSpec {
-                directory: self
-                    .root
-                    .join(channel_name)
-                    .join(hardware_id_hex(stream.hardware_id))
-                    .join(format!("boot-{:016x}", stream.boot_epoch.get())),
-                config: CaptureWalConfig {
-                    hardware_id: stream.hardware_id,
-                    boot_epoch: stream.boot_epoch,
-                    recovered_cursor: stream.recovered_cursor,
-                    first_window_ordinal: stream.first_window_ordinal,
-                    window_policy: self.window_policy,
-                },
-            })
-            .collect();
+            .map(|stream| self.stream_spec(channel_name, stream))
+            .collect::<Result<Vec<_>, _>>()?;
         CaptureRuntimeConfig::new(
             streams,
             self.queue_capacity_records,
@@ -109,6 +96,25 @@ impl CaptureInstallationProfile {
             format!("{}-{channel_name}", self.worker_prefix),
         )
         .map_err(CaptureProfileError::Runtime)
+    }
+
+    pub fn stream_spec(
+        &self,
+        channel_name: &str,
+        stream: DiscoveredCaptureStream,
+    ) -> Result<CaptureStreamSpec, CaptureProfileError> {
+        let directory =
+            self.stream_directory(channel_name, stream.hardware_id, stream.boot_epoch)?;
+        Ok(CaptureStreamSpec {
+            directory,
+            config: CaptureWalConfig {
+                hardware_id: stream.hardware_id,
+                boot_epoch: stream.boot_epoch,
+                recovered_cursor: stream.recovered_cursor,
+                first_window_ordinal: stream.first_window_ordinal,
+                window_policy: self.window_policy,
+            },
+        })
     }
 
     pub fn stream_directory(

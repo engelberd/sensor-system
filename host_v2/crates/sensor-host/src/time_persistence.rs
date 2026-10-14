@@ -8,7 +8,8 @@ use sensor_core::{ClockObservation, HardwareId};
 use sensor_protocol::{BROADCAST_ADDRESS, HOST_ADDRESS};
 
 use crate::time_repository::{
-    TimeDurableReceipt, TimeRepository, TimeRepositoryError, TimeStreamKey,
+    TimeDurableReceipt, TimeRepository, TimeRepositoryError, TimeStreamKey, TimeStreamRollover,
+    TimeStreamSpec,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -338,6 +339,19 @@ impl TimePersistenceWorker {
         self.completions.len()
     }
 
+    fn rollover_stream(
+        &mut self,
+        previous: TimeStreamKey,
+        next: TimeStreamSpec,
+    ) -> Result<TimeStreamRollover, TimeStreamManagementError> {
+        if self.faulted {
+            return Err(TimeStreamManagementError::WorkerFaulted);
+        }
+        self.repository
+            .rollover_stream(previous, next)
+            .map_err(TimeStreamManagementError::Repository)
+    }
+
     /// Reconciles the one uncertain append against an independently reopened
     /// repository. The failure completion must be consumed first so the final
     /// success cannot exceed the bounded completion queue.
@@ -420,6 +434,11 @@ enum TimePersistenceControl {
         repository: TimeRepository,
         result:
             SyncSender<Result<TimePersistenceRecoveryDisposition, TimePersistenceRecoveryError>>,
+    },
+    RolloverStream {
+        previous: TimeStreamKey,
+        next: TimeStreamSpec,
+        result: SyncSender<Result<TimeStreamRollover, TimeStreamManagementError>>,
     },
     Shutdown,
 }
@@ -527,6 +546,42 @@ impl TimePersistenceExecutor {
             .map_err(TimePersistenceExecutorRecoveryError::Recovery)
     }
 
+    pub fn rollover_stream(
+        &self,
+        previous: TimeStreamKey,
+        next: TimeStreamSpec,
+    ) -> Result<TimeStreamRollover, TimePersistenceExecutorManagementError> {
+        let control =
+            self.control
+                .as_ref()
+                .ok_or(TimePersistenceExecutorManagementError::Executor(
+                    TimePersistenceExecutorError::AlreadyShutdown,
+                ))?;
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        control
+            .try_send(TimePersistenceControl::RolloverStream {
+                previous,
+                next,
+                result: result_tx,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => TimePersistenceExecutorManagementError::Executor(
+                    TimePersistenceExecutorError::ControlPending,
+                ),
+                TrySendError::Disconnected(_) => TimePersistenceExecutorManagementError::Executor(
+                    TimePersistenceExecutorError::WorkerDisconnected,
+                ),
+            })?;
+        result_rx
+            .recv()
+            .map_err(|_| {
+                TimePersistenceExecutorManagementError::Executor(
+                    TimePersistenceExecutorError::WorkerDisconnected,
+                )
+            })?
+            .map_err(TimePersistenceExecutorManagementError::Management)
+    }
+
     pub fn shutdown(mut self) -> Result<TimePersistenceShutdown, TimePersistenceExecutorError> {
         self.submitter.take();
         if let Some(control) = self.control.take() {
@@ -593,6 +648,9 @@ fn run_time_persistence_executor(
                 Ok(TimePersistenceControl::Replace { repository, result }) => {
                     let _ = result.send(worker.replace_recovered_repository(repository));
                 }
+                Ok(TimePersistenceControl::RolloverStream { result, .. }) => {
+                    let _ = result.send(Err(TimeStreamManagementError::WorkerFaulted));
+                }
                 Ok(TimePersistenceControl::Shutdown) | Err(_) => break,
             }
         } else {
@@ -603,6 +661,13 @@ fn run_time_persistence_executor(
                     result,
                 }) => {
                     let _ = result.send(Err(TimePersistenceRecoveryError::WorkerNotFaulted));
+                }
+                Ok(TimePersistenceControl::RolloverStream {
+                    previous,
+                    next,
+                    result,
+                }) => {
+                    let _ = result.send(worker.rollover_stream(previous, next));
                 }
                 Err(TryRecvError::Empty) => {}
             }
@@ -637,6 +702,48 @@ pub enum TimePersistenceExecutorError {
     AlreadyShutdown,
     WorkerPanicked,
     RepositoryUnavailable,
+}
+
+#[derive(Debug)]
+pub enum TimeStreamManagementError {
+    WorkerFaulted,
+    Repository(TimeRepositoryError),
+}
+
+impl fmt::Display for TimeStreamManagementError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "time stream management error: {self:?}")
+    }
+}
+
+impl std::error::Error for TimeStreamManagementError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Repository(error) => Some(error),
+            Self::WorkerFaulted => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum TimePersistenceExecutorManagementError {
+    Executor(TimePersistenceExecutorError),
+    Management(TimeStreamManagementError),
+}
+
+impl fmt::Display for TimePersistenceExecutorManagementError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "time persistence management error: {self:?}")
+    }
+}
+
+impl std::error::Error for TimePersistenceExecutorManagementError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Executor(error) => Some(error),
+            Self::Management(error) => Some(error),
+        }
+    }
 }
 
 impl fmt::Display for TimePersistenceExecutorError {

@@ -260,12 +260,14 @@ retry, offline backoff oraz handoff do trwałego sinka bez kopiowania sesji.
 Fizyczny pion jednej linii jest sprawdzony. `CaptureWalSink` dodaje rzeczywisty
 packed-int24 WAL, CRC32C, `sync_data`, recovery niepełnego ogona i fail-closed
 korupcję. `CaptureSegmentStream` wykonuje rotację per okno i atomową publikację
-manifestu, `CaptureWalReader` niezależnie waliduje źródło dla Archive, a
+manifestu, `CaptureWalReader` niezależnie waliduje źródło dla eksportu, a
 `CaptureRepository` rozdziela wiele skonfigurowanych node.
 `InstallationStorageProfile` rozwiązuje tracked JSON z `extends`, a
 `CaptureInstallationProfile` buduje bounded runtime z polityki instalacji i
 tożsamości zwróconej przez discovery. Rdzeń cleanupu Capture chroni aktywne
-okno i zapisuje wynik dopiero po synchronizacji katalogu. `ArchiveCoverageIndex`
+okno i zapisuje wynik dopiero po synchronizacji katalogu. MVP kończy gorącą
+ścieżkę na kompaktowym Capture WAL i tworzy CSV przez strumieniowy
+`capture-export`. `ArchiveCoverageIndex`
 utrwala dokładne podzakresy źródłowe, a walidator tworzy dowód dopiero po pełnym
 pokryciu i replikacji wszystkich użytych produktów. `CaptureCoverageCheckpointStore`
 utrwala cały zestaw produktów i dopiero po deadline zezwala cleanupowi na
@@ -362,9 +364,9 @@ zamkniętego okna staje się dostępny dopiero przy commit. Kontrakt opisuje
 Powtarzalny benchmark packed int24, WAL, gzip, zstd i HDF5 znajduje się w
 [STORAGE-FORMAT-BENCHMARK.md](../docs/architecture/STORAGE-FORMAT-BENCHMARK.md),
 a jego narzędzie w `python/tools/storage_benchmark.py`.
-Archive powstaje jako godzinny, niezmienny produkt per sensor po przejściu
-durable watermarku. Kompakcja i wysyłka na serwer są niezależne; reguły retry,
-idempotencji i retencji opisuje
+Archive pozostaje opcjonalnym rozszerzeniem po MVP. Jego wcześniejszy projekt
+zakłada godzinny, niezmienny produkt per sensor po przejściu durable watermarku
+oraz niezależną kompakcję i wysyłkę. Reguły retry, idempotencji i retencji opisuje
 [ARCHIVE-AND-PUBLICATION-POLICY.md](../docs/architecture/ARCHIVE-AND-PUBLICATION-POLICY.md).
 Pełny profil ODR ADXL355 i format próbki opisuje
 [audyt ODR i reprezentacji](../docs/protocol/DATA-TYPE-AND-RATE-AUDIT.md).

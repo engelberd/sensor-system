@@ -1,12 +1,16 @@
 use core::fmt;
 
-use crate::time_health::{TimeHealthIntegrityError, TimePersistenceHealth};
+use crate::time_health::{
+    TimeHealthIntegrityError, TimePersistenceHealth, TimePersistenceHealthState,
+};
 use crate::time_persistence::{
     TimeObservationQueueSender, TimePersistenceExecutor, TimePersistenceExecutorError,
-    TimePersistenceExecutorRecoveryError, TimePersistenceRecoveryDisposition,
-    TimePersistenceShutdown,
+    TimePersistenceExecutorManagementError, TimePersistenceExecutorRecoveryError,
+    TimePersistenceRecoveryDisposition, TimePersistenceShutdown,
 };
-use crate::time_repository::{TimeRepository, TimeRepositoryError, TimeStreamKey, TimeStreamSpec};
+use crate::time_repository::{
+    TimeRepository, TimeRepositoryError, TimeStreamKey, TimeStreamRollover, TimeStreamSpec,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecoveredTimeStream {
@@ -105,6 +109,37 @@ impl TimeRuntime {
         &self.health
     }
 
+    pub fn rollover_stream(
+        &mut self,
+        previous: TimeStreamKey,
+        next: TimeStreamSpec,
+    ) -> Result<TimeStreamRollover, TimeRuntimeManagementError> {
+        if self.health.state() != TimePersistenceHealthState::Healthy {
+            return Err(TimeRuntimeManagementError::HealthNotReady);
+        }
+        let next_key = TimeStreamKey {
+            hardware_id: next.config.hardware_id,
+            node_address: next.config.node_address,
+            boot_epoch: next.config.boot_epoch,
+        };
+        let already_registered = self.streams.iter().any(|spec| {
+            spec.config.hardware_id == next_key.hardware_id
+                && spec.config.node_address == next_key.node_address
+                && spec.config.boot_epoch == next_key.boot_epoch
+        });
+        let result = self
+            .executor
+            .rollover_stream(previous, next.clone())
+            .map_err(TimeRuntimeManagementError::Executor)?;
+        if !already_registered {
+            self.health
+                .register_stream(result.stream, result.durable_record_count)
+                .map_err(TimeRuntimeManagementError::Health)?;
+            self.streams.push(next);
+        }
+        Ok(result)
+    }
+
     /// Projects at most one storage completion into health without blocking.
     pub fn poll_health(&mut self) -> Result<bool, TimeRuntimeHealthError> {
         let Some(completion) = self
@@ -185,6 +220,29 @@ pub enum TimeRuntimeRecoveryError {
     Repository(TimeRepositoryError),
     Executor(TimePersistenceExecutorRecoveryError),
     Health(TimeHealthIntegrityError),
+}
+
+#[derive(Debug)]
+pub enum TimeRuntimeManagementError {
+    HealthNotReady,
+    Executor(TimePersistenceExecutorManagementError),
+    Health(TimeHealthIntegrityError),
+}
+
+impl fmt::Display for TimeRuntimeManagementError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "time runtime management error: {self:?}")
+    }
+}
+
+impl std::error::Error for TimeRuntimeManagementError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Executor(error) => Some(error),
+            Self::Health(error) => Some(error),
+            Self::HealthNotReady => None,
+        }
+    }
 }
 
 impl fmt::Display for TimeRuntimeRecoveryError {
@@ -296,6 +354,27 @@ mod tests {
         assert_eq!(runtime.health().streams()[0].durable_record_count, 1);
         let shutdown = runtime.shutdown().unwrap();
         assert_eq!(shutdown.repository.recoveries().next().unwrap().1, 1);
+    }
+
+    #[test]
+    fn runtime_registers_a_new_epoch_before_accepting_its_observations() {
+        let temp = TempDirectory::new();
+        let previous = spec(&temp.0);
+        let previous_key = TimeStreamKey {
+            hardware_id: previous.config.hardware_id,
+            node_address: previous.config.node_address,
+            boot_epoch: previous.config.boot_epoch,
+        };
+        let config = TimeRuntimeConfig::new(vec![previous.clone()], 2, "time-rollover").unwrap();
+        let mut runtime = config.start().unwrap();
+        let mut next = previous;
+        next.path = temp.0.join("time-epoch-8.wal");
+        next.config.boot_epoch = BootEpoch::new(8);
+
+        let rollover = runtime.rollover_stream(previous_key, next).unwrap();
+        assert_eq!(rollover.stream.boot_epoch, BootEpoch::new(8));
+        assert_eq!(runtime.health().streams().len(), 2);
+        assert_eq!(runtime.shutdown().unwrap().repository.stream_count(), 2);
     }
 
     #[test]

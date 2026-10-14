@@ -74,6 +74,28 @@ impl TimePersistenceHealth {
         &self.streams
     }
 
+    pub fn register_stream(
+        &mut self,
+        stream: TimeStreamKey,
+        durable_record_count: u64,
+    ) -> Result<(), TimeHealthIntegrityError> {
+        if self.state != TimePersistenceHealthState::Healthy {
+            return Err(TimeHealthIntegrityError::StreamRegistrationWhileUnhealthy);
+        }
+        if self
+            .streams
+            .iter()
+            .any(|existing| existing.stream == stream)
+        {
+            return Err(TimeHealthIntegrityError::DuplicateStream(stream));
+        }
+        self.streams.push(TimeStreamHealth {
+            stream,
+            durable_record_count,
+        });
+        Ok(())
+    }
+
     pub fn observe_completion(
         &mut self,
         completion: TimePersistenceCompletion,
@@ -159,6 +181,7 @@ pub enum TimeHealthIntegrityError {
     RecordCountOverflow,
     NonSequentialRecordCount { expected: u64, received: u64 },
     AlreadyFaulted,
+    StreamRegistrationWhileUnhealthy,
 }
 
 impl fmt::Display for TimeHealthIntegrityError {

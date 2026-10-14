@@ -23,8 +23,10 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
 
 1. Host ma wewnętrzny bounded command path, idempotentny ledger w pamięci,
    snapshoty statusu per channel i wykonawcę kontrolowanego
-   Recording → Maintenance. Brakuje pełnego `ResumeRecording`, trwałego audytu
-   oraz lokalnego IPC. Codeki Configuration/Commissioning są podłączone do
+   Recording → Maintenance oraz Resume dla niezmienionego `boot_epoch`.
+   Prymitywy rollover Capture i Time są gotowe, ale wymagają jeszcze wspólnej
+   orkiestracji przed Resume po restarcie node. Brakuje trwałego audytu oraz
+   lokalnego IPC. Codeki Configuration/Commissioning są podłączone do
    `ChannelAgent`, ale nie są jeszcze osiągalne przez Operations API.
 2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
    odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
@@ -35,8 +37,9 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
 4. Fizycznie potwierdzono jeden node na jednym kanale. Nadal trzeba zmierzyć
    wiele node na kanale, macierz 1/4/8 portów, długi przewód, zakłócenia,
    restart procesu i utratę zasilania.
-5. Ścieżka Archive ma kontrakt, indeks pokrycia i retencję, ale nie ma jeszcze
-   produkcyjnego compactor/uploadera ani benchmarku na docelowym SSD.
+5. MVP używa kompaktowego Capture WAL i gotowego strumieniowego eksportu CSV.
+   Trzeba potwierdzić eksport na długim nagraniu oraz wykonać benchmark na
+   docelowym SSD. Archive, kompresja i uploader nie blokują MVP.
 
 ## Przepustowość nowego Measurement Service
 
