@@ -123,6 +123,131 @@ impl Default for MaintenanceEntryPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResumeRecordingStage {
+    VerifyingNodes,
+    ReconcilingStreams,
+    CheckingAdmission,
+    ActivatingNodes,
+    ResumingScheduling,
+    Complete,
+    Faulted,
+    Offline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResumeRecordingDirective {
+    VerifyNodes,
+    ReconcileStreams,
+    CheckAdmission,
+    ActivateNodes,
+    ResumeScheduling,
+    Complete,
+    Faulted,
+    Offline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResumeRecordingEvent {
+    NodesVerified { stream_recovery_required: bool },
+    StreamsReconciled,
+    AdmissionAccepted,
+    NodesActivated,
+    SchedulingResumed,
+    Failed,
+    NodeOffline,
+}
+
+/// Pure ordering policy for leaving a service interval. Verification includes
+/// a fresh handshake, lifecycle state and stream-state observation for every
+/// node. A changed boot epoch cannot take the fast path: Capture and the
+/// `NodeSession` must first be reconciled to a new stream identity.
+pub struct ResumeRecordingPlan {
+    stage: ResumeRecordingStage,
+}
+
+impl ResumeRecordingPlan {
+    pub const fn new() -> Self {
+        Self {
+            stage: ResumeRecordingStage::VerifyingNodes,
+        }
+    }
+
+    pub const fn stage(&self) -> ResumeRecordingStage {
+        self.stage
+    }
+
+    pub const fn directive(&self) -> ResumeRecordingDirective {
+        match self.stage {
+            ResumeRecordingStage::VerifyingNodes => ResumeRecordingDirective::VerifyNodes,
+            ResumeRecordingStage::ReconcilingStreams => ResumeRecordingDirective::ReconcileStreams,
+            ResumeRecordingStage::CheckingAdmission => ResumeRecordingDirective::CheckAdmission,
+            ResumeRecordingStage::ActivatingNodes => ResumeRecordingDirective::ActivateNodes,
+            ResumeRecordingStage::ResumingScheduling => ResumeRecordingDirective::ResumeScheduling,
+            ResumeRecordingStage::Complete => ResumeRecordingDirective::Complete,
+            ResumeRecordingStage::Faulted => ResumeRecordingDirective::Faulted,
+            ResumeRecordingStage::Offline => ResumeRecordingDirective::Offline,
+        }
+    }
+
+    pub fn accept(&mut self, event: ResumeRecordingEvent) -> Result<(), ResumeRecordingError> {
+        self.stage = match (self.stage, event) {
+            (
+                ResumeRecordingStage::VerifyingNodes,
+                ResumeRecordingEvent::NodesVerified {
+                    stream_recovery_required: true,
+                },
+            ) => ResumeRecordingStage::ReconcilingStreams,
+            (
+                ResumeRecordingStage::VerifyingNodes,
+                ResumeRecordingEvent::NodesVerified {
+                    stream_recovery_required: false,
+                },
+            ) => ResumeRecordingStage::CheckingAdmission,
+            (ResumeRecordingStage::ReconcilingStreams, ResumeRecordingEvent::StreamsReconciled) => {
+                ResumeRecordingStage::CheckingAdmission
+            }
+            (ResumeRecordingStage::CheckingAdmission, ResumeRecordingEvent::AdmissionAccepted) => {
+                ResumeRecordingStage::ActivatingNodes
+            }
+            (ResumeRecordingStage::ActivatingNodes, ResumeRecordingEvent::NodesActivated) => {
+                ResumeRecordingStage::ResumingScheduling
+            }
+            (ResumeRecordingStage::ResumingScheduling, ResumeRecordingEvent::SchedulingResumed) => {
+                ResumeRecordingStage::Complete
+            }
+            (_, ResumeRecordingEvent::Failed) => ResumeRecordingStage::Faulted,
+            (_, ResumeRecordingEvent::NodeOffline) => ResumeRecordingStage::Offline,
+            (stage, event) => {
+                return Err(ResumeRecordingError::UnexpectedEvent { stage, event });
+            }
+        };
+        Ok(())
+    }
+}
+
+impl Default for ResumeRecordingPlan {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResumeRecordingError {
+    UnexpectedEvent {
+        stage: ResumeRecordingStage,
+        event: ResumeRecordingEvent,
+    },
+}
+
+impl fmt::Display for ResumeRecordingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "resume recording transition error: {self:?}")
+    }
+}
+
+impl std::error::Error for ResumeRecordingError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelModeError {
     UnexpectedEvent {
         stage: MaintenanceEntryStage,
@@ -198,5 +323,56 @@ mod tests {
         plan.accept(MaintenanceEntryEvent::NodeOffline).unwrap();
         assert_eq!(plan.directive(), MaintenanceEntryDirective::Offline);
         assert!(plan.accept(MaintenanceEntryEvent::Quiesced).is_err());
+    }
+
+    #[test]
+    fn resume_fast_path_still_requires_verification_admission_and_activation() {
+        let mut plan = ResumeRecordingPlan::new();
+        plan.accept(ResumeRecordingEvent::NodesVerified {
+            stream_recovery_required: false,
+        })
+        .unwrap();
+        assert_eq!(plan.directive(), ResumeRecordingDirective::CheckAdmission);
+        assert!(matches!(
+            plan.accept(ResumeRecordingEvent::NodesActivated),
+            Err(ResumeRecordingError::UnexpectedEvent { .. })
+        ));
+        plan.accept(ResumeRecordingEvent::AdmissionAccepted)
+            .unwrap();
+        plan.accept(ResumeRecordingEvent::NodesActivated).unwrap();
+        plan.accept(ResumeRecordingEvent::SchedulingResumed)
+            .unwrap();
+        assert_eq!(plan.stage(), ResumeRecordingStage::Complete);
+    }
+
+    #[test]
+    fn changed_epoch_cannot_bypass_stream_reconciliation() {
+        let mut plan = ResumeRecordingPlan::new();
+        plan.accept(ResumeRecordingEvent::NodesVerified {
+            stream_recovery_required: true,
+        })
+        .unwrap();
+        assert_eq!(plan.directive(), ResumeRecordingDirective::ReconcileStreams);
+        assert!(matches!(
+            plan.accept(ResumeRecordingEvent::AdmissionAccepted),
+            Err(ResumeRecordingError::UnexpectedEvent { .. })
+        ));
+        plan.accept(ResumeRecordingEvent::StreamsReconciled)
+            .unwrap();
+        assert_eq!(plan.directive(), ResumeRecordingDirective::CheckAdmission);
+    }
+
+    #[test]
+    fn resume_has_only_stable_terminal_failures() {
+        let mut faulted = ResumeRecordingPlan::new();
+        faulted.accept(ResumeRecordingEvent::Failed).unwrap();
+        assert_eq!(faulted.directive(), ResumeRecordingDirective::Faulted);
+        assert!(faulted
+            .accept(ResumeRecordingEvent::AdmissionAccepted)
+            .is_err());
+
+        let mut offline = ResumeRecordingPlan::new();
+        offline.accept(ResumeRecordingEvent::NodeOffline).unwrap();
+        assert_eq!(offline.directive(), ResumeRecordingDirective::Offline);
     }
 }

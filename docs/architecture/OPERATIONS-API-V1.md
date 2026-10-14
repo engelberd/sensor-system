@@ -170,10 +170,26 @@ Nie może zmienić typów domenowych ani reguł admission. Dashboard powstaje po
 ustabilizowaniu API i będzie czytał status oraz składał polecenia bez dostępu do
 portów urządzeń, Capture WAL lub wewnętrznych kolejek schedulera.
 
+## Powrót do Recording
+
+`ResumeRecordingPlan` jest czystą polityką kolejności niezależną od wire i
+storage. Każde wznowienie zaczyna się od ponownej weryfikacji wszystkich node.
+Jeżeli tożsamość strumienia się nie zmieniła, plan przechodzi bezpośrednio do
+ponownego admission control. Nowy `boot_epoch` bezwarunkowo kieruje najpierw do
+stream recovery; nie można wtedy uruchomić node ani schedulera na starej sesji.
+Po recovery plan nadal wymaga admission, aktywacji wszystkich node i dopiero na
+końcu otwiera scheduler Measurement/TimeSync. Błąd kończy się stabilnym
+`Faulted`, a nieosiągalny node stabilnym `Offline`; stan `ResumingRecording` nie
+jest wynikiem końcowym.
+
+Polityka jest pokryta testami obu ścieżek. Nieblokujący adapter wire oraz
+rekonfiguracja wyłącznego właściciela Capture są następnym przyrostem; do ich
+podłączenia `ResumeRecording` nadal zwraca `ExecutorUnavailable`.
+
 ## Kolejna bramka
 
-1. zaimplementować `ResumeRecording` przez pełny handshake, stream recovery,
-   admission i ponowną aktywację schedulera;
+1. podłączyć wykonawcę `ResumeRecordingPlan`: pełny handshake i stream state,
+   bezpieczne stream recovery, admission i ponowną aktywację schedulera;
 2. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
 3. dodać lokalne IPC i adapter `hostctl`;
 4. wykonać HIL firmware 0.5.8, następnie operacje grupowe i audit trwały.

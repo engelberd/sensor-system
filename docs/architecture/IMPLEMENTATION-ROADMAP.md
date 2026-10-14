@@ -743,11 +743,14 @@ Bieżąca kolejność implementacji:
    kolejką, a `SafeStateGroupOperation` korzysta z tego samego workera i arbitra
    RS485. Nieobsługiwana jeszcze mutacja daje jawne `ExecutorUnavailable` bez
    zatrzymania Recording;
-3. **Wejście gotowe, powrót otwarty:** `EnterMaintenance` wykonuje bounded
+3. **Wejście gotowe, polityka powrotu gotowa:** `EnterMaintenance` wykonuje bounded
    quiesce → Idle → kontrolę epoki → drain → Maintenance. Osiągalny node, który
    stale odrzuca stan docelowy, ma ograniczoną liczbę pełnych cykli restartu i
-   wraca do stabilnego Idle; nie może zapętlić workera. Pozostaje
-   `ResumeRecording` przez pełny handshake, recovery i admission;
+   wraca do stabilnego Idle; nie może zapętlić workera. `ResumeRecordingPlan`
+   wymusza kolejność pełna weryfikacja node → opcjonalne stream recovery →
+   admission → aktywacja → wznowienie schedulera i nie pozwala ominąć recovery
+   po zmianie `boot_epoch`. Pozostaje podłączenie jego nieblokującego wykonawcy
+   do workera oraz bezpieczna rekonfiguracja właściciela Capture dla nowej epoki;
 4. odczyt oraz mutacje Configuration per node;
 5. wyłączne okno Commissioning per channel i handshake przydzielonego node;
 6. lokalne IPC, rejestr/audit operacji i adapter `hostctl`;
