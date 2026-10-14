@@ -14,7 +14,7 @@ Group=@SERVICE_GROUP@
 SupplementaryGroups=dialout
 WorkingDirectory=@REPOSITORY_ROOT@
 ExecStartPre=@CURRENT_BINARY@ validate --config @CONFIG_PATH@ --repository-root @REPOSITORY_ROOT@
-ExecStart=@CURRENT_BINARY@ run --config @CONFIG_PATH@ --repository-root @REPOSITORY_ROOT@ --status-file /run/sensor-system/host-v2-status.json
+ExecStart=@CURRENT_BINARY@ run --config @CONFIG_PATH@ --repository-root @REPOSITORY_ROOT@ --status-file /run/sensor-system/host-v2-status.json --operations-socket /run/sensor-system/operations-v1.sock
 Restart=on-failure
 RestartSec=15s
 # Permanent environment/configuration/storage failures need operator action.

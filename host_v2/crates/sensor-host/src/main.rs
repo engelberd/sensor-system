@@ -10,6 +10,7 @@ use sensor_host::discovery_executor::{execute_installation_discovery, DiscoveryE
 use sensor_host::host_health::{HostHealthLevel, HostHealthReason, HostHealthSnapshot};
 use sensor_host::host_process::{summarize_shutdown, HostProcessShutdownSummary, LinuxHostProcess};
 use sensor_host::installation_topology::HostInstallationProfile;
+use sensor_host::operations_ipc::OperationsIpcServer;
 use sensor_host::runtime_status::{
     unix_time_ms, HostRuntimeObservation, RuntimeProcessPhase, RuntimeStatusIdentity,
     RuntimeStatusPublisher,
@@ -58,7 +59,8 @@ fn main() -> ExitCode {
             config,
             repository_root,
             status_file,
-        }) => match run(config, repository_root, status_file) {
+            operations_socket,
+        }) => match run(config, repository_root, status_file, operations_socket) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("sensor-host: run failed: {error}");
@@ -81,6 +83,7 @@ fn run(
     config: PathBuf,
     repository_root: PathBuf,
     status_file: PathBuf,
+    operations_socket: PathBuf,
 ) -> Result<(), RunCommandError> {
     // Install before any worker is created. The blocked mask is inherited by
     // every channel thread, so SIGINT/SIGTERM has one synchronous owner.
@@ -135,6 +138,23 @@ fn run(
             return Err(RunCommandError::Start(error));
         }
     };
+    let operations =
+        match OperationsIpcServer::bind(operations_socket, process.channel_operations()) {
+            Ok(server) => server,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = status.publish(
+                    RuntimeProcessPhase::Faulted,
+                    clock.now().get(),
+                    Some(&observe_runtime(&process)),
+                    Some(&message),
+                    Some(false),
+                );
+                let _ = process.request_stop();
+                let _ = process.shutdown();
+                return Err(RunCommandError::Operations(error));
+            }
+        };
     let initial_observation = observe_runtime(&process);
     let mut cause = None;
     if let Err(error) = status.publish(
@@ -164,6 +184,11 @@ fn run(
 
     let mut next_metrics = Instant::now() + process.metrics_interval();
     while cause.is_none() {
+        if let Err(error) = operations.poll() {
+            cause = Some(error.to_string());
+            let _ = process.request_stop();
+            break;
+        }
         match signals.try_receive() {
             Ok(Some(signal)) => {
                 println!("termination requested: signal={signal:?}");
@@ -529,6 +554,7 @@ enum Command {
         config: PathBuf,
         repository_root: PathBuf,
         status_file: PathBuf,
+        operations_socket: PathBuf,
     },
     Help,
 }
@@ -550,6 +576,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
         let mut config = None;
         let mut repository_root = None;
         let mut status_file = None;
+        let mut operations_socket = None;
         let mut initialize = false;
         let mut index = 1;
         while index < arguments.len() {
@@ -569,6 +596,11 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                 }
                 Some("--status-file") if operation == "run" && status_file.is_none() => {
                     status_file = Some(PathBuf::from(value));
+                }
+                Some("--operations-socket")
+                    if operation == "run" && operations_socket.is_none() =>
+                {
+                    operations_socket = Some(PathBuf::from(value));
                 }
                 _ => return Err("unknown or repeated operation option"),
             }
@@ -594,6 +626,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                 config,
                 repository_root,
                 status_file: status_file.ok_or("run requires --status-file")?,
+                operations_socket: operations_socket.ok_or("run requires --operations-socket")?,
             }),
             _ => unreachable!("operation was matched above"),
         };
@@ -603,7 +636,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  sensor-host --version\n  sensor-host validate --config <profile.json> --repository-root <path>\n  sensor-host discover --config <profile.json> --repository-root <path>\n  sensor-host paths --config <profile.json> --repository-root <path> [--init]\n  sensor-host run --config <profile.json> --repository-root <path> --status-file <path>"
+        "usage:\n  sensor-host --version\n  sensor-host validate --config <profile.json> --repository-root <path>\n  sensor-host discover --config <profile.json> --repository-root <path>\n  sensor-host paths --config <profile.json> --repository-root <path> [--init]\n  sensor-host run --config <profile.json> --repository-root <path> --status-file <path> --operations-socket <path>"
     );
 }
 
@@ -614,6 +647,7 @@ enum RunCommandError {
     Profile(sensor_host::installation_topology::HostInstallationProfileError),
     Start(sensor_host::host_process::LinuxHostProcessStartError),
     Status(sensor_host::runtime_status::RuntimeStatusError),
+    Operations(sensor_host::operations_ipc::OperationsIpcError),
     Execution {
         cause: Option<String>,
         summary: HostProcessShutdownSummary,
@@ -630,6 +664,7 @@ impl RunCommandError {
         match self {
             Self::Profile(_) => 78, // EX_CONFIG
             Self::Status(_) => 73,  // EX_CANTCREAT
+            Self::Operations(_) => 73,
             Self::Start(error) => match error {
                 sensor_host::host_process::LinuxHostProcessStartError::Bootstrap(_) => 75,
                 sensor_host::host_process::LinuxHostProcessStartError::StorageRoot(_)
@@ -661,6 +696,7 @@ impl std::fmt::Display for RunCommandError {
             Self::Profile(error) => error.fmt(formatter),
             Self::Start(error) => error.fmt(formatter),
             Self::Status(error) => error.fmt(formatter),
+            Self::Operations(error) => error.fmt(formatter),
             Self::Execution { cause, summary } => write!(
                 formatter,
                 "controlled shutdown was not clean: cause={cause:?}, summary={summary:?}"
@@ -768,12 +804,15 @@ mod tests {
                 "--repository-root",
                 "/repo",
                 "--status-file",
-                "/run/status.json"
+                "/run/status.json",
+                "--operations-socket",
+                "/run/operations.sock"
             ])),
             Ok(Command::Run {
                 config: PathBuf::from("/etc/sensor.json"),
                 repository_root: PathBuf::from("/repo"),
                 status_file: PathBuf::from("/run/status.json"),
+                operations_socket: PathBuf::from("/run/operations.sock"),
             })
         );
     }
@@ -788,12 +827,15 @@ mod tests {
                 "--repository-root",
                 "/repo",
                 "--status-file",
-                "/run/sensor-system/host-v2-status.json"
+                "/run/sensor-system/host-v2-status.json",
+                "--operations-socket",
+                "/run/sensor-system/operations-v1.sock"
             ])),
             Ok(Command::Run {
                 config: PathBuf::from("/etc/sensor.json"),
                 repository_root: PathBuf::from("/repo"),
                 status_file: PathBuf::from("/run/sensor-system/host-v2-status.json"),
+                operations_socket: PathBuf::from("/run/sensor-system/operations-v1.sock"),
             })
         );
     }
@@ -805,7 +847,23 @@ mod tests {
             "--config",
             "/etc/sensor.json",
             "--repository-root",
-            "/repo"
+            "/repo",
+            "--operations-socket",
+            "/run/operations.sock"
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_run_without_an_operations_destination() {
+        assert!(parse_arguments(strings(&[
+            "run",
+            "--config",
+            "/etc/sensor.json",
+            "--repository-root",
+            "/repo",
+            "--status-file",
+            "/run/status.json"
         ]))
         .is_err());
     }

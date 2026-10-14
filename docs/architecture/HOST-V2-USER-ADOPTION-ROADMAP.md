@@ -53,8 +53,9 @@ konfiguracja i storage są bezpieczne. Brak pojedynczego node nie zatrzymuje
 pozostałych kanałów. Operator widzi w dashboardzie stan usługi, stan każdego
 kanału i node, tempo próbek, błędy, ostatnią synchronizację czasu, zajętość
 storage oraz ostatnie zdarzenia. Pierwsza wersja dashboardu steruje całym
-rejestratorem: Start, Stop i Restart. Operacje per node i per kanał powstaną
-później na właściwym Operations API.
+rejestratorem: Start, Stop i Restart. Operations API obsługuje już status,
+Maintenance i Resume per kanał; pozostałe operacje per node powstaną przed
+podłączeniem sterowania do dashboardu.
 
 Zdalny dostęp odbywa się przez prywatną sieć administracyjną, obecnie
 Tailscale/SSH. Dashboard nie będzie wystawiony bez uwierzytelnienia do
@@ -414,7 +415,7 @@ zdalnego rozwoju. Test 72-godzinny potwierdzi trend zasobów i politykę storage
 Te elementy są częścią planu produktu, ale nie blokują pierwszego nadzorowanego
 testu 24/7:
 
-- pełne Operations API z Maintenance i operacjami per node/per kanał;
+- pozostałe Operations API per node, operacje grupowe i trwały audit;
 - dynamiczne dodawanie konfiguracji E/F i docelowy rejestr tożsamości;
 - bezpieczny podgląd wybranych próbek na żywo;
 - godzinny compactor Capture → Archive;
@@ -427,12 +428,13 @@ testu 24/7:
 ## 6. Decyzja o najbliższej pracy
 
 Status runtime, `doctor`, automatyczny recorder systemd i spójny interfejs
-`hostctl` V2 są zamknięte lokalnie. Fizyczny gate nowego `hostctl update`
+`hostctl` V2 oraz pierwszy pion Operations IPC dla status/Maintenance/Resume
+są zamknięte lokalnie. Fizyczny gate nowego `hostctl update`
 pozostaje do wykonania przy najbliższej planowanej aktualizacji noda; nie
 wykonujemy zapisu flash wyłącznie w celu testu CLI.
 
-Bieżącą ścieżką produktu jest Operations API z operacjami per channel/per node.
+Bieżącą ścieżką produktu jest rozszerzenie Operations API o operacje per node.
 Configuration i Commissioning Service są gotowe w kodzie protocol 5 i czekają
-na ten control plane oraz HIL firmware 0.5.8. Następnie powstanie godzinny
+na mapowanie do istniejącego control plane oraz HIL firmware 0.5.8. Następnie powstanie godzinny
 compactor Archive. Dashboard pozostaje ostatnim, cienkim klientem API. Nie
 tworzymy dla tych funkcji drugiego modelu stanu ani osobnej ścieżki RS485.

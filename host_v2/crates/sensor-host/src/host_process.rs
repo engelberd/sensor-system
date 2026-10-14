@@ -21,6 +21,7 @@ use crate::installation_bootstrap::{
 };
 use crate::installation_topology::HostInstallationProfile;
 use crate::node_metrics::NodeMetricsSnapshot;
+use crate::operations::ChannelOperationsHandle;
 use crate::storage_health::{
     StorageHealthObservation, StorageHealthPolicy, StorageHealthProbe, StorageHealthProbeError,
 };
@@ -157,6 +158,12 @@ impl LinuxHostProcess {
 
     pub fn channel_count(&self) -> usize {
         self.runtime.channels().len()
+    }
+
+    /// Cloneable control-plane handles. They only enqueue bounded commands and
+    /// read immutable snapshots; ownership of channel I/O stays in the worker.
+    pub fn channel_operations(&self) -> Vec<ChannelOperationsHandle> {
+        self.runtime.channel_operations().to_vec()
     }
 
     pub fn supervise_once(&mut self) -> Result<HostSupervisionReport, HostSupervisionError> {

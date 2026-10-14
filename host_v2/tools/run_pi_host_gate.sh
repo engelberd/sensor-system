@@ -97,6 +97,7 @@ fi
 
 vmstat_pid=
 cleanup() {
+  rm -f "${operations_socket:-}"
   if [[ -n $vmstat_pid ]]; then
     kill "$vmstat_pid" >/dev/null 2>&1 || true
     wait "$vmstat_pid" >/dev/null 2>&1 || true
@@ -111,18 +112,19 @@ fi
 
 run_log="$output_directory/run.log"
 status_file="$output_directory/runtime-status.json"
+operations_socket="/tmp/sensor-host-gate-$$.sock"
 if [[ -x /usr/bin/time ]]; then
   /usr/bin/time -v -o "$output_directory/resource-usage.txt" \
     timeout --preserve-status --signal=TERM --kill-after=120s \
     "${duration_seconds}s" "$binary" run \
     --config "$config" --repository-root "$repository_root" \
-    --status-file "$status_file" \
+    --status-file "$status_file" --operations-socket "$operations_socket" \
     > "$run_log" 2>&1
 else
   timeout --preserve-status --signal=TERM --kill-after=120s \
     "${duration_seconds}s" "$binary" run \
     --config "$config" --repository-root "$repository_root" \
-    --status-file "$status_file" \
+    --status-file "$status_file" --operations-socket "$operations_socket" \
     > "$run_log" 2>&1
 fi
 cleanup

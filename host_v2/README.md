@@ -73,7 +73,8 @@ host_v2/target/release/sensor-host validate \
   --config host/system_config.json --repository-root "$PWD"
 host_v2/target/release/sensor-host run \
   --config host/system_config.json --repository-root "$PWD" \
-  --status-file var/tmp/host-v2-status.json
+  --status-file var/tmp/host-v2-status.json \
+  --operations-socket var/tmp/operations-v1.sock
 ```
 
 `SIGINT` i `SIGTERM` uruchamiają tę samą kontrolowaną sekwencję: quiesce,
@@ -87,10 +88,22 @@ użytkownika i grupę, instaluje binarium pod wersjonowanym SHA-256 i dopiero
 potem publikuje jednostkę. Szczegóły znajdują się w
 [`DEPLOY-RASPBERRY-PI.md`](DEPLOY-RASPBERRY-PI.md).
 
-`run` wymaga jawnej ścieżki statusu. Testy ręczne zapisują ją razem z
+`run` wymaga jawnej ścieżki statusu i lokalnego Operations IPC. Testy ręczne zapisują je razem z
 artefaktami, a usługa produkcyjna używa
-`/run/sensor-system/host-v2-status.json`. Plik ma wersjonowany schemat, jest
+`/run/sensor-system/host-v2-status.json` oraz
+`/run/sensor-system/operations-v1.sock`. Plik statusu ma wersjonowany schemat, jest
 zastępowany atomowo i pozostaje ostatnim terminalnym snapshotem po shutdownie.
+
+Aktywnym kanałem steruje się bez otwierania jego portu szeregowego:
+
+```bash
+./hostctl channel status --channel 1
+./hostctl channel maintenance --channel 1
+./hostctl channel resume --channel 1
+```
+
+Polecenia mutujące czekają na terminalny wynik workera. Opcjonalne
+`--operation-id` pozwala świadomie ponowić dokładnie to samo żądanie.
 
 Diagnostyka operatora jest osobnym natywnym binarium i nie wymaga legacy
 Python venv:

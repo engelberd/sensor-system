@@ -1,7 +1,7 @@
 # Audyt gotowości rdzenia host v2 i node v2
 
 - Status: obowiązujący przegląd ryzyk i parametrów
-- Ostatnia aktualizacja: 2026-10-13
+- Ostatnia aktualizacja: 2026-10-14
 - Zakres: firmware node protocol 5, host v2 1–16 kanałów i RS485 115200 bit/s
 
 ## Ocena
@@ -26,9 +26,10 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
    Recording → Maintenance oraz Resume także po zmianie `boot_epoch`.
    Capture i Time są otwierane przez swoich właścicieli, a bounded broker
    koordynatora blokuje wymianę sesji i Start do czasu obu trwałych wyników.
-   Brakuje trwałego audytu oraz lokalnego IPC. Codeki
-   Configuration/Commissioning są podłączone do
-   `ChannelAgent`, ale nie są jeszcze osiągalne przez Operations API.
+   Bounded lokalne IPC wystawia już status, Maintenance i Resume przez
+   `hostctl` bez otwierania RS485. Brakuje trwałego audytu. Codeki
+   Configuration/Commissioning są podłączone do `ChannelAgent`, ale nie są
+   jeszcze osiągalne przez Operations API.
 2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
    odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
    przypisania adresu i końcowego handshake po restarcie.
@@ -159,9 +160,8 @@ a nie strojenia instalacji.
 
 ## Kolejność dalszej pracy
 
-1. Zbudować Operations API i bounded command path do jedynego właściciela
-   kanału, z operacjami per channel/per node i jawną polityką Maintenance.
-2. Wystawić Configuration/Commissioning przez API, dodać audit/idempotency i
+1. Rozszerzyć gotowe Operations API i bounded command path o operacje per node.
+2. Wystawić Configuration/Commissioning przez API, dodać trwały audit i
    wykonać pełny HIL firmware 0.5.8.
 3. Usunąć flash write z pozostałych hot path.
 4. Wykonać HIL restartu po zatrzymaniu heartbeat core 1, wielu node, długiego

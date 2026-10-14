@@ -121,6 +121,36 @@ class HostctlV2Tests(unittest.TestCase):
                 ["identify", "/dev/line-a", "1", "115200"],
             )
 
+    def test_channel_routes_to_local_operations_ipc_client(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary, output = self.fake_binary(Path(temporary))
+            result = self.run_hostctl(
+                "channel",
+                "maintenance",
+                "--channel",
+                "3",
+                "--operation-id",
+                "99",
+                env={
+                    "SENSOR_OPERATIONS_BINARY": str(binary),
+                    "SENSOR_HOST_OPERATIONS_SOCKET": "/tmp/operations.sock",
+                    "SENSOR_TEST_ARGUMENTS": str(output),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                output.read_text(encoding="utf-8").splitlines(),
+                [
+                    "maintenance",
+                    "--channel",
+                    "3",
+                    "--operation-id",
+                    "99",
+                    "--socket",
+                    "/tmp/operations.sock",
+                ],
+            )
+
     def test_update_composes_protocol_5_prepare_upload_and_exact_confirm(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

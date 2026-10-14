@@ -1,7 +1,7 @@
 # Operations API v1 — kontrakt domenowy
 
-- Status: implementacja warstwy domenowej w toku
-- Ostatnia aktualizacja: 2026-10-13
+- Status: pierwszy pion lokalnego API gotowy
+- Ostatnia aktualizacja: 2026-10-14
 - Zakres: lokalne sterowanie host v2, per channel i per node
 
 Operations API jest jedyną drogą sterowania aktywnym hostem. `hostctl`, przyszły
@@ -163,12 +163,24 @@ Operacja grupowa będzie kompozycją operacji na konkretnych targetach. Każdy
 target zachowuje własny wynik; częściowego sukcesu nie przedstawiamy jako
 globalnego sukcesu. Rollback grupowy nie jest domyślnie obiecywany.
 
-## Granice adapterów
+## Lokalny adapter IPC
 
-Format lokalnego IPC zostanie wybrany po podłączeniu command path do workera.
-Nie może zmienić typów domenowych ani reguł admission. Dashboard powstaje po
-ustabilizowaniu API i będzie czytał status oraz składał polecenia bez dostępu do
-portów urządzeń, Capture WAL lub wewnętrznych kolejek schedulera.
+Pierwszy adapter działa przez lokalne datagramowe gniazdo Unix
+`/run/sensor-system/operations-v1.sock`. Każdy datagram jest jedną ograniczoną
+wiadomością JSON schema 1; request i response mają limit 4096 B, a koordynator
+obsługuje najwyżej cztery żądania na jeden obrót. Klient nie może utrzymać
+blokującego połączenia ani wejść na drogę próbek.
+
+Adapter udostępnia obecnie odczyt trybu kanału oraz `EnterMaintenance` i
+`ResumeRecording`. `submit` przekazuje pełne `operation_id` do istniejącego
+bounded mailboxa. `get` odczytuje ten sam worker-owned ledger. Powtórzenie
+identycznego żądania jest idempotentne, a ponowne użycie ID z inną treścią
+kończy się konfliktem w domenie. IPC nie otwiera RS485, nie posiada lifecycle i
+nie tworzy drugiego modelu stanu.
+
+Dashboard powstaje po ustabilizowaniu pozostałych operacji i będzie czytał
+status oraz składał polecenia bez dostępu do portów urządzeń, Capture WAL lub
+wewnętrznych kolejek schedulera.
 
 ## Powrót do Recording
 
@@ -198,14 +210,12 @@ budżetu z nowej konfiguracji przed aktywacją.
 
 Pion Recording → Maintenance → Recording przechodzi przez rzeczywisty framing,
 codeki, symulowany RS485 i produkcyjny worker w macierzy 1/4/8 channels. Zmiana
-`boot_epoch` nadal kończy operację jawnym `StreamReconciliationRequired`, zanim
-node lub scheduler zostaną uruchomione. Pozostałym przyrostem jest dynamiczne,
-wyłączne przełączenie Capture na nowy strumień oraz nową sesję.
+`boot_epoch` wykonuje przed aktywacją trwały rollover Capture i Time oraz
+wymianę sesji. Ten sam pion jest dostępny przez lokalne IPC i `hostctl`.
 
 ## Kolejna bramka
 
-1. dodać bezpieczną rekonfigurację właściciela Capture i dokończyć
-   `ResumeRecording` po zmianie `boot_epoch`;
-2. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
-3. dodać lokalne IPC i adapter `hostctl`;
-4. wykonać HIL firmware 0.5.8, następnie operacje grupowe i audit trwały.
+1. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
+2. dodać `RestartNode` oraz operacje serwisowe per node do tego samego IPC;
+3. wykonać HIL firmware 0.5.8;
+4. dodać operacje grupowe i trwały audit.

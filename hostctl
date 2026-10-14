@@ -7,8 +7,10 @@ DOCTOR_BINARY="${SENSOR_HOST_DOCTOR_BINARY:-$ROOT_DIR/host_v2/target/release/sen
 HIL_BINARY="${SENSOR_HOST_HIL_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-hil}"
 CAPTURE_VALIDATE_BINARY="${SENSOR_CAPTURE_VALIDATE_BINARY:-$ROOT_DIR/host_v2/target/release/capture-validate}"
 CAPTURE_EXPORT_BINARY="${SENSOR_CAPTURE_EXPORT_BINARY:-$ROOT_DIR/host_v2/target/release/capture-export}"
+OPERATIONS_BINARY="${SENSOR_OPERATIONS_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-operations}"
 HOST_CONFIG="${SENSOR_HOST_CONFIG:-$ROOT_DIR/host/system_config.json}"
 STATUS_FILE="${SENSOR_HOST_STATUS_FILE:-/run/sensor-system/host-v2-status.json}"
+OPERATIONS_SOCKET="${SENSOR_HOST_OPERATIONS_SOCKET:-/run/sensor-system/operations-v1.sock}"
 
 cd "$ROOT_DIR"
 
@@ -24,6 +26,8 @@ Host v2:
   run                   Run the v2 recorder in the foreground
   paths [--init]        Show or create effective v2 storage paths
   doctor                Check configuration, runtime and optionally RS485
+  channel status|maintenance|resume --channel ID
+                         Control a running channel through local Operations IPC
 
 Data:
   capture validate ROOT                 Validate all sealed Capture streams
@@ -42,6 +46,7 @@ Service:
 Defaults:
   config: host/system_config.json
   status: /run/sensor-system/host-v2-status.json
+  operations: /run/sensor-system/operations-v1.sock
 
 Examples:
   ./hostctl validate
@@ -76,10 +81,12 @@ shift
 HAS_CONFIG=0
 HAS_REPOSITORY=0
 HAS_STATUS=0
+HAS_OPERATIONS_SOCKET=0
 for argument in "$@"; do
   [[ $argument == --config ]] && HAS_CONFIG=1
   [[ $argument == --repository-root ]] && HAS_REPOSITORY=1
   [[ $argument == --status-file ]] && HAS_STATUS=1
+  [[ $argument == --operations-socket ]] && HAS_OPERATIONS_SOCKET=1
 done
 
 case "$COMMAND" in
@@ -102,7 +109,12 @@ case "$COMMAND" in
     ((HAS_CONFIG)) || EXECUTION+=(--config "$HOST_CONFIG")
     ((HAS_REPOSITORY)) || EXECUTION+=(--repository-root "$ROOT_DIR")
     ((HAS_STATUS)) || EXECUTION+=(--status-file "$STATUS_FILE")
+    ((HAS_OPERATIONS_SOCKET)) || EXECUTION+=(--operations-socket "$OPERATIONS_SOCKET")
     exec "${EXECUTION[@]}" "$@"
+    ;;
+  channel)
+    require_binary "$OPERATIONS_BINARY"
+    exec "$OPERATIONS_BINARY" "$@" --socket "$OPERATIONS_SOCKET"
     ;;
   paths)
     require_binary "$HOST_BINARY"
@@ -163,7 +175,7 @@ case "$COMMAND" in
   start|stop|restart|status|logs)
     exec "$ROOT_DIR/host_v2/tools/service_control.sh" "$COMMAND" "$@"
     ;;
-  ping|config|channel|lab|recorder|archive|verify|supervisor|console|dashboard|operator|boot|py)
+  ping|config|lab|recorder|archive|verify|supervisor|console|dashboard|operator|boot|py)
     echo "[ERROR] '$COMMAND' belongs to the retired Python host and is not exposed by hostctl v2" >&2
     echo "See docs/legacy/ for historical procedures." >&2
     exit 64

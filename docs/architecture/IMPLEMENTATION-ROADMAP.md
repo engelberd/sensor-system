@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-13
+- Ostatnia aktualizacja: 2026-10-14
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -147,6 +147,9 @@ uzasadnią ją pomiary lub testy awarii.
   schedulera dopiero po obu wynikach durable, a następnie sekwencyjny Start.
   Stare WAL-e pozostają dowodem; nieudana próba zostawia kanał w Maintenance,
   więc można ją bezpiecznie ponowić zdalnie;
+- lokalne Operations IPC schema 1 przez bounded Unix datagram oraz natywny
+  adapter `hostctl channel`; status kanału, Maintenance i Resume docierają do
+  istniejącego worker-owned ledgera bez otwierania RS485 przez klienta;
 - bounded walidacja Capture i strumieniowy `capture-export`, generujący
   `samples.csv`, `events.csv` oraz `windows.csv` bez ładowania nagrania do RAM;
 
@@ -795,12 +798,13 @@ Bieżąca kolejność implementacji:
    sekwencyjnie wykonuje pełny handshake, `GetState` i `GetStreamState`,
    odtwarza sesję z trwałego cursora Capture, egzekwuje niezmieniony kontrakt
    admission, aktywuje node i
-   dopiero wtedy otwiera scheduler. Pion Recording → Maintenance → Recording
-   przechodzi przez prawdziwy codec w symulacji 1/4/8 channels. Pozostaje
-   bezpieczna rekonfiguracja wyłącznego właściciela Capture dla nowej epoki;
+   dopiero wtedy otwiera scheduler. Pion Recording → Maintenance → Recording,
+   również po zmianie epoki i rolloverze Capture/Time, przechodzi przez
+   prawdziwy codec w symulacji 1/4/8 channels;
 4. odczyt oraz mutacje Configuration per node;
 5. wyłączne okno Commissioning per channel i handshake przydzielonego node;
-6. lokalne IPC, rejestr/audit operacji i adapter `hostctl`;
+6. **Pierwszy pion gotowy:** bounded lokalne IPC i adapter `hostctl` dla status,
+   Maintenance i Resume; pozostają rozszerzenie per node oraz trwały audit;
 7. operacje grupowe z wynikiem per target;
 8. dopiero potem dashboard jako cienki klient tego samego API.
 
@@ -825,7 +829,7 @@ Nie wolno rozstrzygać ich przypadkową stałą w kodzie:
 - algorytm i wagi schedulera;
 - częstotliwość time sync i timing anchors;
 - format Capture, chunking, kompresja i polityka fsync;
-- technologia lokalnego Operations API/IPC;
+- docelowe prawa dostępu i gateway zdalny dla lokalnego Unix Operations IPC;
 - kryterium wydzielenia TransportDevice do osobnego procesu;
 - profile admission control dla różnych Pi, SD/SSD i topologii;
 - fizyczny format Archive, poziom kompresji, parametry retencji i replikacji.
@@ -903,7 +907,8 @@ obciążeniowym zamiast opisywać jako gwarancję pamięci statycznej.
 
 Nazwy `Start`/`Stop` w bieżącym Lifecycle oznaczają start/stop akwizycji node.
 Nie są tym samym co przyszłe `start_recording`/`stop_recording` hosta. Przed
-wystawieniem Operations API nazwy typów domenowych trzeba ujednoznacznić do
+wystawieniem tych operacji node przez publiczne API nazwy typów domenowych
+trzeba ujednoznacznić do
 `StartAcquisition`/`StopAcquisition`; numery messages na wire mogą pozostać bez
 zmian.
 
@@ -1002,10 +1007,10 @@ Następne fragmenty mają stałą kolejność zależności:
 
 1. **Gotowe:** proces `sensor-host run` wokół `HostCoordinator`, sygnały,
    okresowy health, globalna reakcja storage i raport końcowego shutdownu.
-2. **Gotowe w symulacji:** Resume po nowym `boot_epoch`; worker przygotowuje
+2. **Gotowe w symulacji i wystawione przez IPC:** Resume po nowym `boot_epoch`; worker przygotowuje
    granicę Capture, koordynator rejestruje Time WAL, a dopiero po obu durable
-   wynikach wymieniane są `NodeSession` i cursory schedulera. Następnie wystawić
-   gotowe Maintenance/Resume przez lokalne Operations IPC.
+   wynikach wymieniane są `NodeSession` i cursory schedulera. Maintenance i
+   Resume są dostępne przez `hostctl channel` bez dostępu klienta do RS485.
 3. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
    awarię jednej linii, opóźniony storage oraz globalny storage fault.
 4. Uruchomić Raspberry Pi kolejno z 1, 4 i 8 kanałami. Zmierzyć RTT, turnaround,
@@ -1060,5 +1065,7 @@ Przejście od tego baseline do automatycznej pracy na Raspberry Pi, natywnego
 `hostctl doctor`, Operations IPC i testów 24/7 opisuje
 [HOST-V2-USER-ADOPTION-ROADMAP.md](HOST-V2-USER-ADOPTION-ROADMAP.md). Jego Etap 1,
 wersjonowany snapshot statusu, jest gotowy. Rollover Capture + Time po restarcie
-node przechodzi pełną symulację; bieżącą bramką jest lokalne Operations IPC.
-Dashboard pozostaje poza MVP do czasu ustabilizowania API.
+node przechodzi pełną symulację, a podstawowy pion Operations IPC jest gotowy.
+Bieżącą bramką są operacje Configuration/Commissioning i RestartNode per node
+przez ten sam control plane. Dashboard pozostaje poza MVP do czasu
+ustabilizowania API.
