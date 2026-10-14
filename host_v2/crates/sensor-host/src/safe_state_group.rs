@@ -29,6 +29,9 @@ pub enum SafeStateGroupProgress {
     NodeOffline {
         node_address: u8,
     },
+    NodeConvergenceFailed {
+        node_address: u8,
+    },
     Complete,
 }
 
@@ -87,6 +90,9 @@ impl SafeStateGroupOperation {
                 }
             }
             SafeStateWireProgress::Offline => SafeStateGroupProgress::NodeOffline { node_address },
+            SafeStateWireProgress::ConvergenceFailed => {
+                SafeStateGroupProgress::NodeConvergenceFailed { node_address }
+            }
             progress => SafeStateGroupProgress::Node {
                 node_address,
                 progress,
@@ -113,6 +119,14 @@ impl SafeStateGroupOperation {
                 boot_epoch: operation.current_boot_epoch(),
             })
             .collect()
+    }
+
+    pub fn fall_back_to_idle(&mut self) -> Result<(), SafeStateGroupError> {
+        for operation in &mut self.nodes {
+            operation.fall_back_to_idle()?;
+        }
+        self.current = 0;
+        Ok(())
     }
 }
 
@@ -166,6 +180,7 @@ mod tests {
         let safe = SafeStatePolicy {
             orderly_attempts: 2,
             restart_attempts: 2,
+            restart_cycles: 1,
         };
         let wire = SafeStateWirePolicy {
             action_deadline: duration(10),
@@ -206,6 +221,7 @@ mod tests {
             SafeStatePolicy {
                 orderly_attempts: 2,
                 restart_attempts: 2,
+                restart_cycles: 1,
             },
             SafeStateWirePolicy {
                 action_deadline: duration(20),

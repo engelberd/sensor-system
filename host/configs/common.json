@@ -59,7 +59,15 @@
     "shutdown_node_deadline_ms": 5000,
     "shutdown_drain_deadline_ms": 5000,
     "operations_mailbox_capacity": 8,
-    "operations_ledger_capacity": 64
+    "operations_ledger_capacity": 64,
+    "maintenance_barrier_deadline_ms": 2000,
+    "maintenance_drain_deadline_ms": 5000,
+    "safe_orderly_attempts": 2,
+    "safe_restart_attempts": 2,
+    "safe_restart_cycles": 1,
+    "safe_action_deadline_ms": 1000,
+    "safe_restart_settle_ms": 500,
+    "safe_restart_confirmation_ms": 5000
   },
   "supervisor": {
     "status_file": "/run/sensor-system/supervisor.status.json",

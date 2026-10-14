@@ -11,10 +11,13 @@ use crate::channel_activation::{
     RecordingActivationPolicy, RecordingShutdownError, RecordingShutdownPolicy,
 };
 use crate::channel_bootstrap::{BootstrappedChannel, NodeBootstrapEvidence};
-use crate::channel_endpoint::MonotonicClock;
+use crate::channel_endpoint::{ChannelEndpointEvent, MonotonicClock};
 use crate::channel_metrics::{ChannelMetricsPublisher, ChannelMetricsReader};
+use crate::channel_mode::{
+    ChannelModeError, MaintenanceEntryDirective, MaintenanceEntryEvent, MaintenanceEntryPlan,
+};
 use crate::channel_recording_loop::{
-    ThreadedChannelRecordingLoop, ThreadedChannelRecordingLoopError,
+    ThreadedChannelRecordingEvent, ThreadedChannelRecordingLoop, ThreadedChannelRecordingLoopError,
 };
 use crate::channel_recovery::{
     prepare_capture_stream, reconcile_channel_streams, ChannelRecoveryError,
@@ -29,10 +32,15 @@ use crate::handshake::HandshakeRequirements;
 use crate::measurement_coordinator::MeasurementCoordinatorError;
 use crate::node_metrics::NodeMetricsReader;
 use crate::operations::{
-    ChannelCommandDecision, ChannelOperationsController, OperationKind, OperationsError,
+    ChannelCommandDecision, ChannelOperatingMode, ChannelOperationsController, OperationKind,
+    OperationsError,
 };
 use crate::persistence_executor::{
     GroupedPersistenceExecutor, PersistenceExecutorError, PersistenceShutdown,
+};
+use crate::safe_state::{SafeStatePolicy, SafeStateTarget, SafeStateWirePolicy};
+use crate::safe_state_group::{
+    SafeStateGroupError, SafeStateGroupOperation, SafeStateGroupProgress, SafeStateNodeContract,
 };
 use crate::time_persistence::TimeObservationSubmitter;
 
@@ -44,6 +52,29 @@ pub struct ControlledChannelShutdownPolicy {
     pub barrier_deadline: Duration,
     pub node: RecordingShutdownPolicy,
     pub drain_deadline: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelMaintenancePolicy {
+    pub barrier_deadline: Duration,
+    pub drain_deadline: Duration,
+    pub safe_state: SafeStatePolicy,
+    pub wire: SafeStateWirePolicy,
+}
+
+impl ChannelMaintenancePolicy {
+    pub fn validate(self) -> Result<Self, ChannelMaintenanceError> {
+        if self.barrier_deadline.is_zero() {
+            return Err(ChannelMaintenanceError::ZeroBarrierDeadline);
+        }
+        if self.drain_deadline.is_zero() {
+            return Err(ChannelMaintenanceError::ZeroDrainDeadline);
+        }
+        self.safe_state
+            .validate()
+            .map_err(ChannelMaintenanceError::SafeStatePolicy)?;
+        Ok(self)
+    }
 }
 
 impl ControlledChannelShutdownPolicy {
@@ -69,6 +100,8 @@ pub struct ProductionChannelTask<P, C, T> {
     metrics_reader: ChannelMetricsReader,
     node_metrics_readers: Vec<NodeMetricsReader>,
     operations: ChannelOperationsController,
+    maintenance_policy: ChannelMaintenancePolicy,
+    maintenance: Option<MaintenanceEntryExecution>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +109,44 @@ pub struct ChannelControlNode {
     pub id: DiscoveryTargetId,
     pub requirements: HandshakeRequirements,
     pub boot_epoch: sensor_core::BootEpoch,
+}
+
+struct MaintenanceEntryExecution {
+    plan: MaintenanceEntryPlan,
+    contracts: Vec<SafeStateNodeContract>,
+    group: Option<SafeStateGroupOperation>,
+    barrier_deadline: Instant,
+    drain_deadline: Option<Instant>,
+    drain_started: bool,
+}
+
+impl MaintenanceEntryExecution {
+    fn new(
+        nodes: &[ChannelControlNode],
+        policy: ChannelMaintenancePolicy,
+    ) -> Result<Self, ChannelMaintenanceError> {
+        let contracts = nodes
+            .iter()
+            .map(|node| SafeStateNodeContract {
+                requirements: node.requirements,
+                boot_epoch: node.boot_epoch,
+            })
+            .collect::<Vec<_>>();
+        if contracts.is_empty() {
+            return Err(ChannelMaintenanceError::EmptyChannel);
+        }
+        let barrier_deadline = Instant::now()
+            .checked_add(policy.barrier_deadline)
+            .ok_or(ChannelMaintenanceError::DeadlineOverflow)?;
+        Ok(Self {
+            plan: MaintenanceEntryPlan::new(),
+            contracts,
+            group: None,
+            barrier_deadline,
+            drain_deadline: None,
+            drain_started: false,
+        })
+    }
 }
 
 impl<P, C, T> ProductionChannelTask<P, C, T>
@@ -89,8 +160,10 @@ where
         startup: &ChannelStartupPlan,
         shutdown_policy: ControlledChannelShutdownPolicy,
         operations: ChannelOperationsController,
-    ) -> Result<Self, ControlledChannelShutdownError> {
+        maintenance_policy: ChannelMaintenancePolicy,
+    ) -> Result<Self, ProductionChannelTaskBuildError> {
         let shutdown_policy = shutdown_policy.validate()?;
+        let maintenance_policy = maintenance_policy.validate()?;
         let nodes = startup
             .nodes()
             .iter()
@@ -115,6 +188,8 @@ where
             metrics_reader,
             node_metrics_readers,
             operations,
+            maintenance_policy,
+            maintenance: None,
         })
     }
 
@@ -128,6 +203,195 @@ where
 
     pub fn control_nodes(&self) -> &[ChannelControlNode] {
         &self.nodes
+    }
+
+    fn drive_maintenance(
+        &mut self,
+        mut execution: MaintenanceEntryExecution,
+    ) -> Result<Option<MaintenanceEntryExecution>, ProductionChannelStepError> {
+        match execution.plan.directive() {
+            MaintenanceEntryDirective::Quiesce => {
+                if self.recording.is_quiescent() {
+                    execution.plan.accept(MaintenanceEntryEvent::Quiesced)?;
+                    execution.group =
+                        Some(self.safe_state_group(SafeStateTarget::Idle, &execution.contracts)?);
+                } else if Instant::now() >= execution.barrier_deadline {
+                    self.fail_maintenance(
+                        ChannelOperatingMode::Faulted,
+                        OperationsError::MaintenanceBarrierDeadline,
+                    )?;
+                    return Ok(None);
+                } else {
+                    self.step_recording()?;
+                }
+            }
+            MaintenanceEntryDirective::Converge(target) => {
+                let group = execution
+                    .group
+                    .as_mut()
+                    .ok_or(ChannelMaintenanceError::MissingSafeStateGroup)?;
+                let now = self.recording.endpoint_mut().now();
+                match group.drive(self.recording.endpoint_mut().agent_mut(), now)? {
+                    SafeStateGroupProgress::Complete => {
+                        execution
+                            .plan
+                            .accept(MaintenanceEntryEvent::SafeStateReached(target))?;
+                    }
+                    SafeStateGroupProgress::NodeConvergenceFailed { .. }
+                        if target == SafeStateTarget::Maintenance =>
+                    {
+                        execution
+                            .plan
+                            .accept(MaintenanceEntryEvent::MaintenanceConvergenceFailed)?;
+                        group.fall_back_to_idle()?;
+                    }
+                    SafeStateGroupProgress::NodeConvergenceFailed { .. } => {
+                        self.fail_maintenance(
+                            ChannelOperatingMode::Faulted,
+                            OperationsError::MaintenanceConvergenceFailed,
+                        )?;
+                        return Ok(None);
+                    }
+                    SafeStateGroupProgress::NodeOffline { .. } => {
+                        execution.plan.accept(MaintenanceEntryEvent::NodeOffline)?;
+                        self.fail_maintenance(
+                            ChannelOperatingMode::Offline,
+                            OperationsError::NodeOffline,
+                        )?;
+                        return Ok(None);
+                    }
+                    SafeStateGroupProgress::Node { .. }
+                    | SafeStateGroupProgress::NodeReached { .. } => {
+                        self.step_safe_state_endpoint(group)?;
+                    }
+                }
+            }
+            MaintenanceEntryDirective::ReconcileStoppedStreams => {
+                let observed = execution
+                    .group
+                    .as_ref()
+                    .ok_or(ChannelMaintenanceError::MissingSafeStateGroup)?
+                    .contracts();
+                if observed != execution.contracts {
+                    self.fail_maintenance(
+                        ChannelOperatingMode::Faulted,
+                        OperationsError::StreamReconciliationRequired,
+                    )?;
+                    return Ok(None);
+                }
+                execution.contracts = observed;
+                execution.group = None;
+                execution
+                    .plan
+                    .accept(MaintenanceEntryEvent::StoppedStreamsReconciled)?;
+            }
+            MaintenanceEntryDirective::DrainStoppedStreams => {
+                if !execution.drain_started {
+                    self.recording.begin_shutdown_drain()?;
+                    execution.drain_deadline = Some(
+                        Instant::now()
+                            .checked_add(self.maintenance_policy.drain_deadline)
+                            .ok_or(ChannelMaintenanceError::DeadlineOverflow)?,
+                    );
+                    execution.drain_started = true;
+                }
+                if self.recording.is_shutdown_drain_complete() {
+                    self.recording.finish_shutdown_drain()?;
+                    execution
+                        .plan
+                        .accept(MaintenanceEntryEvent::StoppedStreamsDrained)?;
+                    execution.group = Some(
+                        self.safe_state_group(SafeStateTarget::Maintenance, &execution.contracts)?,
+                    );
+                } else if execution
+                    .drain_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    self.recording.abort_shutdown_drain()?;
+                    self.fail_maintenance(
+                        ChannelOperatingMode::Faulted,
+                        OperationsError::MaintenanceDrainDeadline,
+                    )?;
+                    return Ok(None);
+                } else {
+                    self.step_recording()?;
+                }
+            }
+            MaintenanceEntryDirective::CompleteMaintenance => {
+                self.operations
+                    .set_mode(ChannelOperatingMode::Maintenance)?;
+                self.operations.finish_active(true)?;
+                return Ok(None);
+            }
+            MaintenanceEntryDirective::CompleteIdle => {
+                self.fail_maintenance(
+                    ChannelOperatingMode::Faulted,
+                    OperationsError::MaintenanceConvergenceFailed,
+                )?;
+                return Ok(None);
+            }
+            MaintenanceEntryDirective::Offline => {
+                self.fail_maintenance(ChannelOperatingMode::Offline, OperationsError::NodeOffline)?;
+                return Ok(None);
+            }
+        }
+        Ok(Some(execution))
+    }
+
+    fn safe_state_group(
+        &self,
+        target: SafeStateTarget,
+        contracts: &[SafeStateNodeContract],
+    ) -> Result<SafeStateGroupOperation, ChannelMaintenanceError> {
+        SafeStateGroupOperation::new(
+            target,
+            self.maintenance_policy.safe_state,
+            self.maintenance_policy.wire,
+            contracts,
+        )
+        .map_err(ChannelMaintenanceError::SafeStateGroup)
+    }
+
+    fn step_recording(&mut self) -> Result<(), ProductionChannelStepError> {
+        let started = Instant::now();
+        let event = self
+            .recording
+            .step()
+            .map_err(ProductionChannelStepError::Recording)?;
+        self.metrics.observe_step(&event, started.elapsed());
+        Ok(())
+    }
+
+    fn step_safe_state_endpoint(
+        &mut self,
+        group: &mut SafeStateGroupOperation,
+    ) -> Result<(), ProductionChannelStepError> {
+        let started = Instant::now();
+        let endpoint_event = self
+            .recording
+            .endpoint_mut()
+            .step()
+            .map_err(ThreadedChannelRecordingLoopError::Endpoint)
+            .map_err(ProductionChannelStepError::Recording)?;
+        if let ChannelEndpointEvent::Agent(event) = &endpoint_event {
+            let now = self.recording.endpoint_mut().now();
+            group.handle_event(event, now)?;
+        }
+        self.metrics.observe_step(
+            &ThreadedChannelRecordingEvent::Endpoint(endpoint_event),
+            started.elapsed(),
+        );
+        Ok(())
+    }
+
+    fn fail_maintenance(
+        &mut self,
+        mode: ChannelOperatingMode,
+        error: OperationsError,
+    ) -> Result<(), ProductionChannelStepError> {
+        self.operations.set_mode(mode)?;
+        self.operations.fail_active(error)?;
+        Ok(())
     }
 }
 
@@ -147,14 +411,28 @@ where
             .map_err(ProductionChannelStepError::Operations)?
         {
             ChannelCommandDecision::Started(request) => {
-                debug_assert_ne!(request.kind, OperationKind::ReadStatus);
-                self.operations
-                    .fail_active(OperationsError::ExecutorUnavailable)
-                    .map_err(ProductionChannelStepError::Operations)?;
+                if request.kind == OperationKind::EnterMaintenance && self.maintenance.is_none() {
+                    self.recording.begin_quiesce();
+                    self.operations
+                        .set_mode(ChannelOperatingMode::EnteringMaintenance)
+                        .map_err(ProductionChannelStepError::Operations)?;
+                    self.maintenance = Some(MaintenanceEntryExecution::new(
+                        &self.nodes,
+                        self.maintenance_policy,
+                    )?);
+                } else {
+                    self.operations
+                        .fail_active(OperationsError::ExecutorUnavailable)
+                        .map_err(ProductionChannelStepError::Operations)?;
+                }
             }
             ChannelCommandDecision::None
             | ChannelCommandDecision::Existing { .. }
             | ChannelCommandDecision::Rejected { .. } => {}
+        }
+        if let Some(execution) = self.maintenance.take() {
+            self.maintenance = self.drive_maintenance(execution)?;
+            return Ok(());
         }
         let started = Instant::now();
         let event = self
@@ -166,8 +444,43 @@ where
     }
 
     fn shutdown(self) -> Self::Shutdown {
+        if self.operations.mode() == ChannelOperatingMode::Maintenance {
+            return finalize_quiesced_channel(self.recording);
+        }
         let node_ids = self.nodes.iter().map(|node| node.id).collect::<Vec<_>>();
         controlled_shutdown_channel(self.recording, &node_ids, self.shutdown_policy)
+    }
+}
+
+fn finalize_quiesced_channel<P, C, T>(
+    recording: ProductionChannelLoop<P, C, T>,
+) -> ControlledChannelShutdownReport
+where
+    P: Read + Write,
+    C: MonotonicClock,
+    T: TimeObservationSubmitter,
+{
+    let mut outcome = if recording.is_quiescent() {
+        Ok(())
+    } else {
+        Err(ControlledChannelShutdownError::MaintenanceNotQuiescent)
+    };
+    let (_endpoint, _measurements, persistence, _time_observations) = recording.into_parts();
+    let persistence = match persistence.shutdown() {
+        Ok(mut shutdown) => {
+            if let Err(error) = shutdown.sink.finish_all_streams() {
+                remember_first_shutdown_error(
+                    &mut outcome,
+                    ControlledChannelShutdownError::CaptureFinalization(error),
+                );
+            }
+            Ok(shutdown)
+        }
+        Err(error) => Err(error),
+    };
+    ControlledChannelShutdownReport {
+        outcome,
+        persistence,
     }
 }
 
@@ -175,6 +488,37 @@ where
 pub enum ProductionChannelStepError {
     Recording(ThreadedChannelRecordingLoopError<CaptureRepositoryError>),
     Operations(OperationsError),
+    Maintenance(ChannelMaintenanceError),
+}
+
+impl From<OperationsError> for ProductionChannelStepError {
+    fn from(value: OperationsError) -> Self {
+        Self::Operations(value)
+    }
+}
+
+impl From<ChannelMaintenanceError> for ProductionChannelStepError {
+    fn from(value: ChannelMaintenanceError) -> Self {
+        Self::Maintenance(value)
+    }
+}
+
+impl From<MeasurementCoordinatorError> for ProductionChannelStepError {
+    fn from(value: MeasurementCoordinatorError) -> Self {
+        Self::Maintenance(ChannelMaintenanceError::Coordinator(value))
+    }
+}
+
+impl From<ChannelModeError> for ProductionChannelStepError {
+    fn from(value: ChannelModeError) -> Self {
+        Self::Maintenance(ChannelMaintenanceError::Mode(value))
+    }
+}
+
+impl From<SafeStateGroupError> for ProductionChannelStepError {
+    fn from(value: SafeStateGroupError) -> Self {
+        Self::Maintenance(ChannelMaintenanceError::SafeStateGroup(value))
+    }
 }
 
 impl fmt::Display for ProductionChannelStepError {
@@ -184,6 +528,53 @@ impl fmt::Display for ProductionChannelStepError {
 }
 
 impl std::error::Error for ProductionChannelStepError {}
+
+#[derive(Debug)]
+pub enum ProductionChannelTaskBuildError {
+    Shutdown(ControlledChannelShutdownError),
+    Maintenance(ChannelMaintenanceError),
+}
+
+impl From<ControlledChannelShutdownError> for ProductionChannelTaskBuildError {
+    fn from(value: ControlledChannelShutdownError) -> Self {
+        Self::Shutdown(value)
+    }
+}
+
+impl From<ChannelMaintenanceError> for ProductionChannelTaskBuildError {
+    fn from(value: ChannelMaintenanceError) -> Self {
+        Self::Maintenance(value)
+    }
+}
+
+impl fmt::Display for ProductionChannelTaskBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "production channel task build error: {self:?}")
+    }
+}
+
+impl std::error::Error for ProductionChannelTaskBuildError {}
+
+#[derive(Debug)]
+pub enum ChannelMaintenanceError {
+    ZeroBarrierDeadline,
+    ZeroDrainDeadline,
+    EmptyChannel,
+    DeadlineOverflow,
+    MissingSafeStateGroup,
+    SafeStatePolicy(crate::safe_state::SafeStateError),
+    SafeStateGroup(SafeStateGroupError),
+    Mode(ChannelModeError),
+    Coordinator(MeasurementCoordinatorError),
+}
+
+impl fmt::Display for ChannelMaintenanceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "channel maintenance error: {self:?}")
+    }
+}
+
+impl std::error::Error for ChannelMaintenanceError {}
 
 pub struct ControlledChannelShutdownReport {
     pub outcome: Result<(), ControlledChannelShutdownError>,
@@ -327,6 +718,7 @@ pub enum ControlledChannelShutdownError {
     DrainCoordinator(MeasurementCoordinatorError),
     Stop(RecordingShutdownError),
     CaptureFinalization(CaptureRepositoryError),
+    MaintenanceNotQuiescent,
 }
 
 impl fmt::Display for ControlledChannelShutdownError {

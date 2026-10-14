@@ -26,6 +26,10 @@ pub struct SafeStatePolicy {
     /// Failed restart transmissions/handshakes before declaring the node
     /// offline. A value greater than one tolerates one lost response.
     pub restart_attempts: u8,
+    /// Successful restart recoveries allowed for one convergence request.
+    /// This bounds a node which remains reachable but repeatedly refuses the
+    /// requested stable state.
+    pub restart_cycles: u8,
 }
 
 impl SafeStatePolicy {
@@ -34,6 +38,8 @@ impl SafeStatePolicy {
             Err(SafeStateError::ZeroOrderlyAttempts)
         } else if self.restart_attempts == 0 {
             Err(SafeStateError::ZeroRestartAttempts)
+        } else if self.restart_cycles == 0 {
+            Err(SafeStateError::ZeroRestartCycles)
         } else {
             Ok(self)
         }
@@ -53,6 +59,7 @@ pub enum SafeStateAction {
 pub enum SafeStateStatus {
     Converging,
     Reached(SafeStateTarget),
+    ConvergenceFailed,
     Offline,
 }
 
@@ -67,6 +74,7 @@ pub struct SafeStateConverger {
     pending: Option<SafeStateAction>,
     orderly_failures: u8,
     restart_failures: u8,
+    completed_restart_cycles: u8,
     status: SafeStateStatus,
 }
 
@@ -79,6 +87,7 @@ impl SafeStateConverger {
             pending: None,
             orderly_failures: 0,
             restart_failures: 0,
+            completed_restart_cycles: 0,
             status: SafeStateStatus::Converging,
         })
     }
@@ -108,6 +117,10 @@ impl SafeStateConverger {
         }
 
         let action = if self.orderly_failures >= self.policy.orderly_attempts {
+            if self.completed_restart_cycles >= self.policy.restart_cycles {
+                self.status = SafeStateStatus::ConvergenceFailed;
+                return Ok(None);
+            }
             SafeStateAction::Restart
         } else {
             match self.observed {
@@ -144,6 +157,7 @@ impl SafeStateConverger {
             self.observed = None;
             self.orderly_failures = 0;
             self.restart_failures = 0;
+            self.completed_restart_cycles = self.completed_restart_cycles.saturating_add(1);
         } else {
             self.observed = Some(observed);
             self.orderly_failures = 0;
@@ -202,6 +216,7 @@ impl SafeStateConverger {
 pub enum SafeStateError {
     ZeroOrderlyAttempts,
     ZeroRestartAttempts,
+    ZeroRestartCycles,
     ActionAlreadyPending,
     NoPendingAction,
     WrongCompletion {
@@ -261,6 +276,7 @@ pub enum SafeStateWireProgress {
     },
     Reached(SafeStateTarget),
     Offline,
+    ConvergenceFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -476,6 +492,9 @@ impl SafeStateWireOperation {
                 return Ok(SafeStateWireProgress::Reached(target));
             }
             SafeStateStatus::Offline => return Ok(SafeStateWireProgress::Offline),
+            SafeStateStatus::ConvergenceFailed => {
+                return Ok(SafeStateWireProgress::ConvergenceFailed);
+            }
             SafeStateStatus::Converging => {}
         }
         if agent.queued_work_items() != 0 {
@@ -489,6 +508,7 @@ impl SafeStateWireOperation {
             return match self.converger.status() {
                 SafeStateStatus::Reached(target) => Ok(SafeStateWireProgress::Reached(target)),
                 SafeStateStatus::Offline => Ok(SafeStateWireProgress::Offline),
+                SafeStateStatus::ConvergenceFailed => Ok(SafeStateWireProgress::ConvergenceFailed),
                 SafeStateStatus::Converging => Err(SafeStateWireError::InvariantViolation),
             };
         };
@@ -614,6 +634,7 @@ mod tests {
         SafeStatePolicy {
             orderly_attempts: 2,
             restart_attempts: 2,
+            restart_cycles: 1,
         }
     }
 
@@ -777,6 +798,57 @@ mod tests {
     }
 
     #[test]
+    fn reachable_node_cannot_loop_forever_when_it_refuses_maintenance() {
+        let mut state = SafeStateConverger::new(
+            SafeStateTarget::Maintenance,
+            SafeStatePolicy {
+                orderly_attempts: 1,
+                restart_attempts: 2,
+                restart_cycles: 1,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.next_action().unwrap(),
+            Some(SafeStateAction::GetState)
+        );
+        state
+            .complete(SafeStateAction::GetState, RuntimeState::Idle)
+            .unwrap();
+        assert_eq!(
+            state.next_action().unwrap(),
+            Some(SafeStateAction::EnterMaintenance)
+        );
+        state.fail(SafeStateAction::EnterMaintenance).unwrap();
+        assert_eq!(state.next_action().unwrap(), Some(SafeStateAction::Restart));
+        state
+            .complete(SafeStateAction::Restart, RuntimeState::Idle)
+            .unwrap();
+        assert_eq!(
+            state.next_action().unwrap(),
+            Some(SafeStateAction::GetState)
+        );
+        state
+            .complete(SafeStateAction::GetState, RuntimeState::Idle)
+            .unwrap();
+        assert_eq!(
+            state.next_action().unwrap(),
+            Some(SafeStateAction::EnterMaintenance)
+        );
+        state.fail(SafeStateAction::EnterMaintenance).unwrap();
+
+        assert_eq!(state.next_action().unwrap(), None);
+        assert_eq!(state.status(), SafeStateStatus::ConvergenceFailed);
+        state.fall_back_to_idle().unwrap();
+        assert_eq!(state.next_action().unwrap(), None);
+        assert_eq!(
+            state.status(),
+            SafeStateStatus::Reached(SafeStateTarget::Idle)
+        );
+    }
+
+    #[test]
     fn wrong_completion_cannot_advance_state() {
         let mut state = SafeStateConverger::new(SafeStateTarget::Idle, policy()).unwrap();
         state.next_action().unwrap();
@@ -862,6 +934,7 @@ mod tests {
             SafeStatePolicy {
                 orderly_attempts: 1,
                 restart_attempts: 2,
+                restart_cycles: 1,
             },
             wire_policy(),
             requirements(),

@@ -133,9 +133,20 @@ całą drogę inbox → admission → ledger → snapshot. Błędny `channel_id`
 odrzucany przed kolejką. Pojemności mailboxa i ledgeru pochodzą z
 `runtime_v2`, więc nie są ukrytymi stałymi.
 
-Mutujące polecenie, dla którego wykonawca nie został jeszcze podłączony, kończy
-się jawnym `Failed` z `ExecutorUnavailable`; nie zatrzymuje workera ani
-akwizycji. Jest to stan przejściowy implementacji, a nie obietnica API.
+`EnterMaintenance` ma podłączony wykonawca tego samego workera i arbitra RS485:
+quiesce → sekwencyjne `Idle` → kontrola `boot_epoch` → końcowy drain →
+sekwencyjne `Maintenance`. Nie przyjmuje skrótu omijającego trwały zapis.
+Pozostałe mutujące polecenie, dla którego wykonawca nie został jeszcze
+podłączony, kończy się jawnym `Failed` z `ExecutorUnavailable`; nie zatrzymuje
+workera ani akwizycji.
+
+Deadline bariery i drainu oraz budżety orderly/restart są częścią
+`runtime_v2`. Drain po przekroczeniu deadline odrzuca tylko niewysłane jeszcze
+sondy; aktywne wire/storage nadal musi się rozliczyć. Zmiana `boot_epoch`
+podczas wymuszonego recovery kończy operację w `Faulted` z
+`StreamReconciliationRequired`, ponieważ stara sesja Capture nie może zostać
+przemianowana na nowy strumień. Pełne recovery w procesie należy do ścieżki
+`ResumeRecording`.
 
 ## Wynik per target
 
@@ -161,10 +172,8 @@ portów urządzeń, Capture WAL lub wewnętrznych kolejek schedulera.
 
 ## Kolejna bramka
 
-1. podłączyć `SafeStateGroupOperation` do gotowego już command/ledger/status
-   boundary właściciela kanału;
-2. zaimplementować sekwencję quiesce → Idle → reconcile → końcowy drain → Maintenance oraz
-   pełne recovery przed wznowieniem schedulera;
-3. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
-4. dodać lokalne IPC i adapter `hostctl`;
-5. wykonać HIL firmware 0.5.8, następnie operacje grupowe i audit trwały.
+1. zaimplementować `ResumeRecording` przez pełny handshake, stream recovery,
+   admission i ponowną aktywację schedulera;
+2. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
+3. dodać lokalne IPC i adapter `hostctl`;
+4. wykonać HIL firmware 0.5.8, następnie operacje grupowe i audit trwały.

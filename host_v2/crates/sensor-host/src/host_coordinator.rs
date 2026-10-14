@@ -14,8 +14,9 @@ use crate::channel_supervisor::{
     SupervisedChannel, SupervisedChannelTask,
 };
 use crate::channel_worker::{
-    compose_channel_recording, ChannelWorkerError, ControlledChannelShutdownError,
-    ControlledChannelShutdownPolicy, ProductionChannelTask,
+    compose_channel_recording, ChannelMaintenanceError, ChannelMaintenancePolicy,
+    ChannelWorkerError, ControlledChannelShutdownError, ControlledChannelShutdownPolicy,
+    ProductionChannelTask,
 };
 use crate::discovery::DiscoveryInventory;
 use crate::host_health::{
@@ -151,6 +152,15 @@ pub fn plan_linux_host_startup<P, C>(
 }
 
 pub type ProductionHostChannelTask<P, C> = ProductionChannelTask<P, C, TimeObservationQueueSender>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostChannelRuntimePolicies {
+    pub activation: RecordingActivationPolicy,
+    pub assembly: RecordingAssemblyPolicy,
+    pub shutdown: ControlledChannelShutdownPolicy,
+    pub operations: ChannelOperationsPolicy,
+    pub maintenance: ChannelMaintenancePolicy,
+}
 
 /// Owns the complete running host after startup has crossed the side-effect
 /// boundary. The coordinator never handles samples; it supervises independent
@@ -385,10 +395,7 @@ pub struct HostCoordinatorShutdown<E, S> {
 pub fn start_host_runtime<P, C>(
     blueprint: HostStartupBlueprint<P, C>,
     capture: &CaptureInstallationProfile,
-    activation_policy: RecordingActivationPolicy,
-    assembly_policy: RecordingAssemblyPolicy,
-    shutdown_policy: ControlledChannelShutdownPolicy,
-    operations_policy: ChannelOperationsPolicy,
+    policies: HostChannelRuntimePolicies,
     work_id_seed: u64,
 ) -> Result<HostCoordinatorRuntime<ProductionHostChannelTask<P, C>>, HostRuntimeStartError>
 where
@@ -398,12 +405,18 @@ where
     if work_id_seed == 0 {
         return Err(HostRuntimeStartError::ZeroWorkIdSeed);
     }
-    shutdown_policy
+    policies
+        .shutdown
         .validate()
         .map_err(HostRuntimeStartError::ShutdownPolicy)?;
-    operations_policy
+    policies
+        .operations
         .validate()
         .map_err(HostRuntimeStartError::OperationsPolicy)?;
+    policies
+        .maintenance
+        .validate()
+        .map_err(HostRuntimeStartError::MaintenancePolicy)?;
 
     let (inventory, channels, time_config) = blueprint.into_parts();
     let time = time_config.start().map_err(HostRuntimeStartError::Time)?;
@@ -440,8 +453,8 @@ where
             bootstrapped,
             &startup,
             capture,
-            activation_policy,
-            assembly_policy,
+            policies.activation,
+            policies.assembly,
             channel_seed,
             time_observations,
         ) {
@@ -464,10 +477,16 @@ where
             }
         };
         let (operations, operations_handle) =
-            ChannelOperationsController::new(channel_id, operations_policy)
+            ChannelOperationsController::new(channel_id, policies.operations)
                 .expect("operations policy was validated before channel composition");
-        let task = ProductionChannelTask::new(recording, &startup, shutdown_policy, operations)
-            .expect("shutdown policy was validated before channel composition");
+        let task = ProductionChannelTask::new(
+            recording,
+            &startup,
+            policies.shutdown,
+            operations,
+            policies.maintenance,
+        )
+        .expect("channel task policies were validated before channel composition");
         prepared.push((channel_id, channel_name, task, operations_handle));
     }
 
@@ -612,6 +631,7 @@ pub enum HostRuntimeStartError {
     ZeroWorkIdSeed,
     ShutdownPolicy(ControlledChannelShutdownError),
     OperationsPolicy(OperationsError),
+    MaintenancePolicy(ChannelMaintenanceError),
     Time(TimeRuntimeError),
     TimeSubmitter {
         channel_id: u8,
@@ -957,27 +977,43 @@ mod tests {
         let mut runtime = start_host_runtime(
             blueprint,
             &capture,
-            RecordingActivationPolicy {
-                node_deadline: Duration::from_secs(1),
-            },
-            RecordingAssemblyPolicy {
-                scheduler: ChannelSchedulerPolicy {
-                    overflow_guard: duration(100_000),
-                    max_slot: duration(50_000),
-                },
-                first_time_sync_delay: duration(1_000_000),
-                time_sync_phase_step: duration(100_000),
-            },
-            ControlledChannelShutdownPolicy {
-                barrier_deadline: Duration::from_secs(1),
-                node: RecordingShutdownPolicy {
+            HostChannelRuntimePolicies {
+                activation: RecordingActivationPolicy {
                     node_deadline: Duration::from_secs(1),
                 },
-                drain_deadline: Duration::from_secs(1),
-            },
-            ChannelOperationsPolicy {
-                mailbox_capacity: 4,
-                ledger_capacity: 16,
+                assembly: RecordingAssemblyPolicy {
+                    scheduler: ChannelSchedulerPolicy {
+                        overflow_guard: duration(100_000),
+                        max_slot: duration(50_000),
+                    },
+                    first_time_sync_delay: duration(1_000_000),
+                    time_sync_phase_step: duration(100_000),
+                },
+                shutdown: ControlledChannelShutdownPolicy {
+                    barrier_deadline: Duration::from_secs(1),
+                    node: RecordingShutdownPolicy {
+                        node_deadline: Duration::from_secs(1),
+                    },
+                    drain_deadline: Duration::from_secs(1),
+                },
+                operations: ChannelOperationsPolicy {
+                    mailbox_capacity: 4,
+                    ledger_capacity: 16,
+                },
+                maintenance: ChannelMaintenancePolicy {
+                    barrier_deadline: Duration::from_secs(1),
+                    drain_deadline: Duration::from_secs(1),
+                    safe_state: crate::safe_state::SafeStatePolicy {
+                        orderly_attempts: 2,
+                        restart_attempts: 2,
+                        restart_cycles: 1,
+                    },
+                    wire: crate::safe_state::SafeStateWirePolicy {
+                        action_deadline: duration(100_000),
+                        restart_settle_delay: duration(10_000),
+                        restart_confirmation_deadline: duration(500_000),
+                    },
+                },
             },
             1_000,
         )
@@ -1023,6 +1059,31 @@ mod tests {
             OperationPhase::Succeeded
         );
         assert_eq!(operation_snapshot.records[0].error, None);
+        if channel_count == 1 {
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(43).unwrap(),
+                    target: OperationTarget::Channel { channel_id: 1 },
+                    kind: OperationKind::EnterMaintenance,
+                })
+                .unwrap();
+            let maintenance_deadline = Instant::now() + Duration::from_secs(2);
+            while first_operations.snapshot().unwrap().mode
+                != crate::operations::ChannelOperatingMode::Maintenance
+                && Instant::now() < maintenance_deadline
+            {
+                std::thread::yield_now();
+            }
+            let maintenance = first_operations.snapshot().unwrap();
+            assert_eq!(
+                maintenance.mode,
+                crate::operations::ChannelOperatingMode::Maintenance,
+                "operation={maintenance:?} worker={:?}",
+                runtime.channels()[0].snapshot()
+            );
+            assert_eq!(maintenance.records[1].phase, OperationPhase::Succeeded);
+            assert_eq!(maintenance.records[1].error, None);
+        }
         let supervision = runtime.supervise_once().unwrap();
         assert_eq!(supervision.action, HostSupervisionAction::Continue);
         assert_eq!(

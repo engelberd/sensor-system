@@ -11,15 +11,19 @@ use crate::channel_admission::AdmissionPolicy;
 use crate::channel_agent::ChannelPolicy;
 use crate::channel_scheduler::ChannelSchedulerPolicy;
 use crate::channel_startup::{ChannelStartupError, ChannelStartupPolicy, RecordingAssemblyPolicy};
-use crate::channel_worker::{ControlledChannelShutdownError, ControlledChannelShutdownPolicy};
+use crate::channel_worker::{
+    ChannelMaintenanceError, ChannelMaintenancePolicy, ControlledChannelShutdownError,
+    ControlledChannelShutdownPolicy,
+};
 use crate::installation_bootstrap::{
     SerialChannelBootstrapError, SerialInstallationBootstrapPolicy,
 };
 use crate::operations::ChannelOperationsPolicy;
+use crate::safe_state::{SafeStatePolicy, SafeStateWirePolicy};
 use crate::time_profile::TimeSyncInstallationPolicy;
 use crate::transaction::DurationMicros;
 
-const RUNTIME_V2_KEYS: [&str; 30] = [
+const RUNTIME_V2_KEYS: [&str; 38] = [
     "supervision_interval_ms",
     "metrics_interval_ms",
     "transaction_timeout_ms",
@@ -50,6 +54,14 @@ const RUNTIME_V2_KEYS: [&str; 30] = [
     "shutdown_drain_deadline_ms",
     "operations_mailbox_capacity",
     "operations_ledger_capacity",
+    "maintenance_barrier_deadline_ms",
+    "maintenance_drain_deadline_ms",
+    "safe_orderly_attempts",
+    "safe_restart_attempts",
+    "safe_restart_cycles",
+    "safe_action_deadline_ms",
+    "safe_restart_settle_ms",
+    "safe_restart_confirmation_ms",
 ];
 
 /// Tunable process policy for host v2.
@@ -67,6 +79,7 @@ pub struct HostRuntimeInstallationProfile {
     recording_assembly: RecordingAssemblyPolicy,
     controlled_shutdown: ControlledChannelShutdownPolicy,
     operations: ChannelOperationsPolicy,
+    maintenance: ChannelMaintenancePolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -172,6 +185,27 @@ impl HostRuntimeInstallationProfile {
             .validate()
             .map_err(RuntimeProfileError::Operations)?;
 
+        let maintenance = ChannelMaintenancePolicy {
+            barrier_deadline: duration_from_ms(runtime, "maintenance_barrier_deadline_ms")?,
+            drain_deadline: duration_from_ms(runtime, "maintenance_drain_deadline_ms")?,
+            safe_state: SafeStatePolicy {
+                orderly_attempts: u8_field(runtime, "safe_orderly_attempts")?,
+                restart_attempts: u8_field(runtime, "safe_restart_attempts")?,
+                restart_cycles: u8_field(runtime, "safe_restart_cycles")?,
+            },
+            wire: SafeStateWirePolicy {
+                action_deadline: duration_micros_from_ms(runtime, "safe_action_deadline_ms")?,
+                restart_settle_delay: duration_micros_from_ms(runtime, "safe_restart_settle_ms")?,
+                restart_confirmation_deadline: duration_micros_from_ms(
+                    runtime,
+                    "safe_restart_confirmation_ms",
+                )?,
+            },
+        };
+        maintenance
+            .validate()
+            .map_err(RuntimeProfileError::Maintenance)?;
+
         Ok(Self {
             supervision_interval: duration_from_ms(runtime, "supervision_interval_ms")?,
             metrics_interval: duration_from_ms(runtime, "metrics_interval_ms")?,
@@ -181,6 +215,7 @@ impl HostRuntimeInstallationProfile {
             recording_assembly,
             controlled_shutdown,
             operations,
+            maintenance,
         })
     }
 
@@ -230,6 +265,10 @@ impl HostRuntimeInstallationProfile {
 
     pub const fn operations(&self) -> ChannelOperationsPolicy {
         self.operations
+    }
+
+    pub const fn maintenance(&self) -> ChannelMaintenancePolicy {
+        self.maintenance
     }
 }
 
@@ -342,6 +381,7 @@ pub enum RuntimeProfileError {
     Activation(RecordingActivationError),
     ControlledShutdown(ControlledChannelShutdownError),
     Operations(crate::operations::OperationsError),
+    Maintenance(ChannelMaintenanceError),
 }
 
 impl fmt::Display for RuntimeProfileError {
@@ -383,6 +423,8 @@ mod tests {
         );
         assert_eq!(profile.operations().mailbox_capacity, 8);
         assert_eq!(profile.operations().ledger_capacity, 64);
+        assert_eq!(profile.maintenance().safe_state.restart_cycles, 1);
+        assert_eq!(profile.maintenance().wire.action_deadline.get(), 1_000_000);
     }
 
     #[test]

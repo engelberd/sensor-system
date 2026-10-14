@@ -11,9 +11,9 @@ use crate::channel_worker::ControlledChannelShutdownReport;
 use crate::discovery::DiscoveryInventory;
 use crate::discovery::InstallationDiscoveryPlan;
 use crate::host_coordinator::{
-    plan_host_startup, start_host_runtime, HostCoordinatorError, HostCoordinatorRuntime,
-    HostCoordinatorShutdown, HostRuntimeStartError, HostSupervisionError, HostSupervisionReport,
-    ProductionHostChannelTask,
+    plan_host_startup, start_host_runtime, HostChannelRuntimePolicies, HostCoordinatorError,
+    HostCoordinatorRuntime, HostCoordinatorShutdown, HostRuntimeStartError, HostSupervisionError,
+    HostSupervisionReport, ProductionHostChannelTask,
 };
 use crate::host_health::HostHealthSnapshot;
 use crate::installation_bootstrap::{
@@ -91,10 +91,13 @@ impl LinuxHostProcess {
         let runtime = start_host_runtime(
             blueprint,
             profile.storage().capture(),
-            profile.runtime().recording_activation(),
-            profile.runtime().recording_assembly(),
-            profile.runtime().controlled_shutdown(),
-            profile.runtime().operations(),
+            HostChannelRuntimePolicies {
+                activation: profile.runtime().recording_activation(),
+                assembly: profile.runtime().recording_assembly(),
+                shutdown: profile.runtime().controlled_shutdown(),
+                operations: profile.runtime().operations(),
+                maintenance: profile.runtime().maintenance(),
+            },
             work_id_seed,
         )
         .map_err(|error| LinuxHostProcessStartError::Runtime(Box::new(error)))?;

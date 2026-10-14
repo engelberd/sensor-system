@@ -697,6 +697,11 @@ pub enum OperationsError {
     NoActiveOperation,
     StatusUnavailable,
     ExecutorUnavailable,
+    MaintenanceBarrierDeadline,
+    MaintenanceDrainDeadline,
+    MaintenanceConvergenceFailed,
+    StreamReconciliationRequired,
+    NodeOffline,
 }
 
 impl fmt::Display for OperationsError {
@@ -740,6 +745,19 @@ impl fmt::Display for OperationsError {
                 formatter.write_str("channel operation status is unavailable")
             }
             Self::ExecutorUnavailable => formatter.write_str("operation executor is not connected"),
+            Self::MaintenanceBarrierDeadline => {
+                formatter.write_str("maintenance quiesce barrier deadline expired")
+            }
+            Self::MaintenanceDrainDeadline => {
+                formatter.write_str("maintenance final drain deadline expired")
+            }
+            Self::MaintenanceConvergenceFailed => {
+                formatter.write_str("channel could not converge to maintenance")
+            }
+            Self::StreamReconciliationRequired => {
+                formatter.write_str("node restarted and stream reconciliation is required")
+            }
+            Self::NodeOffline => formatter.write_str("node is offline"),
         }
     }
 }

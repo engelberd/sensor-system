@@ -333,6 +333,11 @@ potrafi wejść w `quiescing`, a retry-safe shutdown Lifecycle doprowadza node d
 → wymuszony drain zamrożonego ogona journala aż do `NoData` → durable completion
 → zamknięcie Capture. Wynik protokołu oraz wynik shutdownu storage są zwracane
 osobno i nie mogą zostać pomylone z pozornym sukcesem.
+Ten sam `ProductionChannelTask` posiada bounded Operations inbox, ledger i
+snapshot statusu. `EnterMaintenance` wykonuje bez drugiego właściciela portu
+kolejność quiesce → Idle wszystkich node → kontrola epoki → końcowy drain →
+Maintenance. Deadline i budżety recovery pochodzą z `runtime_v2`; powrót do
+Recording przez pełny handshake/recovery pozostaje kolejną bramką.
 `HostHealthSnapshot` zachowuje izolację pojedynczej linii, ale wymaga globalnego
 Stop dla błędu integralności Time oraz potwierdzonego faultu wspólnego storage.
 `StorageHealthProbe` sprawdza read-only i `min_free_bytes` przez `statvfs` bez

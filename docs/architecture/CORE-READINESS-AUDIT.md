@@ -21,11 +21,11 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
 
 ## Blokery rdzenia
 
-1. Host ma już wewnętrzny bounded command path, idempotentny ledger w pamięci i
-   snapshoty statusu per channel. Brakuje wykonawcy kontrolowanego
-   Production → Maintenance, trwałego audytu oraz lokalnego IPC. Codeki
-   Configuration/Commissioning są podłączone do `ChannelAgent`, ale nie są
-   jeszcze osiągalne przez Operations API.
+1. Host ma wewnętrzny bounded command path, idempotentny ledger w pamięci,
+   snapshoty statusu per channel i wykonawcę kontrolowanego
+   Recording → Maintenance. Brakuje pełnego `ResumeRecording`, trwałego audytu
+   oraz lokalnego IPC. Codeki Configuration/Commissioning są podłączone do
+   `ChannelAgent`, ale nie są jeszcze osiągalne przez Operations API.
 2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
    odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
    przypisania adresu i końcowego handshake po restarcie.

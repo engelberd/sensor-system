@@ -532,11 +532,27 @@ impl SimulatedRs485Bus {
                         node.runtime_state = RuntimeState::Recording;
                         node.observability = command.requested_profile;
                     }
-                    RuntimeOperation::Stop => node.runtime_state = RuntimeState::Idle,
+                    RuntimeOperation::Stop => {
+                        if node.runtime_state != RuntimeState::Maintenance {
+                            node.runtime_state = RuntimeState::Idle;
+                        }
+                    }
+                    RuntimeOperation::EnterMaintenance => {
+                        if node.runtime_state != RuntimeState::Idle {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "simulation requires Idle before Maintenance",
+                            ));
+                        }
+                        node.runtime_state = RuntimeState::Maintenance;
+                    }
+                    RuntimeOperation::ExitMaintenance => {
+                        node.runtime_state = RuntimeState::Idle;
+                    }
                     _ => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "simulation supports GetState, Start and Stop only",
+                            "simulation does not support this lifecycle operation",
                         ));
                     }
                 }

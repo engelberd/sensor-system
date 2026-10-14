@@ -704,6 +704,18 @@ impl ChannelWorkCoordinator {
         Ok(())
     }
 
+    /// Cancels only the not-yet-dispatched tail of a service drain. Work
+    /// already owned by wire or storage is still settled under quiescing.
+    /// This is used when an explicit maintenance deadline expires; it never
+    /// invents a durable cursor or releases node retention.
+    pub fn abort_shutdown_drain(&mut self) -> Result<(), MeasurementCoordinatorError> {
+        if self.shutdown_drain_nodes.take().is_none() {
+            return Err(MeasurementCoordinatorError::ShutdownDrainNotActive);
+        }
+        self.quiescing = true;
+        Ok(())
+    }
+
     /// Re-enables normal scheduling after a completed service interval. The
     /// caller must first restore every node/session contract and leave no
     /// post-Stop drain active. This method changes only scheduler admission;
@@ -874,6 +886,7 @@ pub enum MeasurementCoordinatorError {
     Transfer(MeasurementTransferError),
     TimeRecord(TimeObservationRecordError),
     ShutdownDrainNotReady,
+    ShutdownDrainNotActive,
     ShutdownDrainIncomplete,
     ShutdownDrainOrder,
     ResumeNotReady,
@@ -1241,6 +1254,26 @@ mod tests {
         assert!(coordinator.is_quiescent());
         coordinator.resume_scheduling().unwrap();
         assert!(!coordinator.is_quiescing());
+    }
+
+    #[test]
+    fn aborted_service_drain_drops_only_undispatched_probes_and_returns_to_quiesce() {
+        let mut coordinator = coordinator();
+        let mut agent = agent();
+        coordinator.begin_quiesce();
+        assert!(coordinator.is_quiescent());
+        coordinator.begin_shutdown_drain().unwrap();
+        assert!(coordinator.is_shutdown_draining());
+        coordinator.abort_shutdown_drain().unwrap();
+        assert!(coordinator.is_quiescent());
+        assert!(coordinator
+            .dispatch_next_work(&mut agent, MonotonicMicros::new(1))
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            coordinator.abort_shutdown_drain(),
+            Err(MeasurementCoordinatorError::ShutdownDrainNotActive)
+        ));
     }
 
     #[test]
