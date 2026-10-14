@@ -14,7 +14,7 @@ RS485 poza jawnymi poleceniami `discover`, `doctor --deep`, `node` i `update`.
 | Build i profil | `build`, `validate`, `paths [--init]` |
 | Recorder | `discover`, `run` |
 | Diagnostyka | `doctor [--offline\|--deep\|--json]` |
-| Operations IPC | `channel status\|maintenance\|resume --channel ID` |
+| Operations IPC | `channel status\|maintenance\|resume --channel ID`; `channel get-configuration\|validate-configuration --channel ID --node ID` |
 | Dane | `capture validate`, `capture export` |
 | Node protocol 5 | `node identify\|handshake\|diagnostics\|time-probe\|safe-stop\|restart\|prepare-update\|confirm-trial` |
 | Firmware | `update` |
@@ -26,10 +26,26 @@ jako kotwica ścieżek, `/run/sensor-system/host-v2-status.json` oraz
 `SENSOR_HOST_CONFIG`, `SENSOR_HOST_STATUS_FILE` i
 `SENSOR_HOST_OPERATIONS_SOCKET` albo jawnymi opcjami binariów.
 
-`channel maintenance` i `channel resume` wysyłają typowane żądanie do
+`channel maintenance`, `channel resume`, `channel get-configuration` i
+`channel validate-configuration` wysyłają typowane żądanie do
 działającego procesu i czekają na wynik terminalny workera. Opcjonalny
 `--operation-id` służy do ponowienia dokładnie tej samej operacji. CLI nie
 otwiera portu RS485.
+
+Odczyt i walidacja konfiguracji wymagają Maintenance. Walidacja przyjmuje
+pełną propozycję, bez ukrytego dziedziczenia pól:
+
+```bash
+./hostctl channel get-configuration --channel 1 --node 1
+./hostctl channel validate-configuration --channel 1 --node 1 \
+  --output-rate 125 --range 2 --high-pass-corner 0 \
+  --filter-profile balanced --fifo-watermark 30
+```
+
+Offsety `--offset-x`, `--offset-y` i `--offset-z` są opcjonalne i domyślnie
+wynoszą zero. Mutujące `ApplyConfiguration` i `ResetConfiguration` pozostają
+zamknięte w lokalnym IPC, dopóki ich wynik nie aktualizuje planu startowego i
+nie uruchamia ponownego admission control przed Resume.
 
 ## Aktualizacja node
 
@@ -70,7 +86,7 @@ Brakujące funkcje mają otrzymać nowe odpowiedzialności zamiast aliasów do
 legacy. Codeki i runtime Configuration/Commissioning są już gotowe, lecz nie są
 jeszcze publicznymi poleceniami `hostctl` bez Operations API:
 
-- pozostałe Operations API per node: konfiguracja, commissioning i update;
+- mutująca konfiguracja z ponownym admission control, commissioning i update;
 - dashboard czytający Runtime Status v1;
 - godzinny compactor Capture → Archive i publisher;
 - natywny uploader bootloadera, po ustabilizowaniu kontraktu A/B.

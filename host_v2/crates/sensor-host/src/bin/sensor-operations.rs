@@ -14,11 +14,21 @@ fn main() -> ExitCode {
         Ok(Command::Submit {
             socket,
             channel,
+            node,
             operation,
+            configuration,
             operation_id,
             timeout,
-        }) => run_operation(&socket, channel, operation, operation_id, timeout)
-            .unwrap_or_else(report_error),
+        }) => run_operation(
+            &socket,
+            channel,
+            node,
+            operation,
+            configuration,
+            operation_id,
+            timeout,
+        )
+        .unwrap_or_else(report_error),
         Ok(Command::Help) => {
             print_usage();
             ExitCode::SUCCESS
@@ -51,18 +61,29 @@ fn run_status(socket: &Path, channel: u8) -> Result<ExitCode, String> {
 fn run_operation(
     socket: &Path,
     channel: u8,
+    node: Option<u8>,
     operation: &'static str,
+    configuration: Option<Value>,
     operation_id: u64,
     timeout: Duration,
 ) -> Result<ExitCode, String> {
     eprintln!("operation_id={operation_id}");
-    let submit = json!({
+    let mut submit = json!({
         "schema_version": OPERATIONS_IPC_SCHEMA_VERSION,
         "action": "submit",
         "channel_id": channel,
         "operation_id": operation_id,
         "operation": operation
     });
+    let object = submit
+        .as_object_mut()
+        .expect("operations request is a JSON object");
+    if let Some(node) = node {
+        object.insert("node_address".to_owned(), json!(node));
+    }
+    if let Some(configuration) = configuration {
+        object.insert("configuration".to_owned(), configuration);
+    }
     let mut submit_error = None;
     let mut submitted = None;
     for _ in 0..3 {
@@ -169,7 +190,9 @@ enum Command {
     Submit {
         socket: PathBuf,
         channel: u8,
+        node: Option<u8>,
         operation: &'static str,
+        configuration: Option<Value>,
         operation_id: u64,
         timeout: Duration,
     },
@@ -183,20 +206,35 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
     {
         return Ok(Command::Help);
     }
-    let action = arguments
-        .first()
-        .and_then(|value| value.to_str())
-        .ok_or("expected status, maintenance or resume")?;
-    let operation = match action {
-        "status" => None,
-        "maintenance" => Some("enter_maintenance"),
-        "resume" => Some("resume_recording"),
-        _ => return Err("expected status, maintenance or resume"),
-    };
+    let action = arguments.first().and_then(|value| value.to_str()).ok_or(
+        "expected status, maintenance, resume, get-configuration or validate-configuration",
+    )?;
+    let operation =
+        match action {
+            "status" => None,
+            "maintenance" => Some("enter_maintenance"),
+            "resume" => Some("resume_recording"),
+            "get-configuration" => Some("get_configuration"),
+            "validate-configuration" => Some("validate_configuration"),
+            _ => return Err(
+                "expected status, maintenance, resume, get-configuration or validate-configuration",
+            ),
+        };
+    let needs_node = matches!(action, "get-configuration" | "validate-configuration");
+    let needs_configuration = action == "validate-configuration";
     let mut socket = None;
     let mut channel = None;
+    let mut node = None;
     let mut operation_id = None;
     let mut timeout_ms = 120_000_u64;
+    let mut output_rate = None;
+    let mut range_g = None;
+    let mut high_pass_corner = None;
+    let mut filter_profile = None;
+    let mut fifo_watermark = None;
+    let mut offset_x = None;
+    let mut offset_y = None;
+    let mut offset_z = None;
     let mut index = 1;
     while index < arguments.len() {
         let flag = arguments[index].to_str().ok_or("option must be UTF-8")?;
@@ -206,11 +244,38 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
             "--channel" if channel.is_none() => {
                 channel = Some(parse_u8(value, "invalid channel ID")?)
             }
+            "--node" if node.is_none() && needs_node => {
+                node = Some(parse_u8(value, "invalid node address")?)
+            }
             "--operation-id" if operation_id.is_none() && operation.is_some() => {
                 operation_id = Some(parse_u64(value, "invalid operation ID")?)
             }
             "--timeout-ms" if operation.is_some() => {
                 timeout_ms = parse_u64(value, "invalid timeout")?
+            }
+            "--output-rate" if output_rate.is_none() && needs_configuration => {
+                output_rate = Some(parse_output_rate(value)?)
+            }
+            "--range" if range_g.is_none() && needs_configuration => {
+                range_g = Some(parse_u8(value, "invalid range")?)
+            }
+            "--high-pass-corner" if high_pass_corner.is_none() && needs_configuration => {
+                high_pass_corner = Some(parse_u8(value, "invalid high-pass corner")?)
+            }
+            "--filter-profile" if filter_profile.is_none() && needs_configuration => {
+                filter_profile = Some(parse_filter_profile(value)?)
+            }
+            "--fifo-watermark" if fifo_watermark.is_none() && needs_configuration => {
+                fifo_watermark = Some(parse_u8(value, "invalid FIFO watermark")?)
+            }
+            "--offset-x" if offset_x.is_none() && needs_configuration => {
+                offset_x = Some(parse_i16(value, "invalid X offset")?)
+            }
+            "--offset-y" if offset_y.is_none() && needs_configuration => {
+                offset_y = Some(parse_i16(value, "invalid Y offset")?)
+            }
+            "--offset-z" if offset_z.is_none() && needs_configuration => {
+                offset_z = Some(parse_i16(value, "invalid Z offset")?)
             }
             _ => return Err("unknown or repeated option"),
         }
@@ -221,6 +286,9 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
     if channel == 0 || channel > 16 {
         return Err("channel ID must be in 1..16");
     }
+    if needs_node && !matches!(node, Some(1..=253)) {
+        return Err("node address must be in 1..253");
+    }
     match operation {
         None => Ok(Command::Status { socket, channel }),
         Some(operation) => {
@@ -230,7 +298,25 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
             Ok(Command::Submit {
                 socket,
                 channel,
+                node,
                 operation,
+                configuration: if needs_configuration {
+                    Some(json!({
+                        "output_rate_code": output_rate.ok_or("--output-rate is required")?,
+                        "range_g": range_g.ok_or("--range is required")?,
+                        "high_pass_corner": high_pass_corner
+                            .ok_or("--high-pass-corner is required")?,
+                        "filter_profile": filter_profile
+                            .ok_or("--filter-profile is required")?,
+                        "fifo_watermark": fifo_watermark
+                            .ok_or("--fifo-watermark is required")?,
+                        "offset_x": offset_x.unwrap_or(0),
+                        "offset_y": offset_y.unwrap_or(0),
+                        "offset_z": offset_z.unwrap_or(0)
+                    }))
+                } else {
+                    None
+                },
                 operation_id: operation_id.unwrap_or_else(fresh_operation_id),
                 timeout: Duration::from_millis(timeout_ms),
             })
@@ -253,6 +339,39 @@ fn parse_u64(value: &OsString, error: &'static str) -> Result<u64, &'static str>
         .ok_or(error)
 }
 
+fn parse_i16(value: &OsString, error: &'static str) -> Result<i16, &'static str> {
+    value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or(error)
+}
+
+fn parse_output_rate(value: &OsString) -> Result<u8, &'static str> {
+    match value.to_str() {
+        Some("4000") => Ok(0),
+        Some("2000") => Ok(1),
+        Some("1000") => Ok(2),
+        Some("500") => Ok(3),
+        Some("250") => Ok(4),
+        Some("125") => Ok(5),
+        Some("62.5") => Ok(6),
+        Some("31.25") => Ok(7),
+        Some("15.625") => Ok(8),
+        Some("7.8125") => Ok(9),
+        Some("3.90625") => Ok(10),
+        _ => Err("unsupported output rate"),
+    }
+}
+
+fn parse_filter_profile(value: &OsString) -> Result<u8, &'static str> {
+    match value.to_str() {
+        Some("light") => Ok(0),
+        Some("balanced") => Ok(1),
+        Some("aggressive") => Ok(2),
+        _ => Err("filter profile must be light, balanced or aggressive"),
+    }
+}
+
 fn fresh_operation_id() -> u64 {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -264,7 +383,7 @@ fn fresh_operation_id() -> u64 {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  sensor-operations status --channel ID --socket PATH\n  sensor-operations maintenance --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations resume --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]"
+        "usage:\n  sensor-operations status --channel ID --socket PATH\n  sensor-operations maintenance --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations resume --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations get-configuration --channel ID --node ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations validate-configuration --channel ID --node ID --socket PATH --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]"
     );
 }
 
@@ -306,7 +425,9 @@ mod tests {
             Ok(Command::Submit {
                 socket: PathBuf::from("/run/op.sock"),
                 channel: 2,
+                node: None,
                 operation: "enter_maintenance",
+                configuration: None,
                 operation_id: 99,
                 timeout: Duration::from_millis(5000)
             })
@@ -327,5 +448,68 @@ mod tests {
         ]))
         .is_err());
         assert!(parse_arguments(strings(&["maintenance", "--channel", "1"])).is_err());
+    }
+
+    #[test]
+    fn parses_node_configuration_commands_without_hidden_defaults() {
+        assert_eq!(
+            parse_arguments(strings(&[
+                "get-configuration",
+                "--channel",
+                "1",
+                "--node",
+                "7",
+                "--socket",
+                "/run/op.sock",
+                "--operation-id",
+                "101"
+            ])),
+            Ok(Command::Submit {
+                socket: PathBuf::from("/run/op.sock"),
+                channel: 1,
+                node: Some(7),
+                operation: "get_configuration",
+                configuration: None,
+                operation_id: 101,
+                timeout: Duration::from_millis(120_000),
+            })
+        );
+
+        let parsed = parse_arguments(strings(&[
+            "validate-configuration",
+            "--channel",
+            "1",
+            "--node",
+            "7",
+            "--socket",
+            "/run/op.sock",
+            "--output-rate",
+            "62.5",
+            "--range",
+            "2",
+            "--high-pass-corner",
+            "0",
+            "--filter-profile",
+            "balanced",
+            "--fifo-watermark",
+            "30",
+            "--offset-x",
+            "-4",
+            "--operation-id",
+            "102",
+        ]))
+        .unwrap();
+        let Command::Submit {
+            node,
+            operation,
+            configuration,
+            ..
+        } = parsed
+        else {
+            panic!("expected submit command");
+        };
+        assert_eq!(node, Some(7));
+        assert_eq!(operation, "validate_configuration");
+        assert_eq!(configuration.unwrap()["output_rate_code"], 6);
     }
 }

@@ -1066,6 +1066,11 @@ Przejście od tego baseline do automatycznej pracy na Raspberry Pi, natywnego
 [HOST-V2-USER-ADOPTION-ROADMAP.md](HOST-V2-USER-ADOPTION-ROADMAP.md). Jego Etap 1,
 wersjonowany snapshot statusu, jest gotowy. Rollover Capture + Time po restarcie
 node przechodzi pełną symulację, a podstawowy pion Operations IPC jest gotowy.
-Bieżącą bramką są operacje Configuration/Commissioning i RestartNode per node
-przez ten sam control plane. Dashboard pozostaje poza MVP do czasu
-ustabilizowania API.
+Pierwszy pion Configuration per node jest podłączony przez ten sam control
+plane: `GetConfiguration` i `ValidateConfiguration` przechodzą od `hostctl`,
+przez ograniczone IPC i worker-owned ledger, do jedynego `ChannelAgent` i
+wracają jako typowane wyniki. Wykonawca ma deadline oraz bezpieczne porzucenie
+dopiero po rozliczeniu wire/quarantine. Mutujące Apply/Reset są celowo zamknięte
+do czasu ponownego obliczania admission control z nowego ODR. Bieżącą bramką
+jest właśnie ta aktualizacja zatwierdzonego planu, a następnie Commissioning i
+RestartNode per node. Dashboard pozostaje poza MVP do czasu ustabilizowania API.

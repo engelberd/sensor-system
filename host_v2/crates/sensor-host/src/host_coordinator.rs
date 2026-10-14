@@ -797,7 +797,8 @@ mod tests {
     };
     use crate::installation_topology::InstallationTopologyProfile;
     use crate::operations::{
-        OperationId, OperationKind, OperationPhase, OperationRequest, OperationTarget,
+        OperationId, OperationKind, OperationPhase, OperationRequest, OperationResult,
+        OperationTarget,
     };
     use crate::persistence_executor::GroupCommitPolicy;
     use crate::simulation::{SimulatedClock, SimulatedRs485Bus, SimulatedWireNode};
@@ -851,6 +852,7 @@ mod tests {
             service_flags: ServiceId::Identity.capability_bit()
                 | ServiceId::Measurement.capability_bit()
                 | ServiceId::Lifecycle.capability_bit()
+                | ServiceId::Configuration.capability_bit()
                 | ServiceId::Time.capability_bit(),
             feature_flags: REQUIRED_RECORDING_FEATURES,
             max_payload_bytes: MAX_PAYLOAD_BYTES as u16,
@@ -1044,6 +1046,7 @@ mod tests {
                 maintenance: ChannelMaintenancePolicy {
                     barrier_deadline: Duration::from_secs(1),
                     drain_deadline: Duration::from_secs(1),
+                    service_operation_deadline: Duration::from_secs(1),
                     safe_state: crate::safe_state::SafeStatePolicy {
                         orderly_attempts: 2,
                         restart_attempts: 2,
@@ -1134,6 +1137,71 @@ mod tests {
             first_operations
                 .try_submit(OperationRequest {
                     operation_id: OperationId::new(44).unwrap(),
+                    target: OperationTarget::Node {
+                        channel_id: 1,
+                        node_address: 1,
+                    },
+                    kind: OperationKind::GetConfiguration,
+                })
+                .unwrap();
+            let configuration_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.records.len() < 3
+                    || snapshot.records[2].phase != OperationPhase::Succeeded)
+                    && Instant::now() < configuration_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let observed = first_operations.snapshot().unwrap();
+            assert!(matches!(
+                observed.records[2].result,
+                Some(OperationResult::ConfigurationObserved(value))
+                    if value.revision == 1
+                        && value.desired.output_rate == OutputRateCode::Hz125
+            ));
+
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(45).unwrap(),
+                    target: OperationTarget::Node {
+                        channel_id: 1,
+                        node_address: 1,
+                    },
+                    kind: OperationKind::ValidateConfiguration {
+                        configuration: sensor_protocol::MeasurementConfiguration {
+                            output_rate: OutputRateCode::Hz125,
+                            range_g: 2,
+                            high_pass_corner: 0,
+                            filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+                            fifo_watermark: 30,
+                            offset_x: 0,
+                            offset_y: 0,
+                            offset_z: 0,
+                        },
+                    },
+                })
+                .unwrap();
+            let validation_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.records.len() < 4
+                    || snapshot.records[3].phase != OperationPhase::Succeeded)
+                    && Instant::now() < validation_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let validated = first_operations.snapshot().unwrap();
+            assert!(matches!(
+                validated.records[3].result,
+                Some(OperationResult::ConfigurationValidated(value))
+                    if value.code == sensor_protocol::ConfigValidationCode::Valid
+                        && value.field == sensor_protocol::ConfigField::None
+            ));
+
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(46).unwrap(),
                     target: OperationTarget::Channel { channel_id: 1 },
                     kind: OperationKind::ResumeRecording,
                 })
@@ -1142,8 +1210,8 @@ mod tests {
             while {
                 let snapshot = first_operations.snapshot().unwrap();
                 (snapshot.mode != crate::operations::ChannelOperatingMode::Recording
-                    || snapshot.records.len() < 3
-                    || snapshot.records[2].phase != OperationPhase::Succeeded)
+                    || snapshot.records.len() < 5
+                    || snapshot.records[4].phase != OperationPhase::Succeeded)
                     && Instant::now() < resume_deadline
             } {
                 let _ = runtime.supervise_once();
@@ -1156,8 +1224,8 @@ mod tests {
                 "operation={resumed:?} worker={:?}",
                 runtime.channels()[0].snapshot()
             );
-            assert_eq!(resumed.records[2].phase, OperationPhase::Succeeded);
-            assert_eq!(resumed.records[2].error, None);
+            assert_eq!(resumed.records[4].phase, OperationPhase::Succeeded);
+            assert_eq!(resumed.records[4].error, None);
             assert!(runtime
                 .time_health()
                 .streams()

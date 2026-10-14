@@ -4,7 +4,9 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 
 use sensor_core::HardwareId;
-use sensor_protocol::MeasurementConfiguration;
+use sensor_protocol::{
+    ConfigOperationResult, ConfigValidationResult, MeasurementConfiguration, ObservedConfiguration,
+};
 
 use crate::installation_topology::MAX_HOST_CHANNELS;
 
@@ -249,7 +251,15 @@ impl OperationPhase {
 pub struct OperationRecord {
     pub request: OperationRequest,
     pub phase: OperationPhase,
+    pub result: Option<OperationResult>,
     pub error: Option<OperationsError>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationResult {
+    ConfigurationObserved(ObservedConfiguration),
+    ConfigurationValidated(ConfigValidationResult),
+    ConfigurationApplied(ConfigOperationResult),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -305,6 +315,7 @@ impl OperationLedger {
         self.records.push_back(OperationRecord {
             request,
             phase: OperationPhase::Accepted,
+            result: None,
             error: None,
         });
         Ok(RegisterOutcome::Accepted)
@@ -346,6 +357,23 @@ impl OperationLedger {
             .find(|record| record.request.operation_id == operation_id)
             .ok_or(OperationsError::UnknownOperation(operation_id))?;
         record.error = Some(error);
+        Ok(())
+    }
+
+    pub fn set_result(
+        &mut self,
+        operation_id: OperationId,
+        result: OperationResult,
+    ) -> Result<(), OperationsError> {
+        let record = self
+            .records
+            .iter_mut()
+            .find(|record| record.request.operation_id == operation_id)
+            .ok_or(OperationsError::UnknownOperation(operation_id))?;
+        if record.phase != OperationPhase::Running {
+            return Err(OperationsError::InvalidResultPhase(record.phase));
+        }
+        record.result = Some(result);
         Ok(())
     }
 
@@ -632,6 +660,21 @@ impl ChannelOperationsController {
         Ok(operation_id)
     }
 
+    pub fn complete_active(
+        &mut self,
+        result: OperationResult,
+    ) -> Result<OperationId, OperationsError> {
+        let operation_id = self
+            .active_operation
+            .take()
+            .ok_or(OperationsError::NoActiveOperation)?;
+        self.ledger.set_result(operation_id, result)?;
+        self.ledger
+            .set_phase(operation_id, OperationPhase::Succeeded)?;
+        self.publish()?;
+        Ok(operation_id)
+    }
+
     pub fn fail_active(&mut self, error: OperationsError) -> Result<OperationId, OperationsError> {
         let operation_id = self
             .active_operation
@@ -688,6 +731,7 @@ pub enum OperationsError {
         to: OperationPhase,
     },
     InvalidErrorPhase(OperationPhase),
+    InvalidResultPhase(OperationPhase),
     CommandPathDisconnected,
     WrongChannel {
         expected: u8,
@@ -697,6 +741,9 @@ pub enum OperationsError {
     NoActiveOperation,
     StatusUnavailable,
     ExecutorUnavailable,
+    NodeNotConfigured,
+    ConfigurationDeadline,
+    ConfigurationFailed,
     MaintenanceBarrierDeadline,
     MaintenanceDrainDeadline,
     MaintenanceConvergenceFailed,
@@ -733,6 +780,12 @@ impl fmt::Display for OperationsError {
             Self::InvalidErrorPhase(phase) => {
                 write!(formatter, "operation error cannot be attached to {phase:?}")
             }
+            Self::InvalidResultPhase(phase) => {
+                write!(
+                    formatter,
+                    "operation result cannot be attached to {phase:?}"
+                )
+            }
             Self::CommandPathDisconnected => {
                 formatter.write_str("channel command path disconnected")
             }
@@ -748,6 +801,13 @@ impl fmt::Display for OperationsError {
                 formatter.write_str("channel operation status is unavailable")
             }
             Self::ExecutorUnavailable => formatter.write_str("operation executor is not connected"),
+            Self::NodeNotConfigured => {
+                formatter.write_str("operation target is not configured on this channel")
+            }
+            Self::ConfigurationDeadline => {
+                formatter.write_str("configuration operation deadline expired")
+            }
+            Self::ConfigurationFailed => formatter.write_str("configuration operation failed"),
             Self::MaintenanceBarrierDeadline => {
                 formatter.write_str("maintenance quiesce barrier deadline expired")
             }
@@ -978,6 +1038,42 @@ mod tests {
         assert_eq!(complete.mode, ChannelOperatingMode::EnteringMaintenance);
         assert_eq!(complete.active_operation, None);
         assert_eq!(complete.records[0].phase, OperationPhase::Succeeded);
+    }
+
+    #[test]
+    fn controller_publishes_typed_configuration_result() {
+        let (mut controller, handle) = ChannelOperationsController::new(
+            2,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 1,
+                ledger_capacity: 2,
+            },
+        )
+        .unwrap();
+        controller
+            .set_mode(ChannelOperatingMode::Maintenance)
+            .unwrap();
+        let request = get_configuration(15);
+        handle.try_submit(request.clone()).unwrap();
+        assert_eq!(
+            controller.poll_command().unwrap(),
+            ChannelCommandDecision::Started(request)
+        );
+        let observed = ObservedConfiguration {
+            revision: 3,
+            desired: configuration(),
+            sensor_odr: sensor_protocol::Adxl355Odr::Hz250,
+            decimation_factor: 1,
+        };
+        controller
+            .complete_active(OperationResult::ConfigurationObserved(observed))
+            .unwrap();
+        let snapshot = handle.snapshot().unwrap();
+        assert_eq!(snapshot.records[0].phase, OperationPhase::Succeeded);
+        assert_eq!(
+            snapshot.records[0].result,
+            Some(OperationResult::ConfigurationObserved(observed))
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::channel_activation::{
     activate_recording_nodes, stop_recording_nodes, RecordingActivationError,
     RecordingActivationPolicy, RecordingShutdownError, RecordingShutdownPolicy,
 };
+use crate::channel_agent::{ChannelAgentError, ChannelEvent, ControlWorkKey};
 use crate::channel_bootstrap::{BootstrappedChannel, NodeBootstrapEvidence};
 use crate::channel_endpoint::{ChannelEndpointEvent, MonotonicClock};
 use crate::channel_metrics::{ChannelMetricsPublisher, ChannelMetricsReader};
@@ -38,7 +39,7 @@ use crate::measurement_coordinator::MeasurementCoordinatorError;
 use crate::node_metrics::NodeMetricsReader;
 use crate::operations::{
     ChannelCommandDecision, ChannelOperatingMode, ChannelOperationsController, OperationKind,
-    OperationsError,
+    OperationRequest, OperationResult, OperationTarget, OperationsError,
 };
 use crate::persistence_executor::{
     GroupedPersistenceExecutor, PersistenceExecutorError, PersistenceShutdown,
@@ -96,6 +97,7 @@ pub struct ControlledChannelShutdownPolicy {
 pub struct ChannelMaintenancePolicy {
     pub barrier_deadline: Duration,
     pub drain_deadline: Duration,
+    pub service_operation_deadline: Duration,
     pub safe_state: SafeStatePolicy,
     pub wire: SafeStateWirePolicy,
     pub resume_verification: ResumeVerificationPolicy,
@@ -108,6 +110,9 @@ impl ChannelMaintenancePolicy {
         }
         if self.drain_deadline.is_zero() {
             return Err(ChannelMaintenanceError::ZeroDrainDeadline);
+        }
+        if self.service_operation_deadline.is_zero() {
+            return Err(ChannelMaintenanceError::ZeroServiceOperationDeadline);
         }
         self.safe_state
             .validate()
@@ -145,6 +150,7 @@ pub struct ProductionChannelTask<P, C, T> {
     maintenance_policy: ChannelMaintenancePolicy,
     maintenance: Option<MaintenanceEntryExecution>,
     resume: Option<ResumeRecordingExecution>,
+    configuration: Option<ConfigurationExecution>,
     startup_admitted: bool,
     rollover: ChannelRolloverServices,
 }
@@ -179,6 +185,19 @@ struct PendingTimeRollover {
     capture_durable: sensor_core::SequenceCursor,
     expected_time_stream: TimeStreamKey,
     ticket: TimeRolloverTicket,
+}
+
+struct ConfigurationExecution {
+    key: ControlWorkKey,
+    deadline: Instant,
+    terminal_error: Option<OperationsError>,
+}
+
+fn configuration_key_node(key: ControlWorkKey) -> u8 {
+    let ControlWorkKey::Configuration { node_address, .. } = key else {
+        unreachable!("configuration execution owns a configuration key")
+    };
+    node_address
 }
 
 impl ResumeRecordingExecution {
@@ -276,6 +295,7 @@ where
             maintenance_policy,
             maintenance: None,
             resume: None,
+            configuration: None,
             startup_admitted: startup.admission().accepted(),
             rollover,
         })
@@ -291,6 +311,138 @@ where
 
     pub fn control_nodes(&self) -> &[ChannelControlNode] {
         &self.nodes
+    }
+
+    fn begin_configuration(
+        &mut self,
+        request: OperationRequest,
+    ) -> Result<Option<ConfigurationExecution>, ProductionChannelStepError> {
+        let OperationTarget::Node { node_address, .. } = request.target else {
+            self.operations
+                .fail_active(OperationsError::ExecutorUnavailable)?;
+            return Ok(None);
+        };
+        if !self
+            .nodes
+            .iter()
+            .any(|node| node.id.node_address == node_address)
+        {
+            self.operations
+                .fail_active(OperationsError::NodeNotConfigured)?;
+            return Ok(None);
+        }
+
+        let submission = match request.kind {
+            OperationKind::GetConfiguration => self
+                .recording
+                .endpoint_mut()
+                .agent_mut()
+                .submit_get_configuration(node_address)
+                .map(|()| None),
+            OperationKind::ValidateConfiguration { configuration } => self
+                .recording
+                .endpoint_mut()
+                .agent_mut()
+                .submit_validate_configuration(node_address, configuration)
+                .map(|()| None),
+            _ => {
+                self.operations
+                    .fail_active(OperationsError::ExecutorUnavailable)?;
+                return Ok(None);
+            }
+        };
+        let wire_operation_id = match submission {
+            Ok(value) => value,
+            Err(_) => {
+                self.operations
+                    .fail_active(OperationsError::ConfigurationFailed)?;
+                return Ok(None);
+            }
+        };
+        let deadline = Instant::now()
+            .checked_add(self.maintenance_policy.service_operation_deadline)
+            .ok_or(ChannelMaintenanceError::DeadlineOverflow)?;
+        Ok(Some(ConfigurationExecution {
+            key: ControlWorkKey::Configuration {
+                node_address,
+                operation_id: wire_operation_id,
+            },
+            deadline,
+            terminal_error: None,
+        }))
+    }
+
+    fn drive_configuration(
+        &mut self,
+        mut execution: ConfigurationExecution,
+    ) -> Result<Option<ConfigurationExecution>, ProductionChannelStepError> {
+        if execution.terminal_error.is_none() && Instant::now() >= execution.deadline {
+            execution.terminal_error = Some(OperationsError::ConfigurationDeadline);
+        }
+        if let Some(error) = execution.terminal_error {
+            match self
+                .recording
+                .endpoint_mut()
+                .agent_mut()
+                .abandon_control_work(execution.key)
+            {
+                Ok(_) | Err(ChannelAgentError::ControlWorkNotFound(_)) => {
+                    self.operations.fail_active(error)?;
+                    return Ok(None);
+                }
+                Err(ChannelAgentError::ControlAttemptInFlight(_)) => {}
+                Err(_) => return Err(ProductionChannelStepError::Operations(error)),
+            }
+        }
+
+        let started = Instant::now();
+        let endpoint_event = match self.recording.endpoint_mut().step() {
+            Ok(event) => event,
+            Err(_) => {
+                execution.terminal_error = Some(OperationsError::ConfigurationFailed);
+                return Ok(Some(execution));
+            }
+        };
+        self.metrics.observe_step(
+            &ThreadedChannelRecordingEvent::Endpoint(endpoint_event.clone()),
+            started.elapsed(),
+        );
+        if execution.terminal_error.is_some() {
+            return Ok(Some(execution));
+        }
+        match endpoint_event {
+            ChannelEndpointEvent::Agent(ChannelEvent::ConfigurationComplete {
+                node_address,
+                outcome,
+            }) if node_address == configuration_key_node(execution.key) => {
+                let result = match outcome {
+                    crate::configuration::ConfigurationOutcome::Observed(value) => {
+                        OperationResult::ConfigurationObserved(value)
+                    }
+                    crate::configuration::ConfigurationOutcome::Validated(value) => {
+                        OperationResult::ConfigurationValidated(value)
+                    }
+                    crate::configuration::ConfigurationOutcome::Applied(value) => {
+                        OperationResult::ConfigurationApplied(value)
+                    }
+                    crate::configuration::ConfigurationOutcome::NotAccepted => {
+                        execution.terminal_error = Some(OperationsError::ConfigurationFailed);
+                        return Ok(Some(execution));
+                    }
+                };
+                self.operations.complete_active(result)?;
+                Ok(None)
+            }
+            ChannelEndpointEvent::Agent(ChannelEvent::ConfigurationNotAccepted {
+                node_address,
+                ..
+            })
+            | ChannelEndpointEvent::Agent(ChannelEvent::ConfigurationTimedOut {
+                node_address,
+                ..
+            }) if node_address == configuration_key_node(execution.key) => Ok(Some(execution)),
+            _ => Ok(Some(execution)),
+        }
     }
 
     fn drive_maintenance(
@@ -850,6 +1002,12 @@ where
                         &self.nodes,
                         self.maintenance_policy,
                     )?);
+                } else if matches!(
+                    request.kind,
+                    OperationKind::GetConfiguration | OperationKind::ValidateConfiguration { .. }
+                ) && self.configuration.is_none()
+                {
+                    self.configuration = self.begin_configuration(request)?;
                 } else {
                     self.operations
                         .fail_active(OperationsError::ExecutorUnavailable)
@@ -866,6 +1024,10 @@ where
         }
         if let Some(execution) = self.resume.take() {
             self.resume = self.drive_resume(execution)?;
+            return Ok(());
+        }
+        if let Some(execution) = self.configuration.take() {
+            self.configuration = self.drive_configuration(execution)?;
             return Ok(());
         }
         let started = Instant::now();
@@ -1005,6 +1167,7 @@ impl std::error::Error for ProductionChannelTaskBuildError {}
 pub enum ChannelMaintenanceError {
     ZeroBarrierDeadline,
     ZeroDrainDeadline,
+    ZeroServiceOperationDeadline,
     ZeroResumeNodeDeadline,
     EmptyChannel,
     DeadlineOverflow,

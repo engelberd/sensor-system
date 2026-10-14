@@ -23,7 +23,7 @@ use crate::safe_state::{SafeStatePolicy, SafeStateWirePolicy};
 use crate::time_profile::TimeSyncInstallationPolicy;
 use crate::transaction::DurationMicros;
 
-const RUNTIME_V2_KEYS: [&str; 39] = [
+const RUNTIME_V2_KEYS: [&str; 40] = [
     "supervision_interval_ms",
     "metrics_interval_ms",
     "transaction_timeout_ms",
@@ -56,6 +56,7 @@ const RUNTIME_V2_KEYS: [&str; 39] = [
     "operations_ledger_capacity",
     "maintenance_barrier_deadline_ms",
     "maintenance_drain_deadline_ms",
+    "service_operation_deadline_ms",
     "safe_orderly_attempts",
     "safe_restart_attempts",
     "safe_restart_cycles",
@@ -189,6 +190,7 @@ impl HostRuntimeInstallationProfile {
         let maintenance = ChannelMaintenancePolicy {
             barrier_deadline: duration_from_ms(runtime, "maintenance_barrier_deadline_ms")?,
             drain_deadline: duration_from_ms(runtime, "maintenance_drain_deadline_ms")?,
+            service_operation_deadline: duration_from_ms(runtime, "service_operation_deadline_ms")?,
             safe_state: SafeStatePolicy {
                 orderly_attempts: u8_field(runtime, "safe_orderly_attempts")?,
                 restart_attempts: u8_field(runtime, "safe_restart_attempts")?,
@@ -428,6 +430,10 @@ mod tests {
         assert_eq!(profile.operations().mailbox_capacity, 8);
         assert_eq!(profile.operations().ledger_capacity, 64);
         assert_eq!(profile.maintenance().safe_state.restart_cycles, 1);
+        assert_eq!(
+            profile.maintenance().service_operation_deadline,
+            Duration::from_secs(5)
+        );
         assert_eq!(profile.maintenance().wire.action_deadline.get(), 1_000_000);
     }
 

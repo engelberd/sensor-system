@@ -6,11 +6,12 @@ use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use sensor_protocol::{DecimationFilterProfile, MeasurementConfiguration, OutputRateCode};
 use serde_json::{json, Value};
 
 use crate::operations::{
     ChannelOperatingMode, ChannelOperationsHandle, CommandSubmitError, OperationId, OperationKind,
-    OperationPhase, OperationRequest, OperationTarget, OperationsError,
+    OperationPhase, OperationRequest, OperationResult, OperationTarget, OperationsError,
 };
 
 pub const OPERATIONS_IPC_SCHEMA_VERSION: u16 = 1;
@@ -161,9 +162,18 @@ impl OperationsIpcServer {
             Ok(value) => value,
             Err(response) => return response,
         };
-        let kind = match object.get("operation").and_then(Value::as_str) {
+        let operation_name = object.get("operation").and_then(Value::as_str);
+        let kind = match operation_name {
             Some("enter_maintenance") => OperationKind::EnterMaintenance,
             Some("resume_recording") => OperationKind::ResumeRecording,
+            Some("get_configuration") => OperationKind::GetConfiguration,
+            Some("validate_configuration") => {
+                let configuration = match configuration_field(object) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                OperationKind::ValidateConfiguration { configuration }
+            }
             Some(_) => {
                 return error_response("unknown_operation", "operation is not exposed by IPC v1")
             }
@@ -172,9 +182,24 @@ impl OperationsIpcServer {
         let Some(handle) = self.handle(channel_id) else {
             return error_response("unknown_channel", "channel is not active in this process");
         };
+        let target = if matches!(
+            kind,
+            OperationKind::GetConfiguration | OperationKind::ValidateConfiguration { .. }
+        ) {
+            let node_address = match u8_field(object, "node_address") {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            OperationTarget::Node {
+                channel_id,
+                node_address,
+            }
+        } else {
+            OperationTarget::Channel { channel_id }
+        };
         let request = OperationRequest {
             operation_id,
-            target: OperationTarget::Channel { channel_id },
+            target,
             kind,
         };
         // Resolve a retry from the worker-owned ledger before touching the
@@ -197,6 +222,7 @@ impl OperationsIpcServer {
                         operation_id,
                         phase_label(record.phase),
                         Some(snapshot.mode),
+                        record.result,
                         record.error,
                     );
                 }
@@ -257,6 +283,7 @@ impl OperationsIpcServer {
             operation_id,
             phase_label(record.phase),
             Some(snapshot.mode),
+            record.result,
             record.error,
         )
     }
@@ -309,6 +336,66 @@ fn u8_field(object: &serde_json::Map<String, Value>, key: &'static str) -> Resul
         .map_err(|_| error_response("invalid_request", &format!("{key} is out of range")))
 }
 
+fn i16_field(object: &serde_json::Map<String, Value>, key: &'static str) -> Result<i16, Value> {
+    let Some(value) = object.get(key).and_then(Value::as_i64) else {
+        return Err(error_response(
+            "invalid_request",
+            &format!("{key} must be an integer"),
+        ));
+    };
+    i16::try_from(value)
+        .map_err(|_| error_response("invalid_request", &format!("{key} is out of range")))
+}
+
+fn configuration_field(
+    object: &serde_json::Map<String, Value>,
+) -> Result<MeasurementConfiguration, Value> {
+    let Some(configuration) = object.get("configuration").and_then(Value::as_object) else {
+        return Err(error_response(
+            "invalid_request",
+            "configuration object is required",
+        ));
+    };
+    let output_rate = match u8_field(configuration, "output_rate_code")? {
+        0 => OutputRateCode::Hz4000,
+        1 => OutputRateCode::Hz2000,
+        2 => OutputRateCode::Hz1000,
+        3 => OutputRateCode::Hz500,
+        4 => OutputRateCode::Hz250,
+        5 => OutputRateCode::Hz125,
+        6 => OutputRateCode::Hz62_5,
+        7 => OutputRateCode::Hz31_25,
+        8 => OutputRateCode::Hz15_625,
+        9 => OutputRateCode::Hz7_8125,
+        10 => OutputRateCode::Hz3_90625,
+        _ => {
+            return Err(error_response(
+                "invalid_request",
+                "unknown output_rate_code",
+            ))
+        }
+    };
+    let filter_profile = match u8_field(configuration, "filter_profile")? {
+        0 => DecimationFilterProfile::Light,
+        1 => DecimationFilterProfile::Balanced,
+        2 => DecimationFilterProfile::Aggressive,
+        _ => return Err(error_response("invalid_request", "unknown filter_profile")),
+    };
+    let value = MeasurementConfiguration {
+        output_rate,
+        range_g: u8_field(configuration, "range_g")?,
+        high_pass_corner: u8_field(configuration, "high_pass_corner")?,
+        filter_profile,
+        fifo_watermark: u8_field(configuration, "fifo_watermark")?,
+        offset_x: i16_field(configuration, "offset_x")?,
+        offset_y: i16_field(configuration, "offset_y")?,
+        offset_z: i16_field(configuration, "offset_z")?,
+    };
+    value
+        .validate()
+        .map_err(|error| error_response("invalid_configuration", &error.to_string()))
+}
+
 fn operation_id_field(object: &serde_json::Map<String, Value>) -> Result<OperationId, Value> {
     let Some(value) = object.get("operation_id").and_then(Value::as_u64) else {
         return Err(error_response(
@@ -353,6 +440,7 @@ fn operation_response(
     operation_id: OperationId,
     phase: &str,
     mode: Option<ChannelOperatingMode>,
+    result: Option<OperationResult>,
     error: Option<OperationsError>,
 ) -> Value {
     json!({
@@ -362,7 +450,51 @@ fn operation_response(
         "operation_id": operation_id.get(),
         "phase": phase,
         "mode": mode.map(mode_label),
+        "result": result.map(operation_result_json),
         "error": error.map(|value| value.to_string())
+    })
+}
+
+fn operation_result_json(result: OperationResult) -> Value {
+    match result {
+        OperationResult::ConfigurationObserved(value) => json!({
+            "kind": "configuration_observed",
+            "observed": observed_configuration_json(value)
+        }),
+        OperationResult::ConfigurationValidated(value) => json!({
+            "kind": "configuration_validated",
+            "code": value.code as u8,
+            "field": value.field as u8
+        }),
+        OperationResult::ConfigurationApplied(value) => json!({
+            "kind": "configuration_applied",
+            "wire_operation_id": value.operation_id,
+            "code": value.code as u8,
+            "observed": observed_configuration_json(value.observed),
+            "effective_sample_seq": value.effective_sample_seq
+        }),
+    }
+}
+
+fn observed_configuration_json(value: sensor_protocol::ObservedConfiguration) -> Value {
+    json!({
+        "revision": value.revision,
+        "configuration": measurement_configuration_json(value.desired),
+        "sensor_odr_register": value.sensor_odr.register_value(),
+        "decimation_factor": value.decimation_factor
+    })
+}
+
+fn measurement_configuration_json(value: MeasurementConfiguration) -> Value {
+    json!({
+        "output_rate_code": value.output_rate as u8,
+        "range_g": value.range_g,
+        "high_pass_corner": value.high_pass_corner,
+        "filter_profile": value.filter_profile as u8,
+        "fifo_watermark": value.fifo_watermark,
+        "offset_x": value.offset_x,
+        "offset_y": value.offset_y,
+        "offset_z": value.offset_z
     })
 }
 
@@ -477,7 +609,9 @@ mod tests {
     use super::*;
     use crate::operations::{
         ChannelCommandDecision, ChannelOperationsController, ChannelOperationsPolicy,
+        OperationResult,
     };
+    use sensor_protocol::{Adxl355Odr, ObservedConfiguration};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -599,6 +733,158 @@ mod tests {
             OperationsIpcServer::bind(&path, vec![]),
             Err(OperationsIpcError::AlreadyRunning)
         ));
+    }
+
+    #[test]
+    fn routes_node_configuration_and_serializes_typed_result() {
+        let path = socket_path("configuration");
+        let (mut controller, handle) = ChannelOperationsController::new(
+            1,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 2,
+                ledger_capacity: 4,
+            },
+        )
+        .unwrap();
+        controller
+            .set_mode(ChannelOperatingMode::Maintenance)
+            .unwrap();
+        let server = OperationsIpcServer::bind(&path, vec![handle]).unwrap();
+        let submitted = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "submit",
+                "channel_id": 1,
+                "node_address": 7,
+                "operation_id": 50,
+                "operation": "get_configuration"
+            }),
+        );
+        assert_eq!(submitted["phase"], "queued");
+        let request = match controller.poll_command().unwrap() {
+            ChannelCommandDecision::Started(request) => request,
+            other => panic!("unexpected command decision: {other:?}"),
+        };
+        assert_eq!(
+            request.target,
+            OperationTarget::Node {
+                channel_id: 1,
+                node_address: 7
+            }
+        );
+        let observed = ObservedConfiguration {
+            revision: 9,
+            desired: MeasurementConfiguration {
+                output_rate: OutputRateCode::Hz125,
+                range_g: 2,
+                high_pass_corner: 0,
+                filter_profile: DecimationFilterProfile::Balanced,
+                fifo_watermark: 30,
+                offset_x: 0,
+                offset_y: 0,
+                offset_z: 0,
+            },
+            sensor_odr: Adxl355Odr::Hz125,
+            decimation_factor: 1,
+        };
+        controller
+            .complete_active(OperationResult::ConfigurationObserved(observed))
+            .unwrap();
+        let result = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "get",
+                "channel_id": 1,
+                "operation_id": 50
+            }),
+        );
+        assert_eq!(result["phase"], "succeeded");
+        assert_eq!(result["result"]["kind"], "configuration_observed");
+        assert_eq!(result["result"]["observed"]["revision"], 9);
+        assert_eq!(
+            result["result"]["observed"]["configuration"]["output_rate_code"],
+            5
+        );
+
+        let submitted = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "submit",
+                "channel_id": 1,
+                "node_address": 7,
+                "operation_id": 52,
+                "operation": "validate_configuration",
+                "configuration": {
+                    "output_rate_code": 6,
+                    "range_g": 2,
+                    "high_pass_corner": 0,
+                    "filter_profile": 1,
+                    "fifo_watermark": 30,
+                    "offset_x": -4,
+                    "offset_y": 0,
+                    "offset_z": 4
+                }
+            }),
+        );
+        assert_eq!(submitted["phase"], "queued");
+        let request = match controller.poll_command().unwrap() {
+            ChannelCommandDecision::Started(request) => request,
+            other => panic!("unexpected command decision: {other:?}"),
+        };
+        assert!(matches!(
+            request.kind,
+            OperationKind::ValidateConfiguration { configuration }
+                if configuration.output_rate == OutputRateCode::Hz62_5
+                    && configuration.offset_x == -4
+                    && configuration.offset_z == 4
+        ));
+        controller
+            .complete_active(OperationResult::ConfigurationValidated(
+                sensor_protocol::ConfigValidationResult {
+                    code: sensor_protocol::ConfigValidationCode::Valid,
+                    field: sensor_protocol::ConfigField::None,
+                },
+            ))
+            .unwrap();
+        let result = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "get",
+                "channel_id": 1,
+                "operation_id": 52
+            }),
+        );
+        assert_eq!(result["result"]["kind"], "configuration_validated");
+        assert_eq!(result["result"]["code"], 0);
+        assert_eq!(result["result"]["field"], 0);
+    }
+
+    #[test]
+    fn mutating_configuration_is_not_exposed_before_admission_recalculation() {
+        let path = socket_path("no-apply");
+        let server = OperationsIpcServer::bind(&path, vec![]).unwrap();
+        let response = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "submit",
+                "channel_id": 1,
+                "node_address": 1,
+                "operation_id": 51,
+                "operation": "apply_configuration"
+            }),
+        );
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "unknown_operation");
     }
 
     #[test]

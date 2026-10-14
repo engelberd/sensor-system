@@ -160,9 +160,10 @@ a nie strojenia instalacji.
 
 ## Kolejność dalszej pracy
 
-1. Rozszerzyć gotowe Operations API i bounded command path o operacje per node.
-2. Wystawić Configuration/Commissioning przez API, dodać trwały audit i
-   wykonać pełny HIL firmware 0.5.8.
+1. Domknąć mutujące Configuration przez aktualizację planu i ponowny admission
+   control; read-only Get/Validate per node są już podłączone.
+2. Wystawić mutujące Configuration i Commissioning przez API, dodać trwały
+   audit i wykonać pełny HIL firmware 0.5.8.
 3. Usunąć flash write z pozostałych hot path.
 4. Wykonać HIL restartu po zatrzymaniu heartbeat core 1, wielu node, długiego
    przewodu, zakłóceń, wolnego storage i soak.

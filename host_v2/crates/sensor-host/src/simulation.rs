@@ -5,15 +5,20 @@ use std::sync::Arc;
 
 use sensor_core::{BootEpoch, HardwareId, SampleAxes, SampleAxis, SampleRate, SequenceCursor};
 use sensor_protocol::{
-    decode_lifecycle_request, decode_pull_request, encode_lifecycle_response, encode_pull_response,
-    encode_stream_state_success, encode_time_success, validate_time_request, FirmwareVersion,
-    Frame, FrameRole, NodeCapabilities, NodeIdentity, ObservabilityProfile, PullResponse,
-    PullSamplesRequest, RuntimeOperation, RuntimeResult, RuntimeResultCode, RuntimeState,
-    SampleChunk, SampleChunkHeader, SensorStatusCode, ServiceId, StreamDecoder, StreamState,
-    TimeExchangeResponse, TimingEvidence, CAPABILITIES_SCHEMA_VERSION, GET_CAPABILITIES_MESSAGE_ID,
+    decode_configuration, decode_lifecycle_request, decode_pull_request,
+    encode_get_config_response, encode_lifecycle_response, encode_pull_response,
+    encode_stream_state_success, encode_time_success, encode_validate_config_response,
+    validate_time_request, Adxl355Odr, ConfigField, ConfigValidationCode, ConfigValidationResult,
+    DecimationFilterProfile, FirmwareVersion, Frame, FrameRole, MeasurementConfiguration,
+    NodeCapabilities, NodeIdentity, ObservabilityProfile, ObservedConfiguration, OutputRateCode,
+    PullResponse, PullSamplesRequest, RuntimeOperation, RuntimeResult, RuntimeResultCode,
+    RuntimeState, SampleChunk, SampleChunkHeader, SensorStatusCode, ServiceId, StreamDecoder,
+    StreamState, TimeExchangeResponse, TimingEvidence, CAPABILITIES_SCHEMA_VERSION,
+    CONFIGURATION_SERVICE_ID, GET_CAPABILITIES_MESSAGE_ID, GET_CONFIG_MESSAGE_ID,
     GET_IDENTITY_MESSAGE_ID, GET_STREAM_STATE_MESSAGE_ID, HOST_ADDRESS, IDENTITY_SERVICE_ID,
     LIFECYCLE_SERVICE_ID, LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES,
     OBSERVE_CLOCK_MESSAGE_ID, PULL_SAMPLES_MESSAGE_ID, TIME_SERVICE_ID, TIMING_VALID,
+    VALIDATE_CONFIG_MESSAGE_ID,
 };
 
 use crate::channel_endpoint::MonotonicClock;
@@ -244,6 +249,7 @@ pub struct SimulatedWireNode {
     identity: NodeIdentity,
     capabilities: NodeCapabilities,
     reboot_on_maintenance: Option<BootEpoch>,
+    configuration: ObservedConfiguration,
 }
 
 impl SimulatedWireNode {
@@ -278,6 +284,21 @@ impl SimulatedWireNode {
             output_rate_mask: u16::MAX,
             max_sample_chunk_samples: 48,
         };
+        let configuration = ObservedConfiguration {
+            revision: 1,
+            desired: MeasurementConfiguration {
+                output_rate: OutputRateCode::Hz125,
+                range_g: 2,
+                high_pass_corner: 0,
+                filter_profile: DecimationFilterProfile::Balanced,
+                fifo_watermark: 30,
+                offset_x: 0,
+                offset_y: 0,
+                offset_z: 0,
+            },
+            sensor_odr: Adxl355Odr::Hz125,
+            decimation_factor: 1,
+        };
         Self {
             address,
             link: SimulatedNodeLink::new(boot_epoch, journal_capacity),
@@ -295,6 +316,7 @@ impl SimulatedWireNode {
             identity,
             capabilities,
             reboot_on_maintenance: None,
+            configuration,
         }
     }
 
@@ -524,6 +546,32 @@ impl SimulatedRs485Bus {
                     .capabilities
                     .encode_success()
                     .map_err(io::Error::other)?;
+                payload[..encoded.len()].copy_from_slice(&encoded);
+                (encoded.len(), now_us.saturating_add(turnaround_us))
+            }
+            (CONFIGURATION_SERVICE_ID, GET_CONFIG_MESSAGE_ID) => {
+                if !request.payload().is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "get-configuration request payload must be empty",
+                    ));
+                }
+                let encoded =
+                    encode_get_config_response(node.configuration).map_err(io::Error::other)?;
+                payload[..encoded.len()].copy_from_slice(&encoded);
+                (encoded.len(), now_us.saturating_add(turnaround_us))
+            }
+            (CONFIGURATION_SERVICE_ID, VALIDATE_CONFIG_MESSAGE_ID) => {
+                decode_configuration(request.payload()).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid validate-configuration request: {error}"),
+                    )
+                })?;
+                let encoded = encode_validate_config_response(ConfigValidationResult {
+                    code: ConfigValidationCode::Valid,
+                    field: ConfigField::None,
+                });
                 payload[..encoded.len()].copy_from_slice(&encoded);
                 (encoded.len(), now_us.saturating_add(turnaround_us))
             }

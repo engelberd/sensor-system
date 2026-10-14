@@ -171,12 +171,26 @@ wiadomością JSON schema 1; request i response mają limit 4096 B, a koordynato
 obsługuje najwyżej cztery żądania na jeden obrót. Klient nie może utrzymać
 blokującego połączenia ani wejść na drogę próbek.
 
-Adapter udostępnia obecnie odczyt trybu kanału oraz `EnterMaintenance` i
-`ResumeRecording`. `submit` przekazuje pełne `operation_id` do istniejącego
+Adapter udostępnia obecnie odczyt trybu kanału, `EnterMaintenance`,
+`ResumeRecording`, `GetConfiguration` i `ValidateConfiguration`. Dwie operacje
+Configuration mają target node, działają wyłącznie w Maintenance/Faulted i
+zwracają typowany wynik zapisany w tym samym bounded ledgerze. `submit`
+przekazuje pełne `operation_id` do istniejącego
 bounded mailboxa. `get` odczytuje ten sam worker-owned ledger. Powtórzenie
 identycznego żądania jest idempotentne, a ponowne użycie ID z inną treścią
 kończy się konfliktem w domenie. IPC nie otwiera RS485, nie posiada lifecycle i
 nie tworzy drugiego modelu stanu.
+
+Wykonawca Configuration ma osobny konfigurowalny deadline. Po jego
+przekroczeniu nie porzuca transakcji w locie ani kwarantanny spóźnionej
+odpowiedzi; kończy operację dopiero po bezpiecznym oddaniu jedynego arbitra
+RS485. Nieznany node daje jawny błąd i nie zatrzymuje workera.
+
+`ApplyConfiguration` i `ResetConfiguration` istnieją w domenie i kodekach, ale
+nie są jeszcze wystawione przez IPC. Ich publiczne podłączenie wymaga atomowej
+aktualizacji zatwierdzonego planu konfiguracji oraz ponownego obliczenia
+admission control przed Resume. Do tego czasu adapter odrzuca je jako
+`unknown_operation`, zamiast dopuścić zmianę ODR, której scheduler nie zna.
 
 Dashboard powstaje po ustabilizowaniu pozostałych operacji i będzie czytał
 status oraz składał polecenia bez dostępu do portów urządzeń, Capture WAL lub
@@ -215,7 +229,8 @@ wymianę sesji. Ten sam pion jest dostępny przez lokalne IPC i `hostctl`.
 
 ## Kolejna bramka
 
-1. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
-2. dodać `RestartNode` oraz operacje serwisowe per node do tego samego IPC;
-3. wykonać HIL firmware 0.5.8;
-4. dodać operacje grupowe i trwały audit.
+1. domknąć mutujące Configuration wraz z ponownym admission control;
+2. mapować Commissioning na istniejący `ChannelAgent` i typowane wyniki;
+3. dodać `RestartNode` oraz operacje serwisowe per node do tego samego IPC;
+4. wykonać HIL firmware 0.5.8;
+5. dodać operacje grupowe i trwały audit.

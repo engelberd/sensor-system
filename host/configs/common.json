@@ -62,6 +62,7 @@
     "operations_ledger_capacity": 64,
     "maintenance_barrier_deadline_ms": 2000,
     "maintenance_drain_deadline_ms": 5000,
+    "service_operation_deadline_ms": 5000,
     "safe_orderly_attempts": 2,
     "safe_restart_attempts": 2,
     "safe_restart_cycles": 1,

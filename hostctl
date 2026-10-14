@@ -27,6 +27,8 @@ Host v2:
   paths [--init]        Show or create effective v2 storage paths
   doctor                Check configuration, runtime and optionally RS485
   channel status|maintenance|resume --channel ID
+  channel get-configuration --channel ID --node ID
+  channel validate-configuration --channel ID --node ID [configuration options]
                          Control a running channel through local Operations IPC
 
 Data:

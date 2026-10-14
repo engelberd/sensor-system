@@ -172,9 +172,20 @@ pub enum ChannelEvent {
 /// `ChannelWorkCoordinator`, not to the operations control plane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlWorkKey {
-    Handshake { node_address: u8 },
-    StreamState { node_address: u8 },
-    Lifecycle { node_address: u8, operation_id: u32 },
+    Handshake {
+        node_address: u8,
+    },
+    StreamState {
+        node_address: u8,
+    },
+    Lifecycle {
+        node_address: u8,
+        operation_id: u32,
+    },
+    Configuration {
+        node_address: u8,
+        operation_id: Option<u32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,6 +245,16 @@ impl PendingWork {
             ) => {
                 operation.node_address() == node_address
                     && operation.command().operation_id == operation_id
+            }
+            (
+                Self::Configuration(operation),
+                ControlWorkKey::Configuration {
+                    node_address,
+                    operation_id,
+                },
+            ) => {
+                operation.node_address() == node_address
+                    && operation.request().operation_id() == operation_id
             }
             _ => false,
         }
