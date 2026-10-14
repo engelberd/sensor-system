@@ -669,6 +669,38 @@ impl ChannelRuntime {
         Ok(())
     }
 
+    /// Replaces the cursor identity of a quiesced node after a new boot epoch
+    /// has received independent durable Capture and Time streams.
+    pub fn replace_quiesced_node(
+        &mut self,
+        node_address: u8,
+        recovered_cursor: SequenceCursor,
+        observed_produced: SequenceCursor,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        if self.active_dispatch.is_some() {
+            return Err(ChannelRuntimeError::ResumeWhileActive);
+        }
+        let node_index = self
+            .nodes
+            .iter()
+            .position(|node| node.config.node_address == node_address)
+            .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
+        let work_id = self.allocate_work_id()?;
+        let node = &mut self.nodes[node_index];
+        node.received = recovered_cursor;
+        node.observed_produced = observed_produced;
+        node.observed_at = now;
+        node.service_deadline = now;
+        node.ready_at = now;
+        node.queued_at = now;
+        node.consecutive_failures = 0;
+        node.work_id = work_id;
+        node.in_flight = false;
+        node.recovery_required = false;
+        Ok(())
+    }
+
     pub fn fail_measurement(
         &mut self,
         dispatch: MeasurementDispatch,

@@ -97,6 +97,10 @@ pub struct TimeRuntime {
 }
 
 impl TimeRuntime {
+    pub fn host_clock_id(&self) -> crate::time_wal::HostClockId {
+        self.streams[0].config.host_clock_id
+    }
+
     pub fn recovered_streams(&self) -> &[RecoveredTimeStream] {
         &self.recovered_streams
     }

@@ -91,6 +91,7 @@ impl LinuxHostProcess {
         let runtime = start_host_runtime(
             blueprint,
             profile.storage().capture(),
+            profile.storage().time_persistence(),
             HostChannelRuntimePolicies {
                 activation: profile.runtime().recording_activation(),
                 assembly: profile.runtime().recording_assembly(),

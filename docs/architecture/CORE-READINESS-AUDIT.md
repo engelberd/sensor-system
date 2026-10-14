@@ -23,10 +23,11 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
 
 1. Host ma wewnętrzny bounded command path, idempotentny ledger w pamięci,
    snapshoty statusu per channel i wykonawcę kontrolowanego
-   Recording → Maintenance oraz Resume dla niezmienionego `boot_epoch`.
-   Prymitywy rollover Capture i Time są gotowe, ale wymagają jeszcze wspólnej
-   orkiestracji przed Resume po restarcie node. Brakuje trwałego audytu oraz
-   lokalnego IPC. Codeki Configuration/Commissioning są podłączone do
+   Recording → Maintenance oraz Resume także po zmianie `boot_epoch`.
+   Capture i Time są otwierane przez swoich właścicieli, a bounded broker
+   koordynatora blokuje wymianę sesji i Start do czasu obu trwałych wyników.
+   Brakuje trwałego audytu oraz lokalnego IPC. Codeki
+   Configuration/Commissioning są podłączone do
    `ChannelAgent`, ale nie są jeszcze osiągalne przez Operations API.
 2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
    odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,

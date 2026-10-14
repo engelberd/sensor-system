@@ -476,6 +476,18 @@ where
         )
     }
 
+    pub fn replace_resume_stream(
+        &mut self,
+        node_address: u8,
+        expected: crate::stream_recovery::ExpectedStreamState,
+        durable_cursor: sensor_core::SequenceCursor,
+        stream: sensor_protocol::StreamState,
+    ) -> Result<crate::stream_recovery::RecoveryContinuity, MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements
+            .replace_resume_stream(node_address, expected, durable_cursor, stream, now)
+    }
+
     pub fn into_parts(self) -> (ChannelEndpoint<P, C>, ChannelWorkCoordinator, E, T) {
         (
             self.endpoint,

@@ -243,6 +243,7 @@ pub struct SimulatedWireNode {
     observability: ObservabilityProfile,
     identity: NodeIdentity,
     capabilities: NodeCapabilities,
+    reboot_on_maintenance: Option<BootEpoch>,
 }
 
 impl SimulatedWireNode {
@@ -293,6 +294,7 @@ impl SimulatedWireNode {
             observability: ObservabilityProfile::Production,
             identity,
             capabilities,
+            reboot_on_maintenance: None,
         }
     }
 
@@ -314,6 +316,12 @@ impl SimulatedWireNode {
 
     pub const fn address(&self) -> u8 {
         self.address
+    }
+
+    pub fn with_reboot_on_maintenance(mut self, boot_epoch: BootEpoch) -> Self {
+        assert!(boot_epoch.get() != 0, "boot epoch must be non-zero");
+        self.reboot_on_maintenance = Some(boot_epoch);
+        self
     }
 
     pub const fn stats(&self) -> SimulatedNodeStats {
@@ -626,6 +634,9 @@ impl SimulatedRs485Bus {
                             ));
                         }
                         node.runtime_state = RuntimeState::Maintenance;
+                        if let Some(boot_epoch) = node.reboot_on_maintenance.take() {
+                            node.reboot(now_us, boot_epoch);
+                        }
                     }
                     RuntimeOperation::ExitMaintenance => {
                         node.runtime_state = RuntimeState::Idle;

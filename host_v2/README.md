@@ -339,7 +339,7 @@ Ten sam `ProductionChannelTask` posiada bounded Operations inbox, ledger i
 snapshot statusu. `EnterMaintenance` wykonuje bez drugiego właściciela portu
 kolejność quiesce → Idle wszystkich node → kontrola epoki → końcowy drain →
 Maintenance. Deadline i budżety recovery pochodzą z `runtime_v2`; powrót do
-Recording przez pełny handshake/recovery pozostaje kolejną bramką.
+Recording wykonuje pełny handshake i recovery, także po zmianie `boot_epoch`.
 `HostHealthSnapshot` zachowuje izolację pojedynczej linii, ale wymaga globalnego
 Stop dla błędu integralności Time oraz potwierdzonego faultu wspólnego storage.
 `StorageHealthProbe` sprawdza read-only i `min_free_bytes` przez `statvfs` bez
@@ -356,6 +356,10 @@ appendowi. `TimePersistenceExecutor` wykonuje I/O na osobnym wątku i daje
 klonowalne bounded submittery kanałom. Format i otwarty krok startup opisuje
 [Time WAL v1](../docs/architecture/TIME-WAL-V1.md), a dobór
 konfigurowalnego interwału [Time Service](../docs/architecture/TIME-SERVICE.md).
+Zmiana `boot_epoch` podczas Maintenance używa osobnego bounded brokera do
+globalnego właściciela Time. Resume wymienia `NodeSession` i cursor schedulera
+dopiero po otwarciu nowego Capture i Time WAL; błąd pozostawia kanał w
+Maintenance i nie uruchamia akwizycji.
 `CaptureWindowLedger` zamraża niezależne od formatu reguły rotacji: zakresy
 manifestów `[first_cursor, end_exclusive)`, kolejne ordinale, jawne gaps i brak
 podziału wire chunku. Plan nie przesuwa stanu przed durable append, a manifest

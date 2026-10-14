@@ -61,6 +61,7 @@ pub mod time_health;
 pub mod time_persistence;
 pub mod time_profile;
 pub mod time_repository;
+pub mod time_rollover;
 pub mod time_runtime;
 pub mod time_wal;
 pub mod transaction;

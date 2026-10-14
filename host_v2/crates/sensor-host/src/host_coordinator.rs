@@ -15,8 +15,8 @@ use crate::channel_supervisor::{
 };
 use crate::channel_worker::{
     compose_channel_recording, ChannelMaintenanceError, ChannelMaintenancePolicy,
-    ChannelWorkerError, ControlledChannelShutdownError, ControlledChannelShutdownPolicy,
-    ProductionChannelTask,
+    ChannelRolloverServices, ChannelWorkerError, ControlledChannelShutdownError,
+    ControlledChannelShutdownPolicy, ProductionChannelTask,
 };
 use crate::discovery::DiscoveryInventory;
 use crate::host_health::{
@@ -38,6 +38,7 @@ use crate::time_persistence::{
     TimePersistenceShutdown,
 };
 use crate::time_profile::{TimePersistenceInstallationProfile, TimeProfileError};
+use crate::time_rollover::{time_rollover_mailbox, TimeRolloverMailboxError, TimeRolloverServer};
 use crate::time_runtime::{
     TimeRuntime, TimeRuntimeConfig, TimeRuntimeError, TimeRuntimeHealthError,
     TimeRuntimeRecoveryError,
@@ -176,6 +177,7 @@ where
     channel_operations: Vec<ChannelOperationsHandle>,
     startup_channel_faults: Vec<StartupChannelFault>,
     time: TimeRuntime,
+    time_rollovers: TimeRolloverServer,
     lifecycle: HostCoordinatorLifecycle,
     shared_storage_fault: Option<SharedStorageFault>,
 }
@@ -287,7 +289,7 @@ where
             });
         }
 
-        let action = match self.time.health().state() {
+        let mut action = match self.time.health().state() {
             crate::time_health::TimePersistenceHealthState::RecoveryRequired => {
                 match self.time.recover() {
                     Ok(disposition) => HostSupervisionAction::TimeRecoveryStarted(disposition),
@@ -309,6 +311,15 @@ where
                 HostSupervisionAction::Continue
             }
         };
+        if action == HostSupervisionAction::Continue {
+            if let Ok(Some(request)) = self.time_rollovers.try_receive() {
+                let (previous, next, completion) = request.into_parts();
+                let result = self.time.rollover_stream(previous, next);
+                let succeeded = result.is_ok();
+                let _ = completion.complete(result);
+                action = HostSupervisionAction::TimeRolloverCompleted { succeeded };
+            }
+        }
         Ok(HostSupervisionReport {
             action,
             health: self.health_snapshot(),
@@ -395,6 +406,7 @@ pub struct HostCoordinatorShutdown<E, S> {
 pub fn start_host_runtime<P, C>(
     blueprint: HostStartupBlueprint<P, C>,
     capture: &CaptureInstallationProfile,
+    time_profile: &TimePersistenceInstallationProfile,
     policies: HostChannelRuntimePolicies,
     work_id_seed: u64,
 ) -> Result<HostCoordinatorRuntime<ProductionHostChannelTask<P, C>>, HostRuntimeStartError>
@@ -420,6 +432,17 @@ where
 
     let (inventory, channels, time_config) = blueprint.into_parts();
     let time = time_config.start().map_err(HostRuntimeStartError::Time)?;
+    let host_clock_id = time.host_clock_id();
+    let (time_rollover, time_rollovers) = match time_rollover_mailbox(inventory.nodes().len()) {
+        Ok(mailbox) => mailbox,
+        Err(source) => {
+            let time_shutdown_error = time.shutdown().err();
+            return Err(HostRuntimeStartError::TimeRolloverMailbox {
+                source,
+                time_shutdown_error,
+            });
+        }
+    };
     let mut prepared = Vec::with_capacity(channels.len());
     let mut startup_channel_faults = Vec::new();
 
@@ -485,6 +508,13 @@ where
             policies.shutdown,
             operations,
             policies.maintenance,
+            ChannelRolloverServices::new(
+                channel_name.clone(),
+                capture.clone(),
+                time_profile.clone(),
+                host_clock_id,
+                time_rollover.clone(),
+            ),
         )
         .expect("channel task policies were validated before channel composition");
         prepared.push((channel_id, channel_name, task, operations_handle));
@@ -531,6 +561,7 @@ where
         channel_operations,
         startup_channel_faults,
         time,
+        time_rollovers,
         lifecycle: HostCoordinatorLifecycle::Running,
         shared_storage_fault: None,
     })
@@ -547,6 +578,7 @@ pub struct StartupChannelFault {
 pub enum HostSupervisionAction {
     Continue,
     TimeRecoveryStarted(TimePersistenceRecoveryDisposition),
+    TimeRolloverCompleted { succeeded: bool },
     StopAlreadyRequested,
 }
 
@@ -633,6 +665,10 @@ pub enum HostRuntimeStartError {
     OperationsPolicy(OperationsError),
     MaintenancePolicy(ChannelMaintenanceError),
     Time(TimeRuntimeError),
+    TimeRolloverMailbox {
+        source: TimeRolloverMailboxError,
+        time_shutdown_error: Option<TimePersistenceExecutorError>,
+    },
     TimeSubmitter {
         channel_id: u8,
         source: TimePersistenceExecutorError,
@@ -896,8 +932,10 @@ mod tests {
         }
         let inventory = collector.finish().unwrap();
         let startup = build_channel_startup_plans(&inventory, startup_policy()).unwrap();
-        let time = TimePersistenceInstallationProfile::new(temp.0.join("time"), 32, "time-storage")
-            .unwrap()
+        let time_profile =
+            TimePersistenceInstallationProfile::new(temp.0.join("time"), 32, "time-storage")
+                .unwrap();
+        let time = time_profile
             .runtime_config(HostClockId::from_bytes([9; 16]), inventory.time_streams())
             .unwrap();
 
@@ -905,16 +943,17 @@ mod tests {
         for startup in startup {
             let channel_id = startup.channel_id();
             let clock = SimulatedClock::new(0);
-            let mut bus = SimulatedRs485Bus::new(
-                clock.clone(),
-                vec![SimulatedWireNode::new(
-                    1,
-                    BootEpoch::new(u64::from(channel_id)),
-                    2048,
-                    OutputRateCode::Hz125.sample_rate(),
-                )
-                .with_identity_contract(identity(channel_id), capabilities())],
-            );
+            let mut simulated_node = SimulatedWireNode::new(
+                1,
+                BootEpoch::new(u64::from(channel_id)),
+                2048,
+                OutputRateCode::Hz125.sample_rate(),
+            )
+            .with_identity_contract(identity(channel_id), capabilities());
+            if channel_count == 1 {
+                simulated_node = simulated_node.with_reboot_on_maintenance(BootEpoch::new(101));
+            }
+            let mut bus = SimulatedRs485Bus::new(clock.clone(), vec![simulated_node]);
             bus.set_auto_advance_on_read(true);
             let agent = ChannelAgent::new(
                 u32::from(channel_id),
@@ -978,6 +1017,7 @@ mod tests {
         let mut runtime = start_host_runtime(
             blueprint,
             &capture,
+            &time_profile,
             HostChannelRuntimePolicies {
                 activation: RecordingActivationPolicy {
                     node_deadline: Duration::from_secs(1),
@@ -1106,6 +1146,7 @@ mod tests {
                     || snapshot.records[2].phase != OperationPhase::Succeeded)
                     && Instant::now() < resume_deadline
             } {
+                let _ = runtime.supervise_once();
                 std::thread::yield_now();
             }
             let resumed = first_operations.snapshot().unwrap();
@@ -1117,6 +1158,11 @@ mod tests {
             );
             assert_eq!(resumed.records[2].phase, OperationPhase::Succeeded);
             assert_eq!(resumed.records[2].error, None);
+            assert!(runtime
+                .time_health()
+                .streams()
+                .iter()
+                .any(|stream| stream.stream.boot_epoch == BootEpoch::new(101)));
         }
         let supervision = runtime.supervise_once().unwrap();
         assert_eq!(supervision.action, HostSupervisionAction::Continue);
@@ -1158,6 +1204,11 @@ mod tests {
                 crate::channel_supervisor::ChannelWorkerExit::Stopped { shutdown, .. } => {
                     assert!(shutdown.outcome.is_ok());
                     assert!(shutdown.persistence.is_ok());
+                    assert_eq!(
+                        shutdown.persistence.as_ref().unwrap().sink.stream_count(),
+                        1 + usize::from(channel_count == 1),
+                        "the restarted node must retain both Capture epochs"
+                    );
                 }
                 crate::channel_supervisor::ChannelWorkerExit::Faulted { .. } => {
                     panic!("simulated channel faulted")
@@ -1166,7 +1217,7 @@ mod tests {
         }
         assert_eq!(
             shutdown.time.as_ref().unwrap().repository.stream_count(),
-            usize::from(channel_count),
+            usize::from(channel_count) + usize::from(channel_count == 1),
             "all channels in the matrix case must share one global Time repository"
         );
         assert!(crate::host_process::summarize_shutdown(shutdown).clean());

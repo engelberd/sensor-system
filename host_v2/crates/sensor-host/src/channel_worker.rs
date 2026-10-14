@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::capture_profile::{CaptureInstallationProfile, CaptureProfileError};
 use crate::capture_repository::CaptureRepository;
 use crate::capture_repository::CaptureRepositoryError;
-use crate::capture_runtime::CaptureRuntimeError;
+use crate::capture_runtime::{CaptureRolloverError, CaptureRuntimeError};
 use crate::channel_activation::{
     activate_recording_nodes, stop_recording_nodes, RecordingActivationError,
     RecordingActivationPolicy, RecordingShutdownError, RecordingShutdownPolicy,
@@ -47,10 +47,43 @@ use crate::safe_state::{SafeStatePolicy, SafeStateTarget, SafeStateWirePolicy};
 use crate::safe_state_group::{
     SafeStateGroupError, SafeStateGroupOperation, SafeStateGroupProgress, SafeStateNodeContract,
 };
+use crate::stream_recovery::ExpectedStreamState;
 use crate::time_persistence::TimeObservationSubmitter;
+use crate::time_profile::DiscoveredTimeStream;
+use crate::time_profile::TimePersistenceInstallationProfile;
+use crate::time_repository::TimeStreamKey;
+use crate::time_rollover::{TimeRolloverClient, TimeRolloverSubmitError, TimeRolloverTicket};
+use crate::time_wal::HostClockId;
 
 pub type ProductionChannelLoop<P, C, T> =
     ThreadedChannelRecordingLoop<P, C, GroupedPersistenceExecutor<CaptureRepository>, T>;
+
+#[derive(Clone)]
+pub struct ChannelRolloverServices {
+    channel_name: String,
+    capture: CaptureInstallationProfile,
+    time: TimePersistenceInstallationProfile,
+    host_clock_id: HostClockId,
+    time_client: TimeRolloverClient,
+}
+
+impl ChannelRolloverServices {
+    pub fn new(
+        channel_name: impl Into<String>,
+        capture: CaptureInstallationProfile,
+        time: TimePersistenceInstallationProfile,
+        host_clock_id: HostClockId,
+        time_client: TimeRolloverClient,
+    ) -> Self {
+        Self {
+            channel_name: channel_name.into(),
+            capture,
+            time,
+            host_clock_id,
+            time_client,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ControlledChannelShutdownPolicy {
@@ -113,6 +146,7 @@ pub struct ProductionChannelTask<P, C, T> {
     maintenance: Option<MaintenanceEntryExecution>,
     resume: Option<ResumeRecordingExecution>,
     startup_admitted: bool,
+    rollover: ChannelRolloverServices,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +169,16 @@ struct ResumeRecordingExecution {
     plan: ResumeRecordingPlan,
     verification: ResumeVerificationGroup,
     activation: Option<SafeStateGroupOperation>,
+    reconciled_nodes: usize,
+    pending_time: Option<PendingTimeRollover>,
+    reconciliation_deadline: Option<Instant>,
+}
+
+struct PendingTimeRollover {
+    evidence: crate::channel_resume::ResumeNodeEvidence,
+    capture_durable: sensor_core::SequenceCursor,
+    expected_time_stream: TimeStreamKey,
+    ticket: TimeRolloverTicket,
 }
 
 impl ResumeRecordingExecution {
@@ -153,6 +197,9 @@ impl ResumeRecordingExecution {
             plan: ResumeRecordingPlan::new(),
             verification: ResumeVerificationGroup::new(&contracts, policy.resume_verification)?,
             activation: None,
+            reconciled_nodes: 0,
+            pending_time: None,
+            reconciliation_deadline: None,
         })
     }
 }
@@ -198,6 +245,7 @@ where
         shutdown_policy: ControlledChannelShutdownPolicy,
         operations: ChannelOperationsController,
         maintenance_policy: ChannelMaintenancePolicy,
+        rollover: ChannelRolloverServices,
     ) -> Result<Self, ProductionChannelTaskBuildError> {
         let shutdown_policy = shutdown_policy.validate()?;
         let maintenance_policy = maintenance_policy.validate()?;
@@ -229,6 +277,7 @@ where
             maintenance: None,
             resume: None,
             startup_admitted: startup.admission().accepted(),
+            rollover,
         })
     }
 
@@ -505,11 +554,92 @@ where
                 }
             }
             ResumeRecordingDirective::ReconcileStreams => {
-                self.fail_resume(
-                    ChannelOperatingMode::Faulted,
-                    OperationsError::StreamReconciliationRequired,
-                )?;
-                return Ok(None);
+                let deadline = match execution.reconciliation_deadline {
+                    Some(deadline) => deadline,
+                    None => {
+                        let deadline = Instant::now()
+                            .checked_add(self.maintenance_policy.barrier_deadline)
+                            .ok_or(ChannelMaintenanceError::DeadlineOverflow)?;
+                        execution.reconciliation_deadline = Some(deadline);
+                        deadline
+                    }
+                };
+                if Instant::now() >= deadline {
+                    return self.fail_stream_reconciliation();
+                }
+                if let Some(pending) = execution.pending_time.take() {
+                    match pending.ticket.try_result() {
+                        Ok(None) => {
+                            execution.pending_time = Some(pending);
+                        }
+                        Ok(Some(Ok(result))) if result.stream == pending.expected_time_stream => {
+                            let evidence = pending.evidence;
+                            if self
+                                .recording
+                                .replace_resume_stream(
+                                    evidence.identity.node_address,
+                                    ExpectedStreamState {
+                                        hardware_id: evidence.identity.hardware_id,
+                                        boot_epoch: evidence.identity.boot_epoch,
+                                        journal_capacity_samples: evidence
+                                            .capabilities
+                                            .journal_capacity_samples,
+                                    },
+                                    pending.capture_durable,
+                                    evidence.stream,
+                                )
+                                .is_err()
+                            {
+                                return self.fail_stream_reconciliation();
+                            }
+                            let Some(node) = self.nodes.iter_mut().find(|node| {
+                                node.id.node_address == evidence.identity.node_address
+                            }) else {
+                                return self.fail_stream_reconciliation();
+                            };
+                            node.boot_epoch = evidence.identity.boot_epoch;
+                            execution.reconciled_nodes += 1;
+                        }
+                        Ok(Some(Ok(_))) | Ok(Some(Err(_))) | Err(_) => {
+                            return self.fail_stream_reconciliation();
+                        }
+                    }
+                } else if execution.reconciled_nodes == execution.verification.evidence().len() {
+                    execution
+                        .plan
+                        .accept(ResumeRecordingEvent::StreamsReconciled)?;
+                } else {
+                    let evidence = execution.verification.evidence()[execution.reconciled_nodes];
+                    let Some(node) = self
+                        .nodes
+                        .iter()
+                        .find(|node| node.id.node_address == evidence.identity.node_address)
+                        .copied()
+                    else {
+                        return self.fail_stream_reconciliation();
+                    };
+                    if !evidence.stream_recovery_required {
+                        if self
+                            .recording
+                            .reconcile_resume_stream(
+                                evidence.identity.node_address,
+                                evidence.capabilities.journal_capacity_samples,
+                                evidence.stream,
+                            )
+                            .is_err()
+                        {
+                            return self.fail_stream_reconciliation();
+                        }
+                        execution.reconciled_nodes += 1;
+                    } else {
+                        match self.begin_epoch_rollover(node, evidence) {
+                            Ok(pending) => execution.pending_time = pending,
+                            Err(_) => {
+                                return self.fail_stream_reconciliation();
+                            }
+                        }
+                    }
+                }
             }
             ResumeRecordingDirective::CheckAdmission => {
                 if !self.startup_admitted {
@@ -600,6 +730,90 @@ where
         self.operations.set_mode(mode)?;
         self.operations.fail_active(error)?;
         Ok(())
+    }
+
+    fn fail_stream_reconciliation(
+        &mut self,
+    ) -> Result<Option<ResumeRecordingExecution>, ProductionChannelStepError> {
+        self.fail_resume(
+            ChannelOperatingMode::Maintenance,
+            OperationsError::StreamReconciliationRequired,
+        )?;
+        Ok(None)
+    }
+
+    fn begin_epoch_rollover(
+        &self,
+        node: ChannelControlNode,
+        evidence: crate::channel_resume::ResumeNodeEvidence,
+    ) -> Result<Option<PendingTimeRollover>, ChannelMaintenanceError> {
+        let bootstrap = NodeBootstrapEvidence {
+            id: node.id,
+            identity: evidence.identity,
+            capabilities: evidence.capabilities,
+            runtime: evidence.runtime,
+            stream: evidence.stream,
+        };
+        let origin = self
+            .rollover
+            .capture
+            .inspect_stream_origin(
+                &self.rollover.channel_name,
+                evidence.identity.hardware_id,
+                evidence.identity.boot_epoch,
+            )
+            .map_err(ChannelMaintenanceError::CaptureProfile)?;
+        let prepared = prepare_capture_stream(bootstrap, origin)
+            .map_err(ChannelMaintenanceError::CaptureRecovery)?;
+        let capture_spec = self
+            .rollover
+            .capture
+            .stream_spec(&self.rollover.channel_name, prepared.stream)
+            .map_err(ChannelMaintenanceError::CaptureProfile)?;
+        let capture = self
+            .recording
+            .persistence()
+            .rollover_capture_stream(node.boot_epoch, capture_spec)
+            .map_err(ChannelMaintenanceError::CaptureRollover)?;
+        let next_time = self
+            .rollover
+            .time
+            .stream_spec(
+                self.rollover.host_clock_id,
+                DiscoveredTimeStream {
+                    channel_name: self.rollover.channel_name.clone(),
+                    hardware_id: evidence.identity.hardware_id,
+                    node_address: evidence.identity.node_address,
+                    boot_epoch: evidence.identity.boot_epoch,
+                },
+            )
+            .map_err(ChannelMaintenanceError::TimeProfile)?;
+        let previous_time = TimeStreamKey {
+            hardware_id: evidence.identity.hardware_id,
+            node_address: evidence.identity.node_address,
+            boot_epoch: node.boot_epoch,
+        };
+        let ticket = match self
+            .rollover
+            .time_client
+            .try_request(previous_time, next_time)
+        {
+            Ok(ticket) => ticket,
+            Err(TimeRolloverSubmitError::QueueFull) => return Ok(None),
+            Err(TimeRolloverSubmitError::Disconnected) => {
+                return Err(ChannelMaintenanceError::TimeRolloverDisconnected)
+            }
+        };
+        Ok(Some(PendingTimeRollover {
+            evidence,
+            capture_durable: capture.durable,
+            expected_time_stream: TimeStreamKey {
+                hardware_id: evidence.identity.hardware_id,
+                node_address: evidence.identity.node_address,
+                boot_epoch: evidence.identity.boot_epoch,
+            },
+            ticket,
+        }))
     }
 }
 
@@ -801,6 +1015,11 @@ pub enum ChannelMaintenanceError {
     ResumeMode(ResumeRecordingError),
     ResumeVerification(ResumeVerificationError),
     Coordinator(MeasurementCoordinatorError),
+    CaptureProfile(CaptureProfileError),
+    CaptureRecovery(ChannelRecoveryError),
+    CaptureRollover(CaptureRolloverError),
+    TimeProfile(crate::time_profile::TimeProfileError),
+    TimeRolloverDisconnected,
 }
 
 impl fmt::Display for ChannelMaintenanceError {

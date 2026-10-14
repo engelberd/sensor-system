@@ -142,10 +142,11 @@ uzasadnią ją pomiary lub testy awarii.
 - kontrolowane Recording → Maintenance → Recording dla niezmienionego
   `boot_epoch`: świeży handshake, `GetState`, `GetStreamState`, odbudowa sesji
   wyłącznie z durable Capture, ponowna admission i sekwencyjny Start;
-- idempotentne prymitywy rollover Capture i Time po zmianie `boot_epoch`.
-  Otwierają nowy WAL wyłącznie na jego wątku właściciela, zachowują stary WAL
-  jako dowód i nie dopuszczają zapisu do nieznanej epoki. Pozostaje połączenie
-  obu operacji z maszyną `ResumeRecording` przez koordynator hosta;
+- pełny Resume po zmianie `boot_epoch`: idempotentny rollover Capture i Time,
+  bounded broker worker → koordynator, wymiana `NodeSession` i kursora
+  schedulera dopiero po obu wynikach durable, a następnie sekwencyjny Start.
+  Stare WAL-e pozostają dowodem; nieudana próba zostawia kanał w Maintenance,
+  więc można ją bezpiecznie ponowić zdalnie;
 - bounded walidacja Capture i strumieniowy `capture-export`, generujący
   `samples.csv`, `events.csv` oraz `windows.csv` bez ładowania nagrania do RAM;
 
@@ -287,10 +288,10 @@ wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
 | 4. Scheduler/`ChannelRuntime` | pełny pion Measurement, TimeSync i symulacja wielu node gotowe | wykonawcy Health/Diagnostic i HIL wielu node |
 | 5. Firmware protocol 5 | Configuration/Commissioning, obrazy A/B, rollback, migracja i confirm gotowe w kodzie | HIL firmware 0.5.8, soak i pomiary granic pojemności |
 | 6. Adapter RS485/HIL | handshake, update i pełny transfer jednej linii gotowe | wiele node, długi przewód, zakłócenia i restart hosta |
-| 7. Capture | WAL, recovery, segmenty, bounded handoff, group commit, fault injection, walidacja, CSV oraz storage-thread rollover gotowe | podłączenie rolloveru do Resume, benchmark, process-kill matrix i dane rzeczywiste |
-| 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja, HIL jednego node i storage-thread rollover gotowe | koordynacja rolloveru z workerem kanału, UTC, długi pomiar dryfu i wiele node |
+| 7. Capture | WAL, recovery, segmenty, bounded handoff, group commit, fault injection, walidacja, CSV i rollover podłączony do Resume gotowe | benchmark, process-kill matrix i dane rzeczywiste |
+| 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja, HIL jednego node i koordynowany rollover gotowe | UTC, długi pomiar dryfu i wiele node |
 | 9. Skala 1–16 | runtime i symulacja 1/4/8 gotowe | fizyczny test macierzy i wiele node na kanał |
-| 10. Operations | bounded command path, ledger, status i wykonanie Maintenance/Resume dla niezmienionej epoki gotowe | nowa epoka, API/IPC, audit i operacje grupowe |
+| 10. Operations | bounded command path, ledger, status i wykonanie Maintenance/Resume także po zmianie epoki gotowe | API/IPC, audit i operacje grupowe |
 | 11. Migracja | eksport CSV gotowy | canary, rollback, procedura operacyjna i usunięcie legacy |
 
 ### Etap 0 — fundament projektu — ukończony
@@ -1001,10 +1002,10 @@ Następne fragmenty mają stałą kolejność zależności:
 
 1. **Gotowe:** proces `sensor-host run` wokół `HostCoordinator`, sygnały,
    okresowy health, globalna reakcja storage i raport końcowego shutdownu.
-2. Dokończyć bieżącą bramkę nowego `boot_epoch`: worker kanału przygotowuje
-   granicę nowego Capture, koordynator rejestruje nowy Time WAL, a dopiero po
-   obu durable wynikach wymieniane są `NodeSession` i cursory schedulera.
-   Następnie wystawić gotowe Maintenance/Resume przez lokalne Operations IPC.
+2. **Gotowe w symulacji:** Resume po nowym `boot_epoch`; worker przygotowuje
+   granicę Capture, koordynator rejestruje Time WAL, a dopiero po obu durable
+   wynikach wymieniane są `NodeSession` i cursory schedulera. Następnie wystawić
+   gotowe Maintenance/Resume przez lokalne Operations IPC.
 3. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
    awarię jednej linii, opóźniony storage oraz globalny storage fault.
 4. Uruchomić Raspberry Pi kolejno z 1, 4 i 8 kanałami. Zmierzyć RTT, turnaround,
@@ -1058,6 +1059,6 @@ startowe pozostaną stałymi kompozycji, aby strojenie nie przebudowywało domen
 Przejście od tego baseline do automatycznej pracy na Raspberry Pi, natywnego
 `hostctl doctor`, Operations IPC i testów 24/7 opisuje
 [HOST-V2-USER-ADOPTION-ROADMAP.md](HOST-V2-USER-ADOPTION-ROADMAP.md). Jego Etap 1,
-wersjonowany snapshot statusu, jest gotowy. Bieżącą bramką jest pełny rollover
-Capture + Time po restarcie node; dashboard pozostaje poza MVP do czasu
-ustabilizowania API.
+wersjonowany snapshot statusu, jest gotowy. Rollover Capture + Time po restarcie
+node przechodzi pełną symulację; bieżącą bramką jest lokalne Operations IPC.
+Dashboard pozostaje poza MVP do czasu ustabilizowania API.
