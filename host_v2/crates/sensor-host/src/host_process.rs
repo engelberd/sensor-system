@@ -94,6 +94,7 @@ impl LinuxHostProcess {
             profile.runtime().recording_activation(),
             profile.runtime().recording_assembly(),
             profile.runtime().controlled_shutdown(),
+            profile.runtime().operations(),
             work_id_seed,
         )
         .map_err(|error| LinuxHostProcessStartError::Runtime(Box::new(error)))?;

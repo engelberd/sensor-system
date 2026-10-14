@@ -24,6 +24,10 @@ use crate::host_health::{
 };
 use crate::installation_bootstrap::{BootstrappedInstallation, BootstrappedInstallationChannel};
 use crate::node_metrics::{NodeMetricsReader, NodeMetricsSnapshot};
+use crate::operations::{
+    ChannelOperationsController, ChannelOperationsHandle, ChannelOperationsPolicy,
+    ChannelOperationsSnapshot, OperationsError,
+};
 use crate::storage_health::{
     StorageHealthObservation, StorageHealthProbe, StorageHealthProbeError,
 };
@@ -159,6 +163,7 @@ where
     channels: ChannelSupervisorSet<T>,
     channel_metrics: Vec<ChannelMetricsReader>,
     node_metrics: Vec<NodeMetricsReader>,
+    channel_operations: Vec<ChannelOperationsHandle>,
     startup_channel_faults: Vec<StartupChannelFault>,
     time: TimeRuntime,
     lifecycle: HostCoordinatorLifecycle,
@@ -188,6 +193,19 @@ where
         self.node_metrics
             .iter()
             .map(NodeMetricsReader::snapshot)
+            .collect()
+    }
+
+    pub fn channel_operations(&self) -> &[ChannelOperationsHandle] {
+        &self.channel_operations
+    }
+
+    pub fn channel_operation_snapshots(
+        &self,
+    ) -> Result<Vec<ChannelOperationsSnapshot>, OperationsError> {
+        self.channel_operations
+            .iter()
+            .map(ChannelOperationsHandle::snapshot)
             .collect()
     }
 
@@ -370,6 +388,7 @@ pub fn start_host_runtime<P, C>(
     activation_policy: RecordingActivationPolicy,
     assembly_policy: RecordingAssemblyPolicy,
     shutdown_policy: ControlledChannelShutdownPolicy,
+    operations_policy: ChannelOperationsPolicy,
     work_id_seed: u64,
 ) -> Result<HostCoordinatorRuntime<ProductionHostChannelTask<P, C>>, HostRuntimeStartError>
 where
@@ -382,6 +401,9 @@ where
     shutdown_policy
         .validate()
         .map_err(HostRuntimeStartError::ShutdownPolicy)?;
+    operations_policy
+        .validate()
+        .map_err(HostRuntimeStartError::OperationsPolicy)?;
 
     let (inventory, channels, time_config) = blueprint.into_parts();
     let time = time_config.start().map_err(HostRuntimeStartError::Time)?;
@@ -441,9 +463,12 @@ where
                 });
             }
         };
-        let task = ProductionChannelTask::new(recording, &startup, shutdown_policy)
+        let (operations, operations_handle) =
+            ChannelOperationsController::new(channel_id, operations_policy)
+                .expect("operations policy was validated before channel composition");
+        let task = ProductionChannelTask::new(recording, &startup, shutdown_policy, operations)
             .expect("shutdown policy was validated before channel composition");
-        prepared.push((channel_id, channel_name, task));
+        prepared.push((channel_id, channel_name, task, operations_handle));
     }
 
     if prepared.is_empty() {
@@ -456,11 +481,13 @@ where
 
     let mut channel_metrics = Vec::with_capacity(prepared.len());
     let mut node_metrics = Vec::with_capacity(inventory.nodes().len());
+    let mut channel_operations = Vec::with_capacity(prepared.len());
     let specs = prepared
         .into_iter()
-        .map(|(channel_id, channel_name, task)| {
+        .map(|(channel_id, channel_name, task, operations)| {
             channel_metrics.push(task.metrics_reader());
             node_metrics.extend(task.node_metrics_readers());
+            channel_operations.push(operations);
             ChannelTaskSpec::new(channel_id, channel_name, task)
         })
         .collect();
@@ -482,6 +509,7 @@ where
         channels,
         channel_metrics,
         node_metrics,
+        channel_operations,
         startup_channel_faults,
         time,
         lifecycle: HostCoordinatorLifecycle::Running,
@@ -557,7 +585,12 @@ pub struct HostStartupCleanup {
 }
 
 fn cleanup_prepared_channels<P, C>(
-    prepared: Vec<(u8, String, ProductionHostChannelTask<P, C>)>,
+    prepared: Vec<(
+        u8,
+        String,
+        ProductionHostChannelTask<P, C>,
+        ChannelOperationsHandle,
+    )>,
     time: TimeRuntime,
 ) -> HostStartupCleanup
 where
@@ -565,7 +598,7 @@ where
     C: crate::channel_endpoint::MonotonicClock + Send + 'static,
 {
     let mut cleanup = HostStartupCleanup::default();
-    for (_, _, task) in prepared {
+    for (_, _, task, _operations) in prepared {
         let report = task.shutdown();
         cleanup.channel_shutdown_failures += usize::from(report.outcome.is_err());
         cleanup.capture_shutdown_failures += usize::from(report.persistence.is_err());
@@ -578,6 +611,7 @@ where
 pub enum HostRuntimeStartError {
     ZeroWorkIdSeed,
     ShutdownPolicy(ControlledChannelShutdownError),
+    OperationsPolicy(OperationsError),
     Time(TimeRuntimeError),
     TimeSubmitter {
         channel_id: u8,
@@ -706,6 +740,9 @@ mod tests {
         DiscoveryTargetId, InstallationDiscoveryPlan, REQUIRED_RECORDING_FEATURES,
     };
     use crate::installation_topology::InstallationTopologyProfile;
+    use crate::operations::{
+        OperationId, OperationKind, OperationPhase, OperationRequest, OperationTarget,
+    };
     use crate::persistence_executor::GroupCommitPolicy;
     use crate::simulation::{SimulatedClock, SimulatedRs485Bus, SimulatedWireNode};
     use crate::storage_health::StorageHealthPolicy;
@@ -938,6 +975,10 @@ mod tests {
                 },
                 drain_deadline: Duration::from_secs(1),
             },
+            ChannelOperationsPolicy {
+                mailbox_capacity: 4,
+                ledger_capacity: 16,
+            },
             1_000,
         )
         .unwrap();
@@ -953,10 +994,35 @@ mod tests {
         }
         assert_eq!(runtime.channels().len(), usize::from(channel_count));
         assert_eq!(runtime.channel_metrics().len(), usize::from(channel_count));
+        assert_eq!(
+            runtime.channel_operations().len(),
+            usize::from(channel_count)
+        );
         assert!(runtime
             .channels()
             .iter()
             .all(|channel| channel.snapshot().completed_steps >= 4));
+        let first_operations = runtime.channel_operations()[0].clone();
+        first_operations
+            .try_submit(OperationRequest {
+                operation_id: OperationId::new(42).unwrap(),
+                target: OperationTarget::Channel { channel_id: 1 },
+                kind: OperationKind::ReadStatus,
+            })
+            .unwrap();
+        let operation_deadline = Instant::now() + Duration::from_secs(1);
+        while first_operations.snapshot().unwrap().records.is_empty()
+            && Instant::now() < operation_deadline
+        {
+            std::thread::yield_now();
+        }
+        let operation_snapshot = first_operations.snapshot().unwrap();
+        assert_eq!(operation_snapshot.records.len(), 1);
+        assert_eq!(
+            operation_snapshot.records[0].phase,
+            OperationPhase::Succeeded
+        );
+        assert_eq!(operation_snapshot.records[0].error, None);
         let supervision = runtime.supervise_once().unwrap();
         assert_eq!(supervision.action, HostSupervisionAction::Continue);
         assert_eq!(

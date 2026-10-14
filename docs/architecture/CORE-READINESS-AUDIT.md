@@ -21,10 +21,11 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
 
 ## Blokery rdzenia
 
-1. Host nie ma jeszcze Operations API ani trwałego rejestru operacji. Codeki
-   Configuration/Commissioning są podłączone do `ChannelAgent`, ale polecenia
-   operatorskie muszą wejść przez właściciela kanału i kontrolowane
-   Production → Maintenance, bez drugiego właściciela RS485.
+1. Host ma już wewnętrzny bounded command path, idempotentny ledger w pamięci i
+   snapshoty statusu per channel. Brakuje wykonawcy kontrolowanego
+   Production → Maintenance, trwałego audytu oraz lokalnego IPC. Codeki
+   Configuration/Commissioning są podłączone do `ChannelAgent`, ale nie są
+   jeszcze osiągalne przez Operations API.
 2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
    odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
    przypisania adresu i końcowego handshake po restarcie.

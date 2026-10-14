@@ -15,10 +15,11 @@ use crate::channel_worker::{ControlledChannelShutdownError, ControlledChannelShu
 use crate::installation_bootstrap::{
     SerialChannelBootstrapError, SerialInstallationBootstrapPolicy,
 };
+use crate::operations::ChannelOperationsPolicy;
 use crate::time_profile::TimeSyncInstallationPolicy;
 use crate::transaction::DurationMicros;
 
-const RUNTIME_V2_KEYS: [&str; 28] = [
+const RUNTIME_V2_KEYS: [&str; 30] = [
     "supervision_interval_ms",
     "metrics_interval_ms",
     "transaction_timeout_ms",
@@ -47,6 +48,8 @@ const RUNTIME_V2_KEYS: [&str; 28] = [
     "shutdown_barrier_deadline_ms",
     "shutdown_node_deadline_ms",
     "shutdown_drain_deadline_ms",
+    "operations_mailbox_capacity",
+    "operations_ledger_capacity",
 ];
 
 /// Tunable process policy for host v2.
@@ -63,6 +66,7 @@ pub struct HostRuntimeInstallationProfile {
     recording_activation: RecordingActivationPolicy,
     recording_assembly: RecordingAssemblyPolicy,
     controlled_shutdown: ControlledChannelShutdownPolicy,
+    operations: ChannelOperationsPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,6 +164,14 @@ impl HostRuntimeInstallationProfile {
             .validate()
             .map_err(RuntimeProfileError::ControlledShutdown)?;
 
+        let operations = ChannelOperationsPolicy {
+            mailbox_capacity: usize_field(runtime, "operations_mailbox_capacity")?,
+            ledger_capacity: usize_field(runtime, "operations_ledger_capacity")?,
+        };
+        operations
+            .validate()
+            .map_err(RuntimeProfileError::Operations)?;
+
         Ok(Self {
             supervision_interval: duration_from_ms(runtime, "supervision_interval_ms")?,
             metrics_interval: duration_from_ms(runtime, "metrics_interval_ms")?,
@@ -168,6 +180,7 @@ impl HostRuntimeInstallationProfile {
             recording_activation,
             recording_assembly,
             controlled_shutdown,
+            operations,
         })
     }
 
@@ -213,6 +226,10 @@ impl HostRuntimeInstallationProfile {
 
     pub const fn controlled_shutdown(&self) -> ControlledChannelShutdownPolicy {
         self.controlled_shutdown
+    }
+
+    pub const fn operations(&self) -> ChannelOperationsPolicy {
+        self.operations
     }
 }
 
@@ -324,6 +341,7 @@ pub enum RuntimeProfileError {
     Startup(ChannelStartupError),
     Activation(RecordingActivationError),
     ControlledShutdown(ControlledChannelShutdownError),
+    Operations(crate::operations::OperationsError),
 }
 
 impl fmt::Display for RuntimeProfileError {
@@ -363,6 +381,8 @@ mod tests {
             profile.controlled_shutdown().drain_deadline,
             Duration::from_secs(5)
         );
+        assert_eq!(profile.operations().mailbox_capacity, 8);
+        assert_eq!(profile.operations().ledger_capacity, 64);
     }
 
     #[test]

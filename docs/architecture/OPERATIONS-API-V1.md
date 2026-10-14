@@ -126,6 +126,17 @@ jedno polecenie na bounded iterację. Pełna kolejka daje `QueueFull`; zerwane
 połączenie daje `Disconnected`. Polecenia nie trafiają do globalnej kolejki
 próbek i nie obchodzą arbitra transakcji kanału.
 
+Ta granica jest podłączona do produkcyjnej kompozycji: `HostCoordinator`
+zachowuje osobny uchwyt poleceń i snapshot statusu dla każdego uruchomionego
+kanału, a ledger należy wyłącznie do jego workera. `ReadStatus` przechodzi już
+całą drogę inbox → admission → ledger → snapshot. Błędny `channel_id` jest
+odrzucany przed kolejką. Pojemności mailboxa i ledgeru pochodzą z
+`runtime_v2`, więc nie są ukrytymi stałymi.
+
+Mutujące polecenie, dla którego wykonawca nie został jeszcze podłączony, kończy
+się jawnym `Failed` z `ExecutorUnavailable`; nie zatrzymuje workera ani
+akwizycji. Jest to stan przejściowy implementacji, a nie obietnica API.
+
 ## Wynik per target
 
 Stan operacji przechodzi dozwoloną sekwencję:
@@ -150,9 +161,9 @@ portów urządzeń, Capture WAL lub wewnętrznych kolejek schedulera.
 
 ## Kolejna bramka
 
-1. podłączyć gotowe inbox, ledger i `SafeStateGroupOperation` do właściciela
-   kanału;
-2. zaimplementować sekwencję quiesce → Idle → końcowy drain → Maintenance oraz
+1. podłączyć `SafeStateGroupOperation` do gotowego już command/ledger/status
+   boundary właściciela kanału;
+2. zaimplementować sekwencję quiesce → Idle → reconcile → końcowy drain → Maintenance oraz
    pełne recovery przed wznowieniem schedulera;
 3. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
 4. dodać lokalne IPC i adapter `hostctl`;

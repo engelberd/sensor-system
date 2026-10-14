@@ -1,6 +1,7 @@
 use core::fmt;
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex};
 
 use sensor_core::HardwareId;
 use sensor_protocol::MeasurementConfiguration;
@@ -248,6 +249,7 @@ impl OperationPhase {
 pub struct OperationRecord {
     pub request: OperationRequest,
     pub phase: OperationPhase,
+    pub error: Option<OperationsError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -303,6 +305,7 @@ impl OperationLedger {
         self.records.push_back(OperationRecord {
             request,
             phase: OperationPhase::Accepted,
+            error: None,
         });
         Ok(RegisterOutcome::Accepted)
     }
@@ -327,10 +330,33 @@ impl OperationLedger {
         Ok(())
     }
 
+    pub fn set_error(
+        &mut self,
+        operation_id: OperationId,
+        phase: OperationPhase,
+        error: OperationsError,
+    ) -> Result<(), OperationsError> {
+        if !matches!(phase, OperationPhase::Rejected | OperationPhase::Failed) {
+            return Err(OperationsError::InvalidErrorPhase(phase));
+        }
+        self.set_phase(operation_id, phase)?;
+        let record = self
+            .records
+            .iter_mut()
+            .find(|record| record.request.operation_id == operation_id)
+            .ok_or(OperationsError::UnknownOperation(operation_id))?;
+        record.error = Some(error);
+        Ok(())
+    }
+
     pub fn get(&self, operation_id: OperationId) -> Option<&OperationRecord> {
         self.records
             .iter()
             .find(|record| record.request.operation_id == operation_id)
+    }
+
+    pub fn records(&self) -> Vec<OperationRecord> {
+        self.records.iter().cloned().collect()
     }
 }
 
@@ -352,6 +378,22 @@ pub struct ChannelCommandPort {
 
 pub struct ChannelCommandInbox {
     receiver: Receiver<OperationRequest>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelOperationsPolicy {
+    pub mailbox_capacity: usize,
+    pub ledger_capacity: usize,
+}
+
+impl ChannelOperationsPolicy {
+    pub fn validate(self) -> Result<Self, OperationsError> {
+        if self.mailbox_capacity == 0 || self.ledger_capacity == 0 {
+            Err(OperationsError::ZeroCapacity)
+        } else {
+            Ok(self)
+        }
+    }
 }
 
 pub fn channel_command_mailbox(
@@ -388,6 +430,235 @@ impl ChannelCommandInbox {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelOperationsSnapshot {
+    pub channel_id: u8,
+    pub mode: ChannelOperatingMode,
+    pub active_operation: Option<OperationId>,
+    pub records: Vec<OperationRecord>,
+}
+
+#[derive(Clone)]
+pub struct ChannelOperationsReader {
+    snapshot: Arc<Mutex<ChannelOperationsSnapshot>>,
+}
+
+#[derive(Clone)]
+pub struct ChannelOperationsHandle {
+    channel_id: u8,
+    commands: ChannelCommandPort,
+    status: ChannelOperationsReader,
+}
+
+impl ChannelOperationsHandle {
+    pub const fn channel_id(&self) -> u8 {
+        self.channel_id
+    }
+
+    pub fn try_submit(&self, request: OperationRequest) -> Result<(), CommandSubmitError> {
+        if request.target.channel_id() != self.channel_id {
+            return Err(CommandSubmitError::Invalid(OperationsError::WrongChannel {
+                expected: self.channel_id,
+                received: request.target.channel_id(),
+            }));
+        }
+        self.commands.try_submit(request)
+    }
+
+    pub fn snapshot(&self) -> Result<ChannelOperationsSnapshot, OperationsError> {
+        self.status.snapshot()
+    }
+}
+
+struct ChannelOperationsPublisher {
+    snapshot: Arc<Mutex<ChannelOperationsSnapshot>>,
+}
+
+impl ChannelOperationsReader {
+    pub fn snapshot(&self) -> Result<ChannelOperationsSnapshot, OperationsError> {
+        self.snapshot
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|_| OperationsError::StatusUnavailable)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChannelCommandDecision {
+    None,
+    Existing {
+        operation_id: OperationId,
+        phase: OperationPhase,
+    },
+    Rejected {
+        operation_id: OperationId,
+        reason: OperationsError,
+    },
+    Started(OperationRequest),
+}
+
+/// Worker-owned admission boundary. It receives at most one request per poll,
+/// owns the idempotency ledger, and publishes immutable snapshots for API
+/// readers. It contains no wire or measurement behavior.
+pub struct ChannelOperationsController {
+    channel_id: u8,
+    mode: ChannelOperatingMode,
+    inbox: ChannelCommandInbox,
+    ledger: OperationLedger,
+    active_operation: Option<OperationId>,
+    publisher: ChannelOperationsPublisher,
+}
+
+impl ChannelOperationsController {
+    pub fn new(
+        channel_id: u8,
+        policy: ChannelOperationsPolicy,
+    ) -> Result<(Self, ChannelOperationsHandle), OperationsError> {
+        OperationTarget::Channel { channel_id }.validate()?;
+        let policy = policy.validate()?;
+        let (port, inbox) = channel_command_mailbox(policy.mailbox_capacity)?;
+        let ledger = OperationLedger::new(policy.ledger_capacity)?;
+        let snapshot = Arc::new(Mutex::new(ChannelOperationsSnapshot {
+            channel_id,
+            mode: ChannelOperatingMode::Recording,
+            active_operation: None,
+            records: Vec::new(),
+        }));
+        let status = ChannelOperationsReader {
+            snapshot: Arc::clone(&snapshot),
+        };
+        let handle = ChannelOperationsHandle {
+            channel_id,
+            commands: port,
+            status,
+        };
+        Ok((
+            Self {
+                channel_id,
+                mode: ChannelOperatingMode::Recording,
+                inbox,
+                ledger,
+                active_operation: None,
+                publisher: ChannelOperationsPublisher { snapshot },
+            },
+            handle,
+        ))
+    }
+
+    pub const fn mode(&self) -> ChannelOperatingMode {
+        self.mode
+    }
+
+    pub const fn active_operation(&self) -> Option<OperationId> {
+        self.active_operation
+    }
+
+    pub fn poll_command(&mut self) -> Result<ChannelCommandDecision, OperationsError> {
+        let Some(request) = self.inbox.try_receive()? else {
+            return Ok(ChannelCommandDecision::None);
+        };
+        if request.target.channel_id() != self.channel_id {
+            return Err(OperationsError::WrongChannel {
+                expected: self.channel_id,
+                received: request.target.channel_id(),
+            });
+        }
+        match self.ledger.register(request.clone())? {
+            RegisterOutcome::Existing(phase) => {
+                self.publish()?;
+                return Ok(ChannelCommandDecision::Existing {
+                    operation_id: request.operation_id,
+                    phase,
+                });
+            }
+            RegisterOutcome::Accepted => {}
+        }
+        if let Err(reason) = admit_operation(&request, self.mode) {
+            self.ledger
+                .set_error(request.operation_id, OperationPhase::Rejected, reason)?;
+            self.publish()?;
+            return Ok(ChannelCommandDecision::Rejected {
+                operation_id: request.operation_id,
+                reason,
+            });
+        }
+        if self.active_operation.is_some() {
+            self.ledger.set_error(
+                request.operation_id,
+                OperationPhase::Rejected,
+                OperationsError::OperationInProgress,
+            )?;
+            self.publish()?;
+            return Ok(ChannelCommandDecision::Rejected {
+                operation_id: request.operation_id,
+                reason: OperationsError::OperationInProgress,
+            });
+        }
+        self.ledger
+            .set_phase(request.operation_id, OperationPhase::Running)?;
+        if request.kind == OperationKind::ReadStatus {
+            self.ledger
+                .set_phase(request.operation_id, OperationPhase::Succeeded)?;
+            self.publish()?;
+            return Ok(ChannelCommandDecision::Existing {
+                operation_id: request.operation_id,
+                phase: OperationPhase::Succeeded,
+            });
+        }
+        self.active_operation = Some(request.operation_id);
+        self.publish()?;
+        Ok(ChannelCommandDecision::Started(request))
+    }
+
+    pub fn set_mode(&mut self, mode: ChannelOperatingMode) -> Result<(), OperationsError> {
+        self.mode = mode;
+        self.publish()
+    }
+
+    pub fn finish_active(&mut self, succeeded: bool) -> Result<OperationId, OperationsError> {
+        let operation_id = self
+            .active_operation
+            .take()
+            .ok_or(OperationsError::NoActiveOperation)?;
+        self.ledger.set_phase(
+            operation_id,
+            if succeeded {
+                OperationPhase::Succeeded
+            } else {
+                OperationPhase::Failed
+            },
+        )?;
+        self.publish()?;
+        Ok(operation_id)
+    }
+
+    pub fn fail_active(&mut self, error: OperationsError) -> Result<OperationId, OperationsError> {
+        let operation_id = self
+            .active_operation
+            .take()
+            .ok_or(OperationsError::NoActiveOperation)?;
+        self.ledger
+            .set_error(operation_id, OperationPhase::Failed, error)?;
+        self.publish()?;
+        Ok(operation_id)
+    }
+
+    fn publish(&self) -> Result<(), OperationsError> {
+        let mut snapshot = self
+            .publisher
+            .snapshot
+            .lock()
+            .map_err(|_| OperationsError::StatusUnavailable)?;
+        *snapshot = ChannelOperationsSnapshot {
+            channel_id: self.channel_id,
+            mode: self.mode,
+            active_operation: self.active_operation,
+            records: self.ledger.records(),
+        };
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandSubmitError {
     Invalid(OperationsError),
@@ -416,7 +687,16 @@ pub enum OperationsError {
         from: OperationPhase,
         to: OperationPhase,
     },
+    InvalidErrorPhase(OperationPhase),
     CommandPathDisconnected,
+    WrongChannel {
+        expected: u8,
+        received: u8,
+    },
+    OperationInProgress,
+    NoActiveOperation,
+    StatusUnavailable,
+    ExecutorUnavailable,
 }
 
 impl fmt::Display for OperationsError {
@@ -442,9 +722,24 @@ impl fmt::Display for OperationsError {
             Self::InvalidPhaseTransition { from, to } => {
                 write!(formatter, "invalid operation transition {from:?} -> {to:?}")
             }
+            Self::InvalidErrorPhase(phase) => {
+                write!(formatter, "operation error cannot be attached to {phase:?}")
+            }
             Self::CommandPathDisconnected => {
                 formatter.write_str("channel command path disconnected")
             }
+            Self::WrongChannel { expected, received } => write!(
+                formatter,
+                "operation for channel {received} reached channel {expected}"
+            ),
+            Self::OperationInProgress => {
+                formatter.write_str("another channel operation is already running")
+            }
+            Self::NoActiveOperation => formatter.write_str("channel has no active operation"),
+            Self::StatusUnavailable => {
+                formatter.write_str("channel operation status is unavailable")
+            }
+            Self::ExecutorUnavailable => formatter.write_str("operation executor is not connected"),
         }
     }
 }
@@ -606,5 +901,137 @@ mod tests {
         );
         assert_eq!(inbox.try_receive().unwrap(), Some(first));
         assert_eq!(inbox.try_receive().unwrap(), None);
+    }
+
+    fn channel_request(operation_id: u64, kind: OperationKind) -> OperationRequest {
+        OperationRequest {
+            operation_id: id(operation_id),
+            target: OperationTarget::Channel { channel_id: 2 },
+            kind,
+        }
+    }
+
+    #[test]
+    fn controller_publishes_idempotent_operation_lifecycle() {
+        let (mut controller, handle) = ChannelOperationsController::new(
+            2,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 2,
+                ledger_capacity: 4,
+            },
+        )
+        .unwrap();
+        let request = channel_request(10, OperationKind::EnterMaintenance);
+        handle.try_submit(request.clone()).unwrap();
+        assert_eq!(
+            controller.poll_command().unwrap(),
+            ChannelCommandDecision::Started(request.clone())
+        );
+        let running = handle.snapshot().unwrap();
+        assert_eq!(running.mode, ChannelOperatingMode::Recording);
+        assert_eq!(running.active_operation, Some(id(10)));
+        assert_eq!(running.records[0].phase, OperationPhase::Running);
+
+        handle.try_submit(request).unwrap();
+        assert_eq!(
+            controller.poll_command().unwrap(),
+            ChannelCommandDecision::Existing {
+                operation_id: id(10),
+                phase: OperationPhase::Running,
+            }
+        );
+        controller
+            .set_mode(ChannelOperatingMode::EnteringMaintenance)
+            .unwrap();
+        controller.finish_active(true).unwrap();
+        let complete = handle.snapshot().unwrap();
+        assert_eq!(complete.mode, ChannelOperatingMode::EnteringMaintenance);
+        assert_eq!(complete.active_operation, None);
+        assert_eq!(complete.records[0].phase, OperationPhase::Succeeded);
+    }
+
+    #[test]
+    fn controller_rejects_conflicting_work_without_replacing_active_operation() {
+        let (mut controller, handle) = ChannelOperationsController::new(
+            2,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 2,
+                ledger_capacity: 4,
+            },
+        )
+        .unwrap();
+        handle
+            .try_submit(channel_request(11, OperationKind::EnterMaintenance))
+            .unwrap();
+        controller.poll_command().unwrap();
+        handle
+            .try_submit(channel_request(12, OperationKind::EnterMaintenance))
+            .unwrap();
+        assert_eq!(
+            controller.poll_command().unwrap(),
+            ChannelCommandDecision::Rejected {
+                operation_id: id(12),
+                reason: OperationsError::OperationInProgress,
+            }
+        );
+        let snapshot = handle.snapshot().unwrap();
+        assert_eq!(snapshot.active_operation, Some(id(11)));
+        assert_eq!(snapshot.records[0].phase, OperationPhase::Running);
+        assert_eq!(snapshot.records[1].phase, OperationPhase::Rejected);
+        assert_eq!(
+            snapshot.records[1].error,
+            Some(OperationsError::OperationInProgress)
+        );
+    }
+
+    #[test]
+    fn executor_failure_is_terminal_and_preserves_its_reason() {
+        let (mut controller, handle) = ChannelOperationsController::new(
+            2,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 1,
+                ledger_capacity: 2,
+            },
+        )
+        .unwrap();
+        handle
+            .try_submit(channel_request(14, OperationKind::EnterMaintenance))
+            .unwrap();
+        controller.poll_command().unwrap();
+        controller
+            .fail_active(OperationsError::ExecutorUnavailable)
+            .unwrap();
+        let snapshot = handle.snapshot().unwrap();
+        assert_eq!(snapshot.active_operation, None);
+        assert_eq!(snapshot.records[0].phase, OperationPhase::Failed);
+        assert_eq!(
+            snapshot.records[0].error,
+            Some(OperationsError::ExecutorUnavailable)
+        );
+    }
+
+    #[test]
+    fn channel_handle_rejects_misrouted_work_before_the_worker_inbox() {
+        let (mut controller, handle) = ChannelOperationsController::new(
+            2,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 1,
+                ledger_capacity: 2,
+            },
+        )
+        .unwrap();
+        let mut request = channel_request(13, OperationKind::ReadStatus);
+        request.target = OperationTarget::Channel { channel_id: 3 };
+        assert_eq!(
+            handle.try_submit(request),
+            Err(CommandSubmitError::Invalid(OperationsError::WrongChannel {
+                expected: 2,
+                received: 3,
+            }))
+        );
+        assert_eq!(
+            controller.poll_command().unwrap(),
+            ChannelCommandDecision::None
+        );
     }
 }

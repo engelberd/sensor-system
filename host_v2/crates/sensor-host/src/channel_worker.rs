@@ -28,6 +28,9 @@ use crate::discovery::DiscoveryTargetId;
 use crate::handshake::HandshakeRequirements;
 use crate::measurement_coordinator::MeasurementCoordinatorError;
 use crate::node_metrics::NodeMetricsReader;
+use crate::operations::{
+    ChannelCommandDecision, ChannelOperationsController, OperationKind, OperationsError,
+};
 use crate::persistence_executor::{
     GroupedPersistenceExecutor, PersistenceExecutorError, PersistenceShutdown,
 };
@@ -65,6 +68,7 @@ pub struct ProductionChannelTask<P, C, T> {
     metrics: ChannelMetricsPublisher,
     metrics_reader: ChannelMetricsReader,
     node_metrics_readers: Vec<NodeMetricsReader>,
+    operations: ChannelOperationsController,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,6 +88,7 @@ where
         recording: ProductionChannelLoop<P, C, T>,
         startup: &ChannelStartupPlan,
         shutdown_policy: ControlledChannelShutdownPolicy,
+        operations: ChannelOperationsController,
     ) -> Result<Self, ControlledChannelShutdownError> {
         let shutdown_policy = shutdown_policy.validate()?;
         let nodes = startup
@@ -109,6 +114,7 @@ where
             metrics,
             metrics_reader,
             node_metrics_readers,
+            operations,
         })
     }
 
@@ -131,12 +137,30 @@ where
     C: MonotonicClock + Send + 'static,
     T: TimeObservationSubmitter + Send + 'static,
 {
-    type StepError = ThreadedChannelRecordingLoopError<CaptureRepositoryError>;
+    type StepError = ProductionChannelStepError;
     type Shutdown = ControlledChannelShutdownReport;
 
     fn step(&mut self) -> Result<(), Self::StepError> {
+        match self
+            .operations
+            .poll_command()
+            .map_err(ProductionChannelStepError::Operations)?
+        {
+            ChannelCommandDecision::Started(request) => {
+                debug_assert_ne!(request.kind, OperationKind::ReadStatus);
+                self.operations
+                    .fail_active(OperationsError::ExecutorUnavailable)
+                    .map_err(ProductionChannelStepError::Operations)?;
+            }
+            ChannelCommandDecision::None
+            | ChannelCommandDecision::Existing { .. }
+            | ChannelCommandDecision::Rejected { .. } => {}
+        }
         let started = Instant::now();
-        let event = self.recording.step()?;
+        let event = self
+            .recording
+            .step()
+            .map_err(ProductionChannelStepError::Recording)?;
         self.metrics.observe_step(&event, started.elapsed());
         Ok(())
     }
@@ -146,6 +170,20 @@ where
         controlled_shutdown_channel(self.recording, &node_ids, self.shutdown_policy)
     }
 }
+
+#[derive(Debug)]
+pub enum ProductionChannelStepError {
+    Recording(ThreadedChannelRecordingLoopError<CaptureRepositoryError>),
+    Operations(OperationsError),
+}
+
+impl fmt::Display for ProductionChannelStepError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "production channel step error: {self:?}")
+    }
+}
+
+impl std::error::Error for ProductionChannelStepError {}
 
 pub struct ControlledChannelShutdownReport {
     pub outcome: Result<(), ControlledChannelShutdownError>,

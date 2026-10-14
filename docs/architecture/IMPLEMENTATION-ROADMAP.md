@@ -737,8 +737,12 @@ Bieżąca kolejność implementacji:
    kontrakt handshake dla późniejszego recovery. `MaintenanceEntryPlan` jest
    osobną polityką kolejności quiesce → Idle → reconcile → drain → Maintenance
    oraz awaryjnego powrotu do stabilnego Idle;
-2. podłączyć inbox, ledger i executor do workera będącego jedynym właścicielem
-   RS485;
+2. **Częściowo gotowe:** inbox, idempotentny ledger i snapshot statusu są
+   podłączone do produkcyjnego workera przez osobny bounded uchwyt per channel;
+   `ReadStatus` przechodzi cały pion, błędny routing jest odrzucany przed
+   kolejką, a brak wykonawcy mutacji daje jawne `ExecutorUnavailable` bez
+   zatrzymania Recording. Pozostaje podłączenie `SafeStateGroupOperation` do
+   tego samego workera i arbitra RS485;
 3. jawne przejścia `Recording → Stopping → Maintenance` i powrót przez pełną
    walidację/admission;
 4. odczyt oraz mutacje Configuration per node;
