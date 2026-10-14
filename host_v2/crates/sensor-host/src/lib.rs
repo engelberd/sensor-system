@@ -21,6 +21,7 @@ pub mod channel_mode;
 pub mod channel_port;
 pub mod channel_recording_loop;
 pub mod channel_recovery;
+pub mod channel_resume;
 pub mod channel_runtime;
 pub mod channel_scheduler;
 pub mod channel_startup;

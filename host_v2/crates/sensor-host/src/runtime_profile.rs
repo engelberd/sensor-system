@@ -23,7 +23,7 @@ use crate::safe_state::{SafeStatePolicy, SafeStateWirePolicy};
 use crate::time_profile::TimeSyncInstallationPolicy;
 use crate::transaction::DurationMicros;
 
-const RUNTIME_V2_KEYS: [&str; 38] = [
+const RUNTIME_V2_KEYS: [&str; 39] = [
     "supervision_interval_ms",
     "metrics_interval_ms",
     "transaction_timeout_ms",
@@ -62,6 +62,7 @@ const RUNTIME_V2_KEYS: [&str; 38] = [
     "safe_action_deadline_ms",
     "safe_restart_settle_ms",
     "safe_restart_confirmation_ms",
+    "resume_node_deadline_ms",
 ];
 
 /// Tunable process policy for host v2.
@@ -200,6 +201,9 @@ impl HostRuntimeInstallationProfile {
                     runtime,
                     "safe_restart_confirmation_ms",
                 )?,
+            },
+            resume_verification: crate::channel_resume::ResumeVerificationPolicy {
+                node_deadline: duration_micros_from_ms(runtime, "resume_node_deadline_ms")?,
             },
         };
         maintenance

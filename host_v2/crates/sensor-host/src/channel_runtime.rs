@@ -629,6 +629,46 @@ impl ChannelRuntime {
         Ok(())
     }
 
+    /// Refreshes a healthy, quiesced node after a service interval. The
+    /// durable/session cursor must equal the scheduler cursor; any mismatch is
+    /// an ownership bug and cannot be repaired by relabelling state.
+    pub fn resume_node(
+        &mut self,
+        node_address: u8,
+        recovered_cursor: SequenceCursor,
+        observed_produced: SequenceCursor,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        if self.active_dispatch.is_some() {
+            return Err(ChannelRuntimeError::ResumeWhileActive);
+        }
+        let node_index = self
+            .nodes
+            .iter()
+            .position(|node| node.config.node_address == node_address)
+            .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
+        if self.nodes[node_index].recovery_required {
+            return Err(ChannelRuntimeError::RecoveryRequired(node_address));
+        }
+        if self.nodes[node_index].received != recovered_cursor {
+            return Err(ChannelRuntimeError::ResumeCursorMismatch {
+                node_address,
+                scheduled: self.nodes[node_index].received,
+                recovered: recovered_cursor,
+            });
+        }
+        let work_id = self.allocate_work_id()?;
+        let node = &mut self.nodes[node_index];
+        node.observed_produced = observed_produced;
+        node.observed_at = now;
+        node.service_deadline = now;
+        node.ready_at = now;
+        node.queued_at = now;
+        node.consecutive_failures = 0;
+        node.work_id = work_id;
+        Ok(())
+    }
+
     pub fn fail_measurement(
         &mut self,
         dispatch: MeasurementDispatch,
@@ -856,6 +896,12 @@ pub enum ChannelRuntimeError {
     StreamRegressed,
     RecoveryNotRequired(u8),
     RecoveryRequired(u8),
+    ResumeWhileActive,
+    ResumeCursorMismatch {
+        node_address: u8,
+        scheduled: SequenceCursor,
+        recovered: SequenceCursor,
+    },
     ClockRegressed,
     TimeOverflow,
     StaleDispatch,

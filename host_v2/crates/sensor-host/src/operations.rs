@@ -701,6 +701,9 @@ pub enum OperationsError {
     MaintenanceDrainDeadline,
     MaintenanceConvergenceFailed,
     StreamReconciliationRequired,
+    ResumeVerificationFailed,
+    ResumeAdmissionRejected,
+    ResumeActivationFailed,
     NodeOffline,
 }
 
@@ -756,6 +759,15 @@ impl fmt::Display for OperationsError {
             }
             Self::StreamReconciliationRequired => {
                 formatter.write_str("node restarted and stream reconciliation is required")
+            }
+            Self::ResumeVerificationFailed => {
+                formatter.write_str("recording resume verification failed")
+            }
+            Self::ResumeAdmissionRejected => {
+                formatter.write_str("recording resume admission was rejected")
+            }
+            Self::ResumeActivationFailed => {
+                formatter.write_str("recording resume activation failed")
             }
             Self::NodeOffline => formatter.write_str("node is offline"),
         }

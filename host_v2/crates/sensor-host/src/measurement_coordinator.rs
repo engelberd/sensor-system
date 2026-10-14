@@ -15,6 +15,10 @@ use crate::measurement_transfer::{MeasurementTransfer, MeasurementTransferError}
 use crate::node_metrics::{NodeMetricsPublisher, NodeMetricsReader};
 use crate::node_session::{NodeSession, SessionPhase};
 use crate::persistence_executor::WriteRecoveryRange;
+use crate::stream_recovery::{
+    reconcile_existing_capture, CaptureRecoveryEvidence, ExpectedStreamState, RecoveryContinuity,
+    StreamRecoveryError,
+};
 use crate::time_persistence::{
     TimeObservationRecord, TimeObservationRecordError, TimeObservationSubmitErrorKind,
     TimeObservationSubmitter,
@@ -648,6 +652,52 @@ impl ChannelWorkCoordinator {
         Ok(())
     }
 
+    /// Rebuilds one quiesced session from fresh node evidence and the cursor
+    /// already proven durable by Capture. This is the same fail-closed rule as
+    /// process startup; no cursor is advanced from volatile host state.
+    pub fn reconcile_resume_stream(
+        &mut self,
+        node_address: u8,
+        journal_capacity_samples: u32,
+        stream: sensor_protocol::StreamState,
+        now: MonotonicMicros,
+    ) -> Result<RecoveryContinuity, MeasurementCoordinatorError> {
+        if !self.is_quiescent() || self.shutdown_drain_nodes.is_some() {
+            return Err(MeasurementCoordinatorError::ResumeNotReady);
+        }
+        let session = self.managed_session(node_address)?.session.as_ref().ok_or(
+            MeasurementCoordinatorError::SessionUnavailable(node_address),
+        )?;
+        let expected = ExpectedStreamState {
+            hardware_id: session.hardware_id(),
+            boot_epoch: session.boot_epoch(),
+            journal_capacity_samples,
+        };
+        let capture = CaptureRecoveryEvidence {
+            hardware_id: session.hardware_id(),
+            boot_epoch: session.boot_epoch(),
+            durable_cursor: session.cursors().durable(),
+        };
+        let reconciled = reconcile_existing_capture(expected, capture, stream)
+            .map_err(MeasurementCoordinatorError::StreamRecovery)?;
+        let continuity = reconciled.continuity();
+        let session = reconciled.into_session();
+        self.runtime
+            .resume_node(
+                node_address,
+                session.cursors().received(),
+                stream.produced,
+                now,
+            )
+            .map_err(MeasurementCoordinatorError::Runtime)?;
+        let managed = self.managed_session_mut(node_address)?;
+        managed
+            .metrics
+            .observe_session(&session, Some(stream.produced.get()), now);
+        managed.session = Some(session);
+        Ok(continuity)
+    }
+
     pub const fn runtime(&self) -> &ChannelRuntime {
         &self.runtime
     }
@@ -890,6 +940,7 @@ pub enum MeasurementCoordinatorError {
     ShutdownDrainIncomplete,
     ShutdownDrainOrder,
     ResumeNotReady,
+    StreamRecovery(StreamRecoveryError),
 }
 
 impl fmt::Display for MeasurementCoordinatorError {

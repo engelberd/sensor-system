@@ -173,6 +173,7 @@ pub enum ChannelEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlWorkKey {
     Handshake { node_address: u8 },
+    StreamState { node_address: u8 },
     Lifecycle { node_address: u8, operation_id: u32 },
 }
 
@@ -218,6 +219,12 @@ impl PendingWork {
             (Self::Handshake(handshake), ControlWorkKey::Handshake { node_address }) => {
                 handshake.requirements().node_address == node_address
             }
+            (
+                Self::StreamState {
+                    node_address: pending,
+                },
+                ControlWorkKey::StreamState { node_address },
+            ) => *pending == node_address,
             (
                 Self::Lifecycle(operation),
                 ControlWorkKey::Lifecycle {

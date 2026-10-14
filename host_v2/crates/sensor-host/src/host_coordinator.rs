@@ -912,7 +912,8 @@ mod tests {
                     BootEpoch::new(u64::from(channel_id)),
                     2048,
                     OutputRateCode::Hz125.sample_rate(),
-                )],
+                )
+                .with_identity_contract(identity(channel_id), capabilities())],
             );
             bus.set_auto_advance_on_read(true);
             let agent = ChannelAgent::new(
@@ -1013,6 +1014,9 @@ mod tests {
                         restart_settle_delay: duration(10_000),
                         restart_confirmation_deadline: duration(500_000),
                     },
+                    resume_verification: crate::channel_resume::ResumeVerificationPolicy {
+                        node_deadline: duration(500_000),
+                    },
                 },
             },
             1_000,
@@ -1068,10 +1072,13 @@ mod tests {
                 })
                 .unwrap();
             let maintenance_deadline = Instant::now() + Duration::from_secs(2);
-            while first_operations.snapshot().unwrap().mode
-                != crate::operations::ChannelOperatingMode::Maintenance
-                && Instant::now() < maintenance_deadline
-            {
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.mode != crate::operations::ChannelOperatingMode::Maintenance
+                    || snapshot.records.len() < 2
+                    || snapshot.records[1].phase != OperationPhase::Succeeded)
+                    && Instant::now() < maintenance_deadline
+            } {
                 std::thread::yield_now();
             }
             let maintenance = first_operations.snapshot().unwrap();
@@ -1083,6 +1090,33 @@ mod tests {
             );
             assert_eq!(maintenance.records[1].phase, OperationPhase::Succeeded);
             assert_eq!(maintenance.records[1].error, None);
+
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(44).unwrap(),
+                    target: OperationTarget::Channel { channel_id: 1 },
+                    kind: OperationKind::ResumeRecording,
+                })
+                .unwrap();
+            let resume_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.mode != crate::operations::ChannelOperatingMode::Recording
+                    || snapshot.records.len() < 3
+                    || snapshot.records[2].phase != OperationPhase::Succeeded)
+                    && Instant::now() < resume_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let resumed = first_operations.snapshot().unwrap();
+            assert_eq!(
+                resumed.mode,
+                crate::operations::ChannelOperatingMode::Recording,
+                "operation={resumed:?} worker={:?}",
+                runtime.channels()[0].snapshot()
+            );
+            assert_eq!(resumed.records[2].phase, OperationPhase::Succeeded);
+            assert_eq!(resumed.records[2].error, None);
         }
         let supervision = runtime.supervise_once().unwrap();
         assert_eq!(supervision.action, HostSupervisionAction::Continue);

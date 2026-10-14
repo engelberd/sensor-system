@@ -67,7 +67,8 @@
     "safe_restart_cycles": 1,
     "safe_action_deadline_ms": 1000,
     "safe_restart_settle_ms": 500,
-    "safe_restart_confirmation_ms": 5000
+    "safe_restart_confirmation_ms": 5000,
+    "resume_node_deadline_ms": 5000
   },
   "supervisor": {
     "status_file": "/run/sensor-system/supervisor.status.json",

@@ -457,6 +457,25 @@ where
         self.measurements.abort_shutdown_drain()
     }
 
+    pub fn resume_scheduling(&mut self) -> Result<(), MeasurementCoordinatorError> {
+        self.measurements.resume_scheduling()
+    }
+
+    pub fn reconcile_resume_stream(
+        &mut self,
+        node_address: u8,
+        journal_capacity_samples: u32,
+        stream: sensor_protocol::StreamState,
+    ) -> Result<crate::stream_recovery::RecoveryContinuity, MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements.reconcile_resume_stream(
+            node_address,
+            journal_capacity_samples,
+            stream,
+            now,
+        )
+    }
+
     pub fn into_parts(self) -> (ChannelEndpoint<P, C>, ChannelWorkCoordinator, E, T) {
         (
             self.endpoint,

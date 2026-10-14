@@ -16,6 +16,7 @@ use crate::transaction::{DurationMicros, MonotonicMicros};
 pub enum SafeStateTarget {
     Idle,
     Maintenance,
+    Recording,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +50,7 @@ impl SafeStatePolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SafeStateAction {
     GetState,
+    Start,
     Stop,
     EnterMaintenance,
     ExitMaintenance,
@@ -132,6 +134,13 @@ impl SafeStateConverger {
                 Some(RuntimeState::Maintenance) if self.target == SafeStateTarget::Maintenance => {
                     self.status = SafeStateStatus::Reached(SafeStateTarget::Maintenance);
                     return Ok(None);
+                }
+                Some(RuntimeState::Recording) if self.target == SafeStateTarget::Recording => {
+                    self.status = SafeStateStatus::Reached(SafeStateTarget::Recording);
+                    return Ok(None);
+                }
+                Some(RuntimeState::Idle) if self.target == SafeStateTarget::Recording => {
+                    SafeStateAction::Start
                 }
                 Some(RuntimeState::Idle) => SafeStateAction::EnterMaintenance,
                 Some(RuntimeState::Maintenance) => SafeStateAction::ExitMaintenance,
@@ -571,6 +580,7 @@ impl SafeStateWireOperation {
 fn runtime_operation(action: SafeStateAction) -> RuntimeOperation {
     match action {
         SafeStateAction::GetState => RuntimeOperation::GetState,
+        SafeStateAction::Start => RuntimeOperation::Start,
         SafeStateAction::Stop => RuntimeOperation::Stop,
         SafeStateAction::EnterMaintenance => RuntimeOperation::EnterMaintenance,
         SafeStateAction::ExitMaintenance => RuntimeOperation::ExitMaintenance,
@@ -581,6 +591,7 @@ fn runtime_operation(action: SafeStateAction) -> RuntimeOperation {
 fn runtime_result_matches_action(action: SafeStateAction, state: RuntimeState) -> bool {
     match action {
         SafeStateAction::GetState | SafeStateAction::Restart => true,
+        SafeStateAction::Start => state == RuntimeState::Recording,
         SafeStateAction::Stop | SafeStateAction::ExitMaintenance => state == RuntimeState::Idle,
         SafeStateAction::EnterMaintenance => state == RuntimeState::Maintenance,
     }

@@ -15,12 +15,17 @@ use crate::channel_endpoint::{ChannelEndpointEvent, MonotonicClock};
 use crate::channel_metrics::{ChannelMetricsPublisher, ChannelMetricsReader};
 use crate::channel_mode::{
     ChannelModeError, MaintenanceEntryDirective, MaintenanceEntryEvent, MaintenanceEntryPlan,
+    ResumeRecordingDirective, ResumeRecordingError, ResumeRecordingEvent, ResumeRecordingPlan,
 };
 use crate::channel_recording_loop::{
     ThreadedChannelRecordingEvent, ThreadedChannelRecordingLoop, ThreadedChannelRecordingLoopError,
 };
 use crate::channel_recovery::{
     prepare_capture_stream, reconcile_channel_streams, ChannelRecoveryError,
+};
+use crate::channel_resume::{
+    ResumeNodeContract, ResumeVerificationError, ResumeVerificationGroup, ResumeVerificationPolicy,
+    ResumeVerificationProgress,
 };
 use crate::channel_startup::{
     assemble_recording_coordinator, ChannelAssemblyError, ChannelStartupPlan,
@@ -60,6 +65,7 @@ pub struct ChannelMaintenancePolicy {
     pub drain_deadline: Duration,
     pub safe_state: SafeStatePolicy,
     pub wire: SafeStateWirePolicy,
+    pub resume_verification: ResumeVerificationPolicy,
 }
 
 impl ChannelMaintenancePolicy {
@@ -73,6 +79,9 @@ impl ChannelMaintenancePolicy {
         self.safe_state
             .validate()
             .map_err(ChannelMaintenanceError::SafeStatePolicy)?;
+        if self.resume_verification.node_deadline.get() == 0 {
+            return Err(ChannelMaintenanceError::ZeroResumeNodeDeadline);
+        }
         Ok(self)
     }
 }
@@ -102,6 +111,8 @@ pub struct ProductionChannelTask<P, C, T> {
     operations: ChannelOperationsController,
     maintenance_policy: ChannelMaintenancePolicy,
     maintenance: Option<MaintenanceEntryExecution>,
+    resume: Option<ResumeRecordingExecution>,
+    startup_admitted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +129,32 @@ struct MaintenanceEntryExecution {
     barrier_deadline: Instant,
     drain_deadline: Option<Instant>,
     drain_started: bool,
+}
+
+struct ResumeRecordingExecution {
+    plan: ResumeRecordingPlan,
+    verification: ResumeVerificationGroup,
+    activation: Option<SafeStateGroupOperation>,
+}
+
+impl ResumeRecordingExecution {
+    fn new(
+        nodes: &[ChannelControlNode],
+        policy: ChannelMaintenancePolicy,
+    ) -> Result<Self, ChannelMaintenanceError> {
+        let contracts = nodes
+            .iter()
+            .map(|node| ResumeNodeContract {
+                requirements: node.requirements,
+                previous_boot_epoch: node.boot_epoch,
+            })
+            .collect::<Vec<_>>();
+        Ok(Self {
+            plan: ResumeRecordingPlan::new(),
+            verification: ResumeVerificationGroup::new(&contracts, policy.resume_verification)?,
+            activation: None,
+        })
+    }
 }
 
 impl MaintenanceEntryExecution {
@@ -190,6 +227,8 @@ where
             operations,
             maintenance_policy,
             maintenance: None,
+            resume: None,
+            startup_admitted: startup.admission().accepted(),
         })
     }
 
@@ -384,7 +423,176 @@ where
         Ok(())
     }
 
+    fn drive_resume(
+        &mut self,
+        mut execution: ResumeRecordingExecution,
+    ) -> Result<Option<ResumeRecordingExecution>, ProductionChannelStepError> {
+        match execution.plan.directive() {
+            ResumeRecordingDirective::VerifyNodes => {
+                let now = self.recording.endpoint_mut().now();
+                let progress = match execution
+                    .verification
+                    .drive(self.recording.endpoint_mut().agent_mut(), now)
+                {
+                    Ok(progress) => progress,
+                    Err(_) => {
+                        self.fail_resume(
+                            ChannelOperatingMode::Faulted,
+                            OperationsError::ResumeVerificationFailed,
+                        )?;
+                        return Ok(None);
+                    }
+                };
+                match progress {
+                    ResumeVerificationProgress::Complete => {
+                        let stream_recovery_required =
+                            execution.verification.stream_recovery_required()?;
+                        if !stream_recovery_required {
+                            for evidence in execution.verification.evidence().iter().copied() {
+                                if self
+                                    .recording
+                                    .reconcile_resume_stream(
+                                        evidence.identity.node_address,
+                                        evidence.capabilities.journal_capacity_samples,
+                                        evidence.stream,
+                                    )
+                                    .is_err()
+                                {
+                                    self.fail_resume(
+                                        ChannelOperatingMode::Faulted,
+                                        OperationsError::ResumeVerificationFailed,
+                                    )?;
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                        execution.plan.accept(ResumeRecordingEvent::NodesVerified {
+                            stream_recovery_required,
+                        })?;
+                    }
+                    ResumeVerificationProgress::NodeOffline { .. } => {
+                        execution.plan.accept(ResumeRecordingEvent::NodeOffline)?;
+                    }
+                    ResumeVerificationProgress::Submitted { .. }
+                    | ResumeVerificationProgress::Waiting { .. }
+                    | ResumeVerificationProgress::AwaitingWireSettlement { .. } => {
+                        let started = Instant::now();
+                        let endpoint_event = match self.recording.endpoint_mut().step() {
+                            Ok(event) => event,
+                            Err(_) => {
+                                self.fail_resume(
+                                    ChannelOperatingMode::Faulted,
+                                    OperationsError::ResumeVerificationFailed,
+                                )?;
+                                return Ok(None);
+                            }
+                        };
+                        if let ChannelEndpointEvent::Agent(event) = &endpoint_event {
+                            if execution.verification.handle_event(event).is_err() {
+                                self.fail_resume(
+                                    ChannelOperatingMode::Faulted,
+                                    OperationsError::ResumeVerificationFailed,
+                                )?;
+                                return Ok(None);
+                            }
+                        }
+                        self.metrics.observe_step(
+                            &ThreadedChannelRecordingEvent::Endpoint(endpoint_event),
+                            started.elapsed(),
+                        );
+                    }
+                    ResumeVerificationProgress::NodeVerified { .. } => {}
+                }
+            }
+            ResumeRecordingDirective::ReconcileStreams => {
+                self.fail_resume(
+                    ChannelOperatingMode::Faulted,
+                    OperationsError::StreamReconciliationRequired,
+                )?;
+                return Ok(None);
+            }
+            ResumeRecordingDirective::CheckAdmission => {
+                if !self.startup_admitted {
+                    execution.plan.accept(ResumeRecordingEvent::Failed)?;
+                } else {
+                    execution
+                        .plan
+                        .accept(ResumeRecordingEvent::AdmissionAccepted)?;
+                    let contracts = self
+                        .nodes
+                        .iter()
+                        .map(|node| SafeStateNodeContract {
+                            requirements: node.requirements,
+                            boot_epoch: node.boot_epoch,
+                        })
+                        .collect::<Vec<_>>();
+                    execution.activation =
+                        Some(self.safe_state_group(SafeStateTarget::Recording, &contracts)?);
+                }
+            }
+            ResumeRecordingDirective::ActivateNodes => {
+                let group = execution
+                    .activation
+                    .as_mut()
+                    .ok_or(ChannelMaintenanceError::MissingSafeStateGroup)?;
+                let now = self.recording.endpoint_mut().now();
+                match group.drive(self.recording.endpoint_mut().agent_mut(), now)? {
+                    SafeStateGroupProgress::Complete => {
+                        execution
+                            .plan
+                            .accept(ResumeRecordingEvent::NodesActivated)?;
+                    }
+                    SafeStateGroupProgress::NodeOffline { .. } => {
+                        execution.plan.accept(ResumeRecordingEvent::NodeOffline)?;
+                    }
+                    SafeStateGroupProgress::NodeConvergenceFailed { .. } => {
+                        execution.plan.accept(ResumeRecordingEvent::Failed)?;
+                    }
+                    SafeStateGroupProgress::Node { .. }
+                    | SafeStateGroupProgress::NodeReached { .. } => {
+                        self.step_safe_state_endpoint(group)?;
+                    }
+                }
+            }
+            ResumeRecordingDirective::ResumeScheduling => {
+                self.recording.resume_scheduling()?;
+                execution
+                    .plan
+                    .accept(ResumeRecordingEvent::SchedulingResumed)?;
+            }
+            ResumeRecordingDirective::Complete => {
+                self.operations.set_mode(ChannelOperatingMode::Recording)?;
+                self.operations.finish_active(true)?;
+                return Ok(None);
+            }
+            ResumeRecordingDirective::Faulted => {
+                let error = if self.startup_admitted {
+                    OperationsError::ResumeActivationFailed
+                } else {
+                    OperationsError::ResumeAdmissionRejected
+                };
+                self.fail_resume(ChannelOperatingMode::Faulted, error)?;
+                return Ok(None);
+            }
+            ResumeRecordingDirective::Offline => {
+                self.fail_resume(ChannelOperatingMode::Offline, OperationsError::NodeOffline)?;
+                return Ok(None);
+            }
+        }
+        Ok(Some(execution))
+    }
+
     fn fail_maintenance(
+        &mut self,
+        mode: ChannelOperatingMode,
+        error: OperationsError,
+    ) -> Result<(), ProductionChannelStepError> {
+        self.operations.set_mode(mode)?;
+        self.operations.fail_active(error)?;
+        Ok(())
+    }
+
+    fn fail_resume(
         &mut self,
         mode: ChannelOperatingMode,
         error: OperationsError,
@@ -420,6 +628,14 @@ where
                         &self.nodes,
                         self.maintenance_policy,
                     )?);
+                } else if request.kind == OperationKind::ResumeRecording && self.resume.is_none() {
+                    self.operations
+                        .set_mode(ChannelOperatingMode::ResumingRecording)
+                        .map_err(ProductionChannelStepError::Operations)?;
+                    self.resume = Some(ResumeRecordingExecution::new(
+                        &self.nodes,
+                        self.maintenance_policy,
+                    )?);
                 } else {
                     self.operations
                         .fail_active(OperationsError::ExecutorUnavailable)
@@ -432,6 +648,10 @@ where
         }
         if let Some(execution) = self.maintenance.take() {
             self.maintenance = self.drive_maintenance(execution)?;
+            return Ok(());
+        }
+        if let Some(execution) = self.resume.take() {
+            self.resume = self.drive_resume(execution)?;
             return Ok(());
         }
         let started = Instant::now();
@@ -515,6 +735,18 @@ impl From<ChannelModeError> for ProductionChannelStepError {
     }
 }
 
+impl From<ResumeRecordingError> for ProductionChannelStepError {
+    fn from(value: ResumeRecordingError) -> Self {
+        Self::Maintenance(ChannelMaintenanceError::ResumeMode(value))
+    }
+}
+
+impl From<ResumeVerificationError> for ProductionChannelStepError {
+    fn from(value: ResumeVerificationError) -> Self {
+        Self::Maintenance(ChannelMaintenanceError::ResumeVerification(value))
+    }
+}
+
 impl From<SafeStateGroupError> for ProductionChannelStepError {
     fn from(value: SafeStateGroupError) -> Self {
         Self::Maintenance(ChannelMaintenanceError::SafeStateGroup(value))
@@ -559,12 +791,15 @@ impl std::error::Error for ProductionChannelTaskBuildError {}
 pub enum ChannelMaintenanceError {
     ZeroBarrierDeadline,
     ZeroDrainDeadline,
+    ZeroResumeNodeDeadline,
     EmptyChannel,
     DeadlineOverflow,
     MissingSafeStateGroup,
     SafeStatePolicy(crate::safe_state::SafeStateError),
     SafeStateGroup(SafeStateGroupError),
     Mode(ChannelModeError),
+    ResumeMode(ResumeRecordingError),
+    ResumeVerification(ResumeVerificationError),
     Coordinator(MeasurementCoordinatorError),
 }
 
@@ -575,6 +810,12 @@ impl fmt::Display for ChannelMaintenanceError {
 }
 
 impl std::error::Error for ChannelMaintenanceError {}
+
+impl From<ResumeVerificationError> for ChannelMaintenanceError {
+    fn from(value: ResumeVerificationError) -> Self {
+        Self::ResumeVerification(value)
+    }
+}
 
 pub struct ControlledChannelShutdownReport {
     pub outcome: Result<(), ControlledChannelShutdownError>,

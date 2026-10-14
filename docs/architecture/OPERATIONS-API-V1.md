@@ -182,14 +182,30 @@ końcu otwiera scheduler Measurement/TimeSync. Błąd kończy się stabilnym
 `Faulted`, a nieosiągalny node stabilnym `Offline`; stan `ResumingRecording` nie
 jest wynikiem końcowym.
 
-Polityka jest pokryta testami obu ścieżek. Nieblokujący adapter wire oraz
-rekonfiguracja wyłącznego właściciela Capture są następnym przyrostem; do ich
-podłączenia `ResumeRecording` nadal zwraca `ExecutorUnavailable`.
+Polityka i nieblokujący adapter wire są podłączone do produkcyjnego workera.
+Każdy node jest sprawdzany sekwencyjnie przez pełny handshake, `GetState` i
+`GetStreamState` z jednym konfigurowalnym deadline. `GetStreamState` ma własny
+klucz bezpiecznego porzucenia i, tak jak pozostałe control work, czeka na
+zakończenie aktywnej próby oraz kwarantanny spóźnionej odpowiedzi. Przy tej
+samej epoce worker ponownie buduje `NodeSession` wyłącznie z cursora trwałego w
+Capture, wymaga zgodnego kursora schedulera, uruchamia node sekwencyjnie i na
+końcu otwiera Measurement/TimeSync.
+
+Do czasu podłączenia mutacji Configuration admission używa zatwierdzonego planu
+startowego, którego ODR i capabilities są ponownie sprawdzane przez handshake.
+Podłączenie `ApplyConfiguration` musi zastąpić ten skrót ponownym obliczeniem
+budżetu z nowej konfiguracji przed aktywacją.
+
+Pion Recording → Maintenance → Recording przechodzi przez rzeczywisty framing,
+codeki, symulowany RS485 i produkcyjny worker w macierzy 1/4/8 channels. Zmiana
+`boot_epoch` nadal kończy operację jawnym `StreamReconciliationRequired`, zanim
+node lub scheduler zostaną uruchomione. Pozostałym przyrostem jest dynamiczne,
+wyłączne przełączenie Capture na nowy strumień oraz nową sesję.
 
 ## Kolejna bramka
 
-1. podłączyć wykonawcę `ResumeRecordingPlan`: pełny handshake i stream state,
-   bezpieczne stream recovery, admission i ponowną aktywację schedulera;
+1. dodać bezpieczną rekonfigurację właściciela Capture i dokończyć
+   `ResumeRecording` po zmianie `boot_epoch`;
 2. mapować Configuration/Commissioning na istniejący `ChannelAgent` i wyniki;
 3. dodać lokalne IPC i adapter `hostctl`;
 4. wykonać HIL firmware 0.5.8, następnie operacje grupowe i audit trwały.

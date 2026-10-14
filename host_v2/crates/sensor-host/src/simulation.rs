@@ -3,15 +3,17 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use sensor_core::{BootEpoch, SampleAxes, SampleAxis, SampleRate, SequenceCursor};
+use sensor_core::{BootEpoch, HardwareId, SampleAxes, SampleAxis, SampleRate, SequenceCursor};
 use sensor_protocol::{
     decode_lifecycle_request, decode_pull_request, encode_lifecycle_response, encode_pull_response,
-    encode_time_success, validate_time_request, Frame, FrameRole, ObservabilityProfile,
-    PullResponse, PullSamplesRequest, RuntimeOperation, RuntimeResult, RuntimeResultCode,
-    RuntimeState, SampleChunk, SampleChunkHeader, SensorStatusCode, ServiceId, StreamDecoder,
-    StreamState, TimeExchangeResponse, TimingEvidence, HOST_ADDRESS, LIFECYCLE_SERVICE_ID,
-    MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES, OBSERVE_CLOCK_MESSAGE_ID, PULL_SAMPLES_MESSAGE_ID,
-    TIME_SERVICE_ID, TIMING_VALID,
+    encode_stream_state_success, encode_time_success, validate_time_request, FirmwareVersion,
+    Frame, FrameRole, NodeCapabilities, NodeIdentity, ObservabilityProfile, PullResponse,
+    PullSamplesRequest, RuntimeOperation, RuntimeResult, RuntimeResultCode, RuntimeState,
+    SampleChunk, SampleChunkHeader, SensorStatusCode, ServiceId, StreamDecoder, StreamState,
+    TimeExchangeResponse, TimingEvidence, CAPABILITIES_SCHEMA_VERSION, GET_CAPABILITIES_MESSAGE_ID,
+    GET_IDENTITY_MESSAGE_ID, GET_STREAM_STATE_MESSAGE_ID, HOST_ADDRESS, IDENTITY_SERVICE_ID,
+    LIFECYCLE_SERVICE_ID, LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES,
+    OBSERVE_CLOCK_MESSAGE_ID, PULL_SAMPLES_MESSAGE_ID, TIME_SERVICE_ID, TIMING_VALID,
 };
 
 use crate::channel_endpoint::MonotonicClock;
@@ -239,6 +241,8 @@ pub struct SimulatedWireNode {
     clock: SimulatedNodeClock,
     runtime_state: RuntimeState,
     observability: ObservabilityProfile,
+    identity: NodeIdentity,
+    capabilities: NodeCapabilities,
 }
 
 impl SimulatedWireNode {
@@ -252,6 +256,27 @@ impl SimulatedWireNode {
             address != HOST_ADDRESS,
             "node address must not be the host address"
         );
+        let identity = NodeIdentity {
+            hardware_id: HardwareId::from_bytes([address; 8]),
+            boot_epoch,
+            node_address: address,
+            board_revision: 2,
+            firmware: FirmwareVersion {
+                major: 0,
+                minor: 5,
+                patch: 8,
+            },
+            protocol: LOCAL_PROTOCOL_VERSION,
+        };
+        let capabilities = NodeCapabilities {
+            schema_version: CAPABILITIES_SCHEMA_VERSION,
+            service_flags: u32::MAX,
+            feature_flags: u64::MAX,
+            max_payload_bytes: MAX_PAYLOAD_BYTES as u16,
+            journal_capacity_samples: journal_capacity as u32,
+            output_rate_mask: u16::MAX,
+            max_sample_chunk_samples: 48,
+        };
         Self {
             address,
             link: SimulatedNodeLink::new(boot_epoch, journal_capacity),
@@ -266,7 +291,25 @@ impl SimulatedWireNode {
             clock: SimulatedNodeClock::new(0, SimulatedTimeProfile::default()),
             runtime_state: RuntimeState::Recording,
             observability: ObservabilityProfile::Production,
+            identity,
+            capabilities,
         }
+    }
+
+    pub fn with_identity_contract(
+        mut self,
+        identity: NodeIdentity,
+        capabilities: NodeCapabilities,
+    ) -> Self {
+        assert_eq!(identity.node_address, self.address);
+        assert_eq!(identity.boot_epoch, self.link.state().boot_epoch);
+        assert_eq!(
+            capabilities.journal_capacity_samples,
+            self.link.state().capacity_samples
+        );
+        self.identity = identity;
+        self.capabilities = capabilities;
+        self
     }
 
     pub const fn address(&self) -> u8 {
@@ -320,6 +363,7 @@ impl SimulatedWireNode {
 
     fn reboot(&mut self, host_now_us: u64, boot_epoch: BootEpoch) {
         self.link.reboot(boot_epoch);
+        self.identity.boot_epoch = boot_epoch;
         self.last_production_us = host_now_us;
         self.production_remainder = 0;
         self.clock = SimulatedNodeClock::new(
@@ -450,6 +494,31 @@ impl SimulatedRs485Bus {
 
         let mut payload = [0; MAX_PAYLOAD_BYTES];
         let (payload_len, response_started_at_us) = match (request.service, request.message) {
+            (IDENTITY_SERVICE_ID, GET_IDENTITY_MESSAGE_ID) => {
+                if !request.payload().is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "identity request payload must be empty",
+                    ));
+                }
+                let encoded = node.identity.encode_success().map_err(io::Error::other)?;
+                payload[..encoded.len()].copy_from_slice(&encoded);
+                (encoded.len(), now_us.saturating_add(turnaround_us))
+            }
+            (IDENTITY_SERVICE_ID, GET_CAPABILITIES_MESSAGE_ID) => {
+                if !request.payload().is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "capabilities request payload must be empty",
+                    ));
+                }
+                let encoded = node
+                    .capabilities
+                    .encode_success()
+                    .map_err(io::Error::other)?;
+                payload[..encoded.len()].copy_from_slice(&encoded);
+                (encoded.len(), now_us.saturating_add(turnaround_us))
+            }
             (service, PULL_SAMPLES_MESSAGE_ID) if service == ServiceId::Measurement as u8 => {
                 let pull = decode_pull_request(request.payload()).map_err(|error| {
                     io::Error::new(io::ErrorKind::InvalidData, format!("invalid pull: {error}"))
@@ -491,6 +560,18 @@ impl SimulatedRs485Bus {
                         )
                     })?;
                 (payload_len, now_us.saturating_add(turnaround_us))
+            }
+            (service, GET_STREAM_STATE_MESSAGE_ID) if service == ServiceId::Measurement as u8 => {
+                if !request.payload().is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "stream-state request payload must be empty",
+                    ));
+                }
+                let encoded =
+                    encode_stream_state_success(node.link.state()).map_err(io::Error::other)?;
+                payload[..encoded.len()].copy_from_slice(&encoded);
+                (encoded.len(), now_us.saturating_add(turnaround_us))
             }
             (TIME_SERVICE_ID, OBSERVE_CLOCK_MESSAGE_ID) => {
                 validate_time_request(request.payload()).map_err(|error| {
