@@ -54,8 +54,8 @@ pozostałych kanałów. Operator widzi w dashboardzie stan usługi, stan każdeg
 kanału i node, tempo próbek, błędy, ostatnią synchronizację czasu, zajętość
 storage oraz ostatnie zdarzenia. Pierwsza wersja dashboardu steruje całym
 rejestratorem: Start, Stop i Restart. Operations API obsługuje już status,
-Maintenance i Resume per kanał; pozostałe operacje per node powstaną przed
-podłączeniem sterowania do dashboardu.
+Maintenance, Resume, Configuration, Commissioning i zdalny restart node przez
+ten sam worker kanału.
 
 Zdalny dostęp odbywa się przez prywatną sieć administracyjną, obecnie
 Tailscale/SSH. Dashboard nie będzie wystawiony bez uwierzytelnienia do
@@ -433,10 +433,11 @@ są zamknięte lokalnie. Fizyczny gate nowego `hostctl update`
 pozostaje do wykonania przy najbliższej planowanej aktualizacji noda; nie
 wykonujemy zapisu flash wyłącznie w celu testu CLI.
 
-Bieżąca ścieżka produktu domknęła Configuration per node: Get/Validate/Apply/
-Reset są dostępne przez Operations API i `hostctl`, a mutacje przeliczają
-admission całego kanału, aktualizują scheduler oraz zapisują trwałą historię.
-Kolejne są Commissioning oraz RestartNode i ich HIL na firmware 0.5.8.
+Bieżąca ścieżka produktu domknęła Configuration per node oraz bounded
+Commissioning i RestartNode przez Operations API i `hostctl`. Mutacje
+konfiguracji przeliczają admission całego kanału, aktualizują scheduler oraz
+zapisują trwałą historię. Najbliższą bramką jest ich HIL na firmware 0.5.8,
+a następnie trwały audit operacji operatorskich.
 Następnie powstanie godzinny compactor Archive.
 Dashboard pozostaje ostatnim, cienkim klientem API. Nie
 tworzymy dla tych funkcji drugiego modelu stanu ani osobnej ścieżki RS485.

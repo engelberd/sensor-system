@@ -49,6 +49,7 @@ fn run_operation(command: Command) -> Result<ExitCode, String> {
         operation,
         configuration,
         expected_revision,
+        commissioning,
         operation_id,
         timeout,
     } = command
@@ -74,6 +75,12 @@ fn run_operation(command: Command) -> Result<ExitCode, String> {
     }
     if let Some(expected_revision) = expected_revision {
         object.insert("expected_revision".to_owned(), json!(expected_revision));
+    }
+    if let Some(commissioning) = commissioning {
+        let fields = commissioning
+            .as_object()
+            .expect("commissioning fields are a JSON object");
+        object.extend(fields.clone());
     }
     let mut submit_error = None;
     let mut submitted = None;
@@ -185,6 +192,7 @@ enum Command {
         operation: &'static str,
         configuration: Option<Value>,
         expected_revision: Option<u32>,
+        commissioning: Option<Value>,
         operation_id: u64,
         timeout: Duration,
     },
@@ -198,36 +206,44 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
     {
         return Ok(Command::Help);
     }
-    let action = arguments.first().and_then(|value| value.to_str()).ok_or(
-        "expected status, maintenance, resume, get-configuration, validate-configuration, apply-configuration or reset-configuration",
-    )?;
-    let operation =
-        match action {
-            "status" => None,
-            "maintenance" => Some("enter_maintenance"),
-            "resume" => Some("resume_recording"),
-            "get-configuration" => Some("get_configuration"),
-            "validate-configuration" => Some("validate_configuration"),
-            "apply-configuration" => Some("apply_configuration"),
-            "reset-configuration" => Some("reset_configuration"),
-            _ => return Err(
-                "expected status, maintenance, resume, get-configuration, validate-configuration, apply-configuration or reset-configuration",
-            ),
-        };
+    let action = arguments
+        .first()
+        .and_then(|value| value.to_str())
+        .ok_or("expected a supported channel operation")?;
+    let operation = match action {
+        "status" => None,
+        "maintenance" => Some("enter_maintenance"),
+        "resume" => Some("resume_recording"),
+        "get-configuration" => Some("get_configuration"),
+        "validate-configuration" => Some("validate_configuration"),
+        "apply-configuration" => Some("apply_configuration"),
+        "reset-configuration" => Some("reset_configuration"),
+        "restart-node" => Some("restart_node"),
+        "scan-unassigned" => Some("scan_unassigned"),
+        "assign-address" => Some("assign_address"),
+        _ => return Err("expected a supported channel operation"),
+    };
     let needs_node = matches!(
         action,
         "get-configuration"
             | "validate-configuration"
             | "apply-configuration"
             | "reset-configuration"
+            | "restart-node"
     );
     let needs_configuration = matches!(action, "validate-configuration" | "apply-configuration");
     let needs_revision = matches!(action, "apply-configuration" | "reset-configuration");
+    let needs_scan = action == "scan-unassigned";
+    let needs_assignment = action == "assign-address";
     let mut socket = None;
     let mut channel = None;
     let mut node = None;
     let mut operation_id = None;
     let mut expected_revision = None;
+    let mut round_nonce = None;
+    let mut slot_count = None;
+    let mut hardware_id = None;
+    let mut new_node_address = None;
     let mut timeout_ms = 120_000_u64;
     let mut output_rate = None;
     let mut range_g = None;
@@ -254,6 +270,18 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
             }
             "--expected-revision" if expected_revision.is_none() && needs_revision => {
                 expected_revision = Some(parse_u32(value, "invalid expected revision")?)
+            }
+            "--round-nonce" if round_nonce.is_none() && (needs_scan || needs_assignment) => {
+                round_nonce = Some(parse_u64(value, "invalid round nonce")?)
+            }
+            "--slot-count" if slot_count.is_none() && needs_scan => {
+                slot_count = Some(parse_u16(value, "invalid slot count")?)
+            }
+            "--hardware-id" if hardware_id.is_none() && needs_assignment => {
+                hardware_id = Some(parse_hardware_id(value)?)
+            }
+            "--new-node-address" if new_node_address.is_none() && needs_assignment => {
+                new_node_address = Some(parse_u8(value, "invalid new node address")?)
             }
             "--timeout-ms" if operation.is_some() => {
                 timeout_ms = parse_u64(value, "invalid timeout")?
@@ -327,6 +355,20 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                 } else {
                     None
                 },
+                commissioning: if needs_scan {
+                    Some(json!({
+                        "round_nonce": round_nonce.ok_or("--round-nonce is required")?,
+                        "slot_count": slot_count.ok_or("--slot-count is required")?
+                    }))
+                } else if needs_assignment {
+                    Some(json!({
+                        "round_nonce": round_nonce.ok_or("--round-nonce is required")?,
+                        "hardware_id": hardware_id.ok_or("--hardware-id is required")?,
+                        "new_node_address": new_node_address.ok_or("--new-node-address is required")?
+                    }))
+                } else {
+                    None
+                },
                 operation_id: operation_id.unwrap_or_else(fresh_operation_id),
                 timeout: Duration::from_millis(timeout_ms),
             })
@@ -362,6 +404,25 @@ fn parse_u32(value: &OsString, error: &'static str) -> Result<u32, &'static str>
         .and_then(|value| value.parse().ok())
         .filter(|value| *value != 0)
         .ok_or(error)
+}
+
+fn parse_u16(value: &OsString, error: &'static str) -> Result<u16, &'static str> {
+    value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value != 0)
+        .ok_or(error)
+}
+
+fn parse_hardware_id(value: &OsString) -> Result<String, &'static str> {
+    let value = value.to_str().ok_or("invalid hardware ID")?;
+    if value.len() != 16
+        || value == "0000000000000000"
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("invalid hardware ID");
+    }
+    Ok(value.to_ascii_lowercase())
 }
 
 fn parse_output_rate(value: &OsString) -> Result<u8, &'static str> {
@@ -401,7 +462,7 @@ fn fresh_operation_id() -> u64 {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  sensor-operations status --channel ID --socket PATH\n  sensor-operations maintenance --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations resume --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations get-configuration --channel ID --node ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations validate-configuration --channel ID --node ID --socket PATH --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]\n  sensor-operations apply-configuration --channel ID --node ID --socket PATH --expected-revision N --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]\n  sensor-operations reset-configuration --channel ID --node ID --socket PATH --expected-revision N [--operation-id ID] [--timeout-ms MS]"
+        "usage:\n  sensor-operations status --channel ID --socket PATH\n  sensor-operations maintenance --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations resume --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations get-configuration --channel ID --node ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations validate-configuration --channel ID --node ID --socket PATH --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]\n  sensor-operations apply-configuration --channel ID --node ID --socket PATH --expected-revision N --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]\n  sensor-operations reset-configuration --channel ID --node ID --socket PATH --expected-revision N [--operation-id ID] [--timeout-ms MS]\n  sensor-operations restart-node --channel ID --node ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations scan-unassigned --channel ID --socket PATH --round-nonce N --slot-count N [--operation-id ID] [--timeout-ms MS]\n  sensor-operations assign-address --channel ID --socket PATH --round-nonce N --hardware-id HEX --new-node-address ID [--operation-id ID] [--timeout-ms MS]"
     );
 }
 
@@ -447,6 +508,7 @@ mod tests {
                 operation: "enter_maintenance",
                 configuration: None,
                 expected_revision: None,
+                commissioning: None,
                 operation_id: 99,
                 timeout: Duration::from_millis(5000)
             })
@@ -490,6 +552,7 @@ mod tests {
                 operation: "get_configuration",
                 configuration: None,
                 expected_revision: None,
+                commissioning: None,
                 operation_id: 101,
                 timeout: Duration::from_millis(120_000),
             })
@@ -604,5 +667,84 @@ mod tests {
             "/run/op.sock"
         ]))
         .is_err());
+    }
+
+    #[test]
+    fn parses_restart_and_commissioning_commands() {
+        let restart = parse_arguments(strings(&[
+            "restart-node",
+            "--channel",
+            "2",
+            "--node",
+            "1",
+            "--socket",
+            "/run/op.sock",
+            "--operation-id",
+            "201",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            restart,
+            Command::Submit {
+                operation: "restart_node",
+                node: Some(1),
+                commissioning: None,
+                ..
+            }
+        ));
+
+        let scan = parse_arguments(strings(&[
+            "scan-unassigned",
+            "--channel",
+            "2",
+            "--socket",
+            "/run/op.sock",
+            "--round-nonce",
+            "1234",
+            "--slot-count",
+            "16",
+            "--operation-id",
+            "202",
+        ]))
+        .unwrap();
+        let Command::Submit {
+            operation,
+            commissioning: Some(fields),
+            ..
+        } = scan
+        else {
+            panic!("expected commissioning scan")
+        };
+        assert_eq!(operation, "scan_unassigned");
+        assert_eq!(fields["round_nonce"], 1234);
+        assert_eq!(fields["slot_count"], 16);
+
+        let assignment = parse_arguments(strings(&[
+            "assign-address",
+            "--channel",
+            "2",
+            "--socket",
+            "/run/op.sock",
+            "--round-nonce",
+            "1234",
+            "--hardware-id",
+            "E6AB60A60E1506B3",
+            "--new-node-address",
+            "7",
+            "--operation-id",
+            "203",
+        ]))
+        .unwrap();
+        let Command::Submit {
+            operation,
+            commissioning: Some(fields),
+            ..
+        } = assignment
+        else {
+            panic!("expected address assignment")
+        };
+        assert_eq!(operation, "assign_address");
+        assert_eq!(fields["hardware_id"], "e6ab60a60e1506b3");
+        assert_eq!(fields["new_node_address"], 7);
     }
 }

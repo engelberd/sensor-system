@@ -5,22 +5,25 @@ use std::sync::Arc;
 
 use sensor_core::{BootEpoch, HardwareId, SampleAxes, SampleAxis, SampleRate, SequenceCursor};
 use sensor_protocol::{
-    decode_apply_config_request, decode_configuration, decode_lifecycle_request,
-    decode_pull_request, decode_reset_config_request, encode_config_operation_response,
-    encode_get_config_response, encode_lifecycle_response, encode_pull_response,
-    encode_stream_state_success, encode_time_success, encode_validate_config_response,
-    validate_time_request, Adxl355Odr, ConfigField, ConfigOperationCode, ConfigOperationResult,
+    commissioning_slot, decode_apply_config_request, decode_assign_address_request,
+    decode_configuration, decode_lifecycle_request, decode_probe_slot_request, decode_pull_request,
+    decode_reset_config_request, encode_assign_address_response, encode_config_operation_response,
+    encode_get_config_response, encode_lifecycle_response, encode_probe_slot_response,
+    encode_pull_response, encode_stream_state_success, encode_time_success,
+    encode_validate_config_response, validate_time_request, Adxl355Odr, AssignAddressResponse,
+    CommissioningIdentity, ConfigField, ConfigOperationCode, ConfigOperationResult,
     ConfigValidationCode, ConfigValidationResult, DecimationFilterProfile, FirmwareVersion, Frame,
     FrameRole, MeasurementConfiguration, NodeCapabilities, NodeIdentity, ObservabilityProfile,
     ObservedConfiguration, OutputRateCode, PullResponse, PullSamplesRequest, RuntimeOperation,
     RuntimeResult, RuntimeResultCode, RuntimeState, SampleChunk, SampleChunkHeader,
     SensorStatusCode, ServiceId, StreamDecoder, StreamState, TimeExchangeResponse, TimingEvidence,
-    APPLY_CONFIG_MESSAGE_ID, CAPABILITIES_SCHEMA_VERSION, CONFIGURATION_SERVICE_ID,
-    GET_CAPABILITIES_MESSAGE_ID, GET_CONFIG_MESSAGE_ID, GET_IDENTITY_MESSAGE_ID,
-    GET_STREAM_STATE_MESSAGE_ID, HOST_ADDRESS, IDENTITY_SERVICE_ID, LIFECYCLE_SERVICE_ID,
-    LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES, OBSERVE_CLOCK_MESSAGE_ID,
-    PULL_SAMPLES_MESSAGE_ID, RESET_CONFIG_MESSAGE_ID, TIME_SERVICE_ID, TIMING_VALID,
-    VALIDATE_CONFIG_MESSAGE_ID,
+    APPLY_CONFIG_MESSAGE_ID, ASSIGN_ADDRESS_MESSAGE_ID, BROADCAST_ADDRESS,
+    CAPABILITIES_SCHEMA_VERSION, COMMISSIONING_ADDRESS, COMMISSIONING_SERVICE_ID,
+    CONFIGURATION_SERVICE_ID, GET_CAPABILITIES_MESSAGE_ID, GET_CONFIG_MESSAGE_ID,
+    GET_IDENTITY_MESSAGE_ID, GET_STREAM_STATE_MESSAGE_ID, HOST_ADDRESS, IDENTITY_SERVICE_ID,
+    LIFECYCLE_SERVICE_ID, LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES,
+    OBSERVE_CLOCK_MESSAGE_ID, PROBE_SLOT_MESSAGE_ID, PULL_SAMPLES_MESSAGE_ID,
+    RESET_CONFIG_MESSAGE_ID, TIME_SERVICE_ID, TIMING_VALID, VALIDATE_CONFIG_MESSAGE_ID,
 };
 
 use crate::channel_endpoint::MonotonicClock;
@@ -262,10 +265,7 @@ impl SimulatedWireNode {
         journal_capacity: usize,
         output_rate: SampleRate,
     ) -> Self {
-        assert!(
-            address != HOST_ADDRESS,
-            "node address must not be the host address"
-        );
+        assert!(address <= 253, "node address must be assigned or zero");
         let identity = NodeIdentity {
             hardware_id: HardwareId::from_bytes([address; 8]),
             boot_epoch,
@@ -454,6 +454,8 @@ pub struct SimulatedRs485Bus {
     baud_rate: u32,
     turnaround_us: u64,
     auto_advance_on_read: bool,
+    silent_read_advance_us: u64,
+    silent_read_advances_remaining: u8,
 }
 
 impl SimulatedRs485Bus {
@@ -486,6 +488,8 @@ impl SimulatedRs485Bus {
             baud_rate,
             turnaround_us,
             auto_advance_on_read: false,
+            silent_read_advance_us: 0,
+            silent_read_advances_remaining: 0,
         }
     }
 
@@ -494,6 +498,10 @@ impl SimulatedRs485Bus {
     /// response; no arbitrary time or sample production is introduced.
     pub fn set_auto_advance_on_read(&mut self, enabled: bool) {
         self.auto_advance_on_read = enabled;
+    }
+
+    pub fn set_silent_read_advance_us(&mut self, advance_us: u64) {
+        self.silent_read_advance_us = advance_us;
     }
 
     pub fn drop_next_responses(&mut self, node_address: u8, count: u32) {
@@ -543,6 +551,86 @@ impl SimulatedRs485Bus {
                 io::ErrorKind::InvalidData,
                 "simulation accepts request frames only",
             ));
+        }
+
+        if request.destination == BROADCAST_ADDRESS && request.service == COMMISSIONING_SERVICE_ID {
+            let mut response_payload = [0_u8; MAX_PAYLOAD_BYTES];
+            let payload_len = match request.message {
+                PROBE_SLOT_MESSAGE_ID => {
+                    let probe =
+                        decode_probe_slot_request(request.payload()).map_err(io::Error::other)?;
+                    let mut matches = self.nodes.iter().filter(|node| {
+                        node.address == 0
+                            && commissioning_slot(
+                                node.identity.hardware_id,
+                                probe.round_nonce,
+                                probe.slot_count,
+                            ) == Ok(probe.slot_index)
+                    });
+                    let Some(node) = matches.next() else {
+                        self.silent_read_advances_remaining = 2;
+                        return Ok(());
+                    };
+                    if matches.next().is_some() {
+                        self.silent_read_advances_remaining = 2;
+                        return Ok(());
+                    }
+                    let encoded = encode_probe_slot_response(CommissioningIdentity {
+                        round_nonce: probe.round_nonce,
+                        hardware_id: node.identity.hardware_id,
+                        board_revision: node.identity.board_revision,
+                        firmware: node.identity.firmware,
+                        protocol: node.identity.protocol,
+                    })
+                    .map_err(io::Error::other)?;
+                    response_payload[..encoded.len()].copy_from_slice(&encoded);
+                    encoded.len()
+                }
+                ASSIGN_ADDRESS_MESSAGE_ID => {
+                    let assignment = decode_assign_address_request(request.payload())
+                        .map_err(io::Error::other)?;
+                    let Some(node) = self.nodes.iter_mut().find(|node| {
+                        node.address == 0 && node.identity.hardware_id == assignment.hardware_id
+                    }) else {
+                        self.silent_read_advances_remaining = 2;
+                        return Ok(());
+                    };
+                    let encoded = encode_assign_address_response(AssignAddressResponse {
+                        operation_id: assignment.operation_id,
+                        hardware_id: assignment.hardware_id,
+                        node_address: assignment.node_address,
+                    })
+                    .map_err(io::Error::other)?;
+                    response_payload[..encoded.len()].copy_from_slice(&encoded);
+                    node.address = assignment.node_address;
+                    node.identity.node_address = assignment.node_address;
+                    let next_epoch =
+                        BootEpoch::new(node.identity.boot_epoch.get().saturating_add(1).max(1));
+                    node.reboot(now_us, next_epoch);
+                    node.runtime_state = RuntimeState::Idle;
+                    encoded.len()
+                }
+                _ => return Err(io::Error::other("unknown commissioning message")),
+            };
+            let response = Frame::new(
+                FrameRole::Response,
+                HOST_ADDRESS,
+                COMMISSIONING_ADDRESS,
+                request.service,
+                request.message,
+                request.transaction_id,
+                &response_payload[..payload_len],
+            )
+            .map_err(io::Error::other)?;
+            let mut wire = [0; MAX_WIRE_FRAME_BYTES];
+            let wire_len = response.encode(&mut wire);
+            self.receive_bytes.extend(&wire[..wire_len]);
+            self.response_ready_at_us = Some(
+                now_us
+                    .saturating_add(self.turnaround_us)
+                    .saturating_add(wire_time_us(wire_len, self.baud_rate)),
+            );
+            return Ok(());
         }
 
         let turnaround_us = self.turnaround_us;
@@ -775,6 +863,12 @@ impl SimulatedRs485Bus {
                     RuntimeOperation::ExitMaintenance => {
                         node.runtime_state = RuntimeState::Idle;
                     }
+                    RuntimeOperation::RestartNode => {
+                        let next_epoch =
+                            BootEpoch::new(node.identity.boot_epoch.get().saturating_add(1).max(1));
+                        node.reboot(now_us, next_epoch);
+                        node.runtime_state = RuntimeState::Idle;
+                    }
                     _ => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -843,6 +937,14 @@ impl SimulatedRs485Bus {
 impl Read for SimulatedRs485Bus {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if self.receive_bytes.is_empty() {
+            if self.auto_advance_on_read
+                && self.silent_read_advances_remaining > 0
+                && self.silent_read_advance_us > 0
+            {
+                self.clock.advance(self.silent_read_advance_us);
+                self.silent_read_advances_remaining =
+                    self.silent_read_advances_remaining.saturating_sub(1);
+            }
             return Err(io::Error::new(io::ErrorKind::TimedOut, "no response"));
         }
         if let Some(ready_at) = self.response_ready_at_us {

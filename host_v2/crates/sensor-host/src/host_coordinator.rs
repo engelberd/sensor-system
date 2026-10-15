@@ -976,8 +976,36 @@ mod tests {
             if channel_count == 1 {
                 simulated_node = simulated_node.with_reboot_on_maintenance(BootEpoch::new(101));
             }
-            let mut bus = SimulatedRs485Bus::new(clock.clone(), vec![simulated_node]);
+            let mut simulated_nodes = vec![simulated_node];
+            if channel_count == 1 {
+                let unassigned_identity = NodeIdentity {
+                    hardware_id: HardwareId::from_bytes([99; 8]),
+                    boot_epoch: BootEpoch::new(500),
+                    node_address: 0,
+                    board_revision: 2,
+                    firmware: FirmwareVersion {
+                        major: 0,
+                        minor: 5,
+                        patch: 8,
+                    },
+                    protocol: LOCAL_PROTOCOL_VERSION,
+                };
+                simulated_nodes.push(
+                    SimulatedWireNode::new(
+                        0,
+                        unassigned_identity.boot_epoch,
+                        2048,
+                        OutputRateCode::Hz125.sample_rate(),
+                    )
+                    .with_identity_contract(unassigned_identity, capabilities()),
+                );
+            }
+            let mut bus = SimulatedRs485Bus::new(clock.clone(), simulated_nodes);
             bus.set_auto_advance_on_read(true);
+            // One unanswered commissioning request advances directly to the
+            // transaction deadline. Successful traffic never advances this
+            // synthetic timeout clock.
+            bus.set_silent_read_advance_us(100_000);
             let agent = ChannelAgent::new(
                 u32::from(channel_id),
                 100 + u32::from(channel_id),
@@ -1295,7 +1323,94 @@ mod tests {
 
             first_operations
                 .try_submit(OperationRequest {
+                    operation_id: OperationId::new(140).unwrap(),
+                    target: OperationTarget::Channel { channel_id: 1 },
+                    kind: OperationKind::ScanUnassigned {
+                        round_nonce: 0x1020_3040,
+                        slot_count: 4,
+                    },
+                })
+                .unwrap();
+            let scan_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.records.len() < 7
+                    || snapshot.records[6].phase != OperationPhase::Succeeded)
+                    && Instant::now() < scan_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let scanned = first_operations.snapshot().unwrap();
+            assert!(
+                matches!(
+                    &scanned.records[6].result,
+                    Some(OperationResult::CommissioningScan {
+                        round_nonce: 0x1020_3040,
+                        slot_count: 4,
+                        discovered,
+                    }) if discovered.len() == 1
+                        && discovered[0].hardware_id == HardwareId::from_bytes([99; 8])
+                ),
+                "scan={scanned:?} worker={:?}",
+                runtime.channels()[0].snapshot()
+            );
+
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(141).unwrap(),
+                    target: OperationTarget::Channel { channel_id: 1 },
+                    kind: OperationKind::AssignAddress {
+                        round_nonce: 0x1020_3040,
+                        hardware_id: HardwareId::from_bytes([99; 8]),
+                        node_address: 2,
+                    },
+                })
+                .unwrap();
+            let assignment_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.records.len() < 8
+                    || snapshot.records[7].phase != OperationPhase::Succeeded)
+                    && Instant::now() < assignment_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let assigned = first_operations.snapshot().unwrap();
+            assert!(matches!(
+                assigned.records[7].result,
+                Some(OperationResult::AddressAssigned(value))
+                    if value.hardware_id == HardwareId::from_bytes([99; 8])
+                        && value.node_address == 2
+            ));
+
+            first_operations
+                .try_submit(OperationRequest {
                     operation_id: OperationId::new(48).unwrap(),
+                    target: OperationTarget::Node {
+                        channel_id: 1,
+                        node_address: 1,
+                    },
+                    kind: OperationKind::RestartNode,
+                })
+                .unwrap();
+            let restart_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.records.len() < 9
+                    || snapshot.records[8].phase != OperationPhase::Succeeded)
+                    && Instant::now() < restart_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let restarted = first_operations.snapshot().unwrap();
+            assert!(matches!(
+                restarted.records[8].result,
+                Some(OperationResult::NodeRestartRequested { node_address: 1 })
+            ));
+
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(49).unwrap(),
                     target: OperationTarget::Channel { channel_id: 1 },
                     kind: OperationKind::ResumeRecording,
                 })
@@ -1304,8 +1419,8 @@ mod tests {
             while {
                 let snapshot = first_operations.snapshot().unwrap();
                 (snapshot.mode != crate::operations::ChannelOperatingMode::Recording
-                    || snapshot.records.len() < 7
-                    || snapshot.records[6].phase != OperationPhase::Succeeded)
+                    || snapshot.records.len() < 10
+                    || snapshot.records[9].phase != OperationPhase::Succeeded)
                     && Instant::now() < resume_deadline
             } {
                 let _ = runtime.supervise_once();
@@ -1318,13 +1433,13 @@ mod tests {
                 "operation={resumed:?} worker={:?}",
                 runtime.channels()[0].snapshot()
             );
-            assert_eq!(resumed.records[6].phase, OperationPhase::Succeeded);
-            assert_eq!(resumed.records[6].error, None);
+            assert_eq!(resumed.records[9].phase, OperationPhase::Succeeded);
+            assert_eq!(resumed.records[9].error, None);
             assert!(runtime
                 .time_health()
                 .streams()
                 .iter()
-                .any(|stream| stream.stream.boot_epoch == BootEpoch::new(101)));
+                .any(|stream| stream.stream.boot_epoch == BootEpoch::new(102)));
         }
         let supervision = runtime.supervise_once().unwrap();
         assert_eq!(supervision.action, HostSupervisionAction::Continue);
@@ -1364,7 +1479,11 @@ mod tests {
         for channel in &shutdown.channels {
             match &channel.as_ref().unwrap().1 {
                 crate::channel_supervisor::ChannelWorkerExit::Stopped { shutdown, .. } => {
-                    assert!(shutdown.outcome.is_ok());
+                    assert!(
+                        shutdown.outcome.is_ok(),
+                        "channel shutdown failed: {:?}",
+                        shutdown.outcome
+                    );
                     assert!(shutdown.persistence.is_ok());
                     assert_eq!(
                         shutdown.persistence.as_ref().unwrap().sink.stream_count(),

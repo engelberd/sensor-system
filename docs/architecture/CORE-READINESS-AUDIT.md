@@ -14,10 +14,10 @@ waliduje profil, wykonuje fail-closed discovery i admission, odzyskuje Capture
 oraz Time WAL, uruchamia niezależne workery i zamyka je kontrolowanie po
 `SIGINT`/`SIGTERM`. Symulacja 1/4/8 przechodzi; następną bramką jest fizyczna
 macierz na Raspberry Pi. Capabilities schema 2 odpowiada faktycznym output
-rates i rodzajowi obrazu. Configuration i Commissioning Service mają już
-zgodne codeki Rust/C++, bounded wykonanie na obu rdzeniach oraz testy host-side.
-Nie zostały jeszcze wgrane i potwierdzone w HIL; ich pierwszym konsumentem ma
-być Operations API, a nie osobny konfigurator otwierający port szeregowy.
+rates i rodzajowi obrazu. Configuration, Commissioning i RestartNode mają już
+zgodne codeki, bounded wykonanie oraz publiczną ścieżkę Operations API przez
+jedynego właściciela RS485. Nie zostały jeszcze potwierdzone w pełnym HIL
+firmware 0.5.8.
 
 ## Blokery rdzenia
 
@@ -29,8 +29,8 @@ być Operations API, a nie osobny konfigurator otwierający port szeregowy.
    Bounded lokalne IPC wystawia już status, Maintenance i Resume przez
    `hostctl` bez otwierania RS485. Get/Validate/Apply/Reset Configuration są
    osiągalne przez Operations API; mutacje aktualizują admission, scheduler i
-   trwałą historię konfiguracji. Brakuje trwałego audytu poleceń operatorskich
-   oraz publicznej ścieżki Commissioning.
+   trwałą historię konfiguracji. Commissioning i RestartNode są osiągalne tym
+   samym IPC; brakuje trwałego audytu poleceń operatorskich.
 2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
    odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
    przypisania adresu i końcowego handshake po restarcie.
@@ -161,9 +161,8 @@ a nie strojenia instalacji.
 
 ## Kolejność dalszej pracy
 
-1. Wystawić Commissioning i RestartNode przez istniejące Operations API.
-2. Dodać trwały audit poleceń i wykonać pełny HIL Configuration/Commissioning
-   firmware 0.5.8.
+1. Wykonać pełny HIL Configuration/Commissioning/RestartNode firmware 0.5.8.
+2. Dodać trwały audit poleceń.
 3. Usunąć flash write z pozostałych hot path.
 4. Wykonać HIL restartu po zatrzymaniu heartbeat core 1, wielu node, długiego
    przewodu, zakłóceń, wolnego storage i soak.

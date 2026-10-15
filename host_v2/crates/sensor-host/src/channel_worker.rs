@@ -154,6 +154,9 @@ pub struct ProductionChannelTask<P, C, T> {
     maintenance: Option<MaintenanceEntryExecution>,
     resume: Option<ResumeRecordingExecution>,
     configuration: Option<ConfigurationExecution>,
+    commissioning: Option<CommissioningExecution>,
+    restart: Option<RestartExecution>,
+    commissioning_discoveries: Vec<sensor_protocol::CommissioningIdentity>,
     configuration_plan: ChannelStartupPlan,
     rollover: ChannelRolloverServices,
 }
@@ -193,6 +196,39 @@ struct PendingTimeRollover {
 
 struct ConfigurationExecution {
     key: ControlWorkKey,
+    deadline: Instant,
+    terminal_error: Option<OperationsError>,
+}
+
+enum CommissioningExecution {
+    Scan {
+        round_nonce: u64,
+        slot_count: u16,
+        next_slot: u16,
+        active_slot: Option<u16>,
+        discovered: Vec<sensor_protocol::CommissioningIdentity>,
+        deadline: Instant,
+    },
+    Assign {
+        expected: sensor_protocol::CommissioningIdentity,
+        node_address: u8,
+        phase: CommissioningAssignPhase,
+        deadline: Instant,
+    },
+}
+
+enum CommissioningAssignPhase {
+    Assigning {
+        operation_id: u32,
+    },
+    Verifying {
+        assigned: sensor_protocol::AssignAddressResponse,
+    },
+}
+
+struct RestartExecution {
+    node_address: u8,
+    operation_id: u32,
     deadline: Instant,
     terminal_error: Option<OperationsError>,
 }
@@ -305,6 +341,9 @@ where
             maintenance: None,
             resume: None,
             configuration: None,
+            commissioning: None,
+            restart: None,
+            commissioning_discoveries: Vec::new(),
             configuration_plan: startup.clone(),
             rollover,
         })
@@ -552,6 +591,380 @@ where
             }) if node_address == configuration_key_node(execution.key) => Ok(Some(execution)),
             _ => Ok(Some(execution)),
         }
+    }
+
+    fn begin_commissioning(
+        &mut self,
+        request: OperationRequest,
+    ) -> Result<Option<CommissioningExecution>, ProductionChannelStepError> {
+        match request.kind {
+            OperationKind::ScanUnassigned {
+                round_nonce,
+                slot_count,
+            } => {
+                let duration = self
+                    .maintenance_policy
+                    .service_operation_deadline
+                    .checked_mul(u32::from(slot_count))
+                    .ok_or(ChannelMaintenanceError::DeadlineOverflow)?;
+                let deadline = Instant::now()
+                    .checked_add(duration)
+                    .ok_or(ChannelMaintenanceError::DeadlineOverflow)?;
+                Ok(Some(CommissioningExecution::Scan {
+                    round_nonce,
+                    slot_count,
+                    next_slot: 0,
+                    active_slot: None,
+                    discovered: Vec::with_capacity(usize::from(slot_count)),
+                    deadline,
+                }))
+            }
+            OperationKind::AssignAddress {
+                round_nonce,
+                hardware_id,
+                node_address,
+            } => {
+                if self
+                    .nodes
+                    .iter()
+                    .any(|node| node.id.node_address == node_address)
+                {
+                    self.operations
+                        .fail_active(OperationsError::CommissioningAddressConflict)?;
+                    return Ok(None);
+                }
+                let Some(expected) =
+                    self.commissioning_discoveries
+                        .iter()
+                        .copied()
+                        .find(|identity| {
+                            identity.round_nonce == round_nonce
+                                && identity.hardware_id == hardware_id
+                        })
+                else {
+                    self.operations
+                        .fail_active(OperationsError::CommissioningIdentityNotScanned)?;
+                    return Ok(None);
+                };
+                let operation_id = match self
+                    .recording
+                    .endpoint_mut()
+                    .agent_mut()
+                    .submit_commissioning_assignment(round_nonce, hardware_id, node_address)
+                {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.operations
+                            .fail_active(OperationsError::CommissioningFailed)?;
+                        return Ok(None);
+                    }
+                };
+                let deadline = Instant::now()
+                    .checked_add(self.maintenance_policy.service_operation_deadline)
+                    .ok_or(ChannelMaintenanceError::DeadlineOverflow)?;
+                Ok(Some(CommissioningExecution::Assign {
+                    expected,
+                    node_address,
+                    phase: CommissioningAssignPhase::Assigning { operation_id },
+                    deadline,
+                }))
+            }
+            _ => {
+                self.operations
+                    .fail_active(OperationsError::ExecutorUnavailable)?;
+                Ok(None)
+            }
+        }
+    }
+
+    fn drive_commissioning(
+        &mut self,
+        mut execution: CommissioningExecution,
+    ) -> Result<Option<CommissioningExecution>, ProductionChannelStepError> {
+        if Instant::now()
+            >= match &execution {
+                CommissioningExecution::Scan { deadline, .. }
+                | CommissioningExecution::Assign { deadline, .. } => *deadline,
+            }
+        {
+            let key = match &execution {
+                CommissioningExecution::Scan {
+                    round_nonce,
+                    active_slot: Some(slot_index),
+                    ..
+                } => Some(ControlWorkKey::CommissioningProbe {
+                    round_nonce: *round_nonce,
+                    slot_index: *slot_index,
+                }),
+                CommissioningExecution::Assign {
+                    phase: CommissioningAssignPhase::Assigning { operation_id },
+                    ..
+                } => Some(ControlWorkKey::CommissioningAssignment {
+                    operation_id: *operation_id,
+                }),
+                CommissioningExecution::Assign {
+                    node_address,
+                    phase: CommissioningAssignPhase::Verifying { .. },
+                    ..
+                } => Some(ControlWorkKey::Handshake {
+                    node_address: *node_address,
+                }),
+                _ => None,
+            };
+            if let Some(key) = key {
+                match self
+                    .recording
+                    .endpoint_mut()
+                    .agent_mut()
+                    .abandon_control_work(key)
+                {
+                    Ok(_) | Err(ChannelAgentError::ControlWorkNotFound(_)) => {}
+                    Err(ChannelAgentError::ControlAttemptInFlight(_)) => {
+                        return Ok(Some(execution))
+                    }
+                    Err(_) => {
+                        return Err(ProductionChannelStepError::Operations(
+                            OperationsError::CommissioningFailed,
+                        ))
+                    }
+                }
+            }
+            self.operations
+                .fail_active(OperationsError::CommissioningDeadline)?;
+            return Ok(None);
+        }
+
+        if let CommissioningExecution::Scan {
+            round_nonce,
+            slot_count,
+            next_slot,
+            active_slot,
+            discovered,
+            ..
+        } = &mut execution
+        {
+            if active_slot.is_none() {
+                if *next_slot == *slot_count {
+                    self.commissioning_discoveries = discovered.clone();
+                    self.operations
+                        .complete_active(OperationResult::CommissioningScan {
+                            round_nonce: *round_nonce,
+                            slot_count: *slot_count,
+                            discovered: discovered.clone(),
+                        })?;
+                    return Ok(None);
+                }
+                self.recording
+                    .endpoint_mut()
+                    .agent_mut()
+                    .submit_commissioning_probe(sensor_protocol::ProbeSlotRequest {
+                        round_nonce: *round_nonce,
+                        slot_count: *slot_count,
+                        slot_index: *next_slot,
+                    })
+                    .map_err(|_| {
+                        ProductionChannelStepError::Operations(OperationsError::CommissioningFailed)
+                    })?;
+                *active_slot = Some(*next_slot);
+            }
+        }
+
+        let started = Instant::now();
+        let endpoint_event = self.recording.endpoint_mut().step().map_err(|_| {
+            ProductionChannelStepError::Operations(OperationsError::CommissioningFailed)
+        })?;
+        self.metrics.observe_step(
+            &ThreadedChannelRecordingEvent::Endpoint(endpoint_event.clone()),
+            started.elapsed(),
+        );
+        match (&mut execution, endpoint_event) {
+            (
+                CommissioningExecution::Scan {
+                    round_nonce,
+                    next_slot,
+                    active_slot,
+                    discovered,
+                    ..
+                },
+                ChannelEndpointEvent::Agent(ChannelEvent::CommissioningComplete {
+                    outcome: crate::commissioning::CommissioningOutcome::Discovered(identity),
+                }),
+            ) if identity.round_nonce == *round_nonce => {
+                if !discovered
+                    .iter()
+                    .any(|value| value.hardware_id == identity.hardware_id)
+                {
+                    discovered.push(identity);
+                }
+                *next_slot = next_slot.saturating_add(1);
+                *active_slot = None;
+            }
+            (
+                CommissioningExecution::Scan {
+                    round_nonce,
+                    next_slot,
+                    active_slot,
+                    ..
+                },
+                ChannelEndpointEvent::Agent(ChannelEvent::CommissioningSlotEmpty {
+                    round_nonce: observed_nonce,
+                    slot_index,
+                }),
+            ) if observed_nonce == *round_nonce && Some(slot_index) == *active_slot => {
+                *next_slot = next_slot.saturating_add(1);
+                *active_slot = None;
+            }
+            (
+                CommissioningExecution::Assign {
+                    expected,
+                    node_address,
+                    phase,
+                    ..
+                },
+                ChannelEndpointEvent::Agent(ChannelEvent::CommissioningComplete {
+                    outcome: crate::commissioning::CommissioningOutcome::Assigned(assigned),
+                }),
+            ) if assigned.hardware_id == expected.hardware_id
+                && assigned.node_address == *node_address =>
+            {
+                let mut requirements = HandshakeRequirements::recording_node(
+                    expected.hardware_id,
+                    *node_address,
+                    expected.board_revision,
+                    0,
+                );
+                requirements.required_services |= sensor_protocol::ServiceId::Configuration
+                    .capability_bit()
+                    | sensor_protocol::ServiceId::Time.capability_bit();
+                self.recording
+                    .endpoint_mut()
+                    .agent_mut()
+                    .submit_handshake(requirements)
+                    .map_err(|_| {
+                        ProductionChannelStepError::Operations(OperationsError::CommissioningFailed)
+                    })?;
+                *phase = CommissioningAssignPhase::Verifying { assigned };
+            }
+            (
+                CommissioningExecution::Assign {
+                    expected,
+                    node_address,
+                    phase: CommissioningAssignPhase::Verifying { assigned },
+                    ..
+                },
+                ChannelEndpointEvent::Agent(ChannelEvent::HandshakeComplete {
+                    node_address: observed_address,
+                    identity,
+                    ..
+                }),
+            ) if observed_address == *node_address
+                && identity.hardware_id == expected.hardware_id =>
+            {
+                self.operations
+                    .complete_active(OperationResult::AddressAssigned(*assigned))?;
+                return Ok(None);
+            }
+            _ => {}
+        }
+        Ok(Some(execution))
+    }
+
+    fn begin_restart(
+        &mut self,
+        request: OperationRequest,
+    ) -> Result<Option<RestartExecution>, ProductionChannelStepError> {
+        let OperationTarget::Node { node_address, .. } = request.target else {
+            self.operations
+                .fail_active(OperationsError::ExecutorUnavailable)?;
+            return Ok(None);
+        };
+        if !self
+            .nodes
+            .iter()
+            .any(|node| node.id.node_address == node_address)
+        {
+            self.operations
+                .fail_active(OperationsError::NodeNotConfigured)?;
+            return Ok(None);
+        }
+        let operation_id = self
+            .recording
+            .endpoint_mut()
+            .agent_mut()
+            .submit_lifecycle(
+                node_address,
+                sensor_protocol::RuntimeOperation::RestartNode,
+                sensor_protocol::ObservabilityProfile::Production,
+            )
+            .map_err(|_| ProductionChannelStepError::Operations(OperationsError::RestartFailed))?;
+        let deadline = Instant::now()
+            .checked_add(self.maintenance_policy.service_operation_deadline)
+            .ok_or(ChannelMaintenanceError::DeadlineOverflow)?;
+        Ok(Some(RestartExecution {
+            node_address,
+            operation_id,
+            deadline,
+            terminal_error: None,
+        }))
+    }
+
+    fn drive_restart(
+        &mut self,
+        mut execution: RestartExecution,
+    ) -> Result<Option<RestartExecution>, ProductionChannelStepError> {
+        if execution.terminal_error.is_none() && Instant::now() >= execution.deadline {
+            execution.terminal_error = Some(OperationsError::RestartDeadline);
+        }
+        if let Some(error) = execution.terminal_error {
+            let key = ControlWorkKey::Lifecycle {
+                node_address: execution.node_address,
+                operation_id: execution.operation_id,
+            };
+            match self
+                .recording
+                .endpoint_mut()
+                .agent_mut()
+                .abandon_control_work(key)
+            {
+                Ok(_) | Err(ChannelAgentError::ControlWorkNotFound(_)) => {
+                    self.operations.fail_active(error)?;
+                    return Ok(None);
+                }
+                Err(ChannelAgentError::ControlAttemptInFlight(_)) => return Ok(Some(execution)),
+                Err(_) => {
+                    return Err(ProductionChannelStepError::Operations(
+                        OperationsError::RestartFailed,
+                    ))
+                }
+            }
+        }
+        let started = Instant::now();
+        let endpoint_event = match self.recording.endpoint_mut().step() {
+            Ok(value) => value,
+            Err(_) => {
+                execution.terminal_error = Some(OperationsError::RestartFailed);
+                return Ok(Some(execution));
+            }
+        };
+        self.metrics.observe_step(
+            &ThreadedChannelRecordingEvent::Endpoint(endpoint_event.clone()),
+            started.elapsed(),
+        );
+        if let ChannelEndpointEvent::Agent(ChannelEvent::LifecycleComplete {
+            node_address,
+            result,
+        }) = endpoint_event
+        {
+            if node_address == execution.node_address
+                && result.operation_id == execution.operation_id
+                && result.code == sensor_protocol::RuntimeResultCode::Ok
+            {
+                self.operations
+                    .complete_active(OperationResult::NodeRestartRequested { node_address })?;
+                return Ok(None);
+            }
+        }
+        Ok(Some(execution))
     }
 
     fn drive_maintenance(
@@ -1121,6 +1534,14 @@ where
                 ) && self.configuration.is_none()
                 {
                     self.configuration = self.begin_configuration(request)?;
+                } else if matches!(
+                    request.kind,
+                    OperationKind::ScanUnassigned { .. } | OperationKind::AssignAddress { .. }
+                ) && self.commissioning.is_none()
+                {
+                    self.commissioning = self.begin_commissioning(request)?;
+                } else if request.kind == OperationKind::RestartNode && self.restart.is_none() {
+                    self.restart = self.begin_restart(request)?;
                 } else {
                     self.operations
                         .fail_active(OperationsError::ExecutorUnavailable)
@@ -1141,6 +1562,14 @@ where
         }
         if let Some(execution) = self.configuration.take() {
             self.configuration = self.drive_configuration(execution)?;
+            return Ok(());
+        }
+        if let Some(execution) = self.commissioning.take() {
+            self.commissioning = self.drive_commissioning(execution)?;
+            return Ok(());
+        }
+        if let Some(execution) = self.restart.take() {
+            self.restart = self.drive_restart(execution)?;
             return Ok(());
         }
         let started = Instant::now();

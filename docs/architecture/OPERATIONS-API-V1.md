@@ -112,12 +112,16 @@ pomiary wykażą, że jest to potrzebne.
 | ValidateConfiguration | node | Maintenance lub Faulted |
 | ApplyConfiguration | node | Maintenance lub Faulted |
 | ResetConfiguration | node | Maintenance lub Faulted |
+| RestartNode | node | Maintenance lub Faulted |
 | ScanUnassigned | channel | Maintenance |
 | AssignAddress | channel + exact hardware ID | Maintenance |
 
 Apply/Reset wymagają `expected_revision`. Commissioning wymaga nonce rundy,
-bounded liczby slotów oraz wyłączności kanału. Po przypisaniu host wykonuje
-handshake nowego adresu i porównuje hardware ID przed zmianą inventory.
+bounded liczby slotów oraz wyłączności kanału. Operations API v1 przyjmuje
+`1/2/4/8/16` slotów, aby pełny wynik mieścił się w ograniczonej odpowiedzi IPC;
+sam wire protocol zachowuje zakres do 256 slotów. Po przypisaniu host wykonuje
+handshake nowego adresu i porównuje hardware ID. Udany wynik nie zmienia
+automatycznie trwałego profilu instalacji.
 
 ## Bounded command path
 
@@ -171,11 +175,11 @@ wiadomością JSON schema 1; request i response mają limit 4096 B, a koordynato
 obsługuje najwyżej cztery żądania na jeden obrót. Klient nie może utrzymać
 blokującego połączenia ani wejść na drogę próbek.
 
-Adapter udostępnia obecnie odczyt trybu kanału, `EnterMaintenance`,
-`ResumeRecording`, `GetConfiguration`, `ValidateConfiguration`,
-`ApplyConfiguration` i `ResetConfiguration`. Operacje Configuration mają target
-node, działają wyłącznie w Maintenance/Faulted i zwracają typowany wynik zapisany
-w tym samym bounded ledgerze. `submit`
+Adapter udostępnia odczyt trybu kanału, `EnterMaintenance`, `ResumeRecording`,
+pełny pierwszy zakres Configuration, `RestartNode`, `ScanUnassigned` i
+`AssignAddress`. Operacje per node działają wyłącznie w Maintenance/Faulted,
+a commissioning wyłącznie w Maintenance. Wszystkie zwracają typowany wynik
+zapisany w tym samym bounded ledgerze. `submit`
 przekazuje pełne `operation_id` do istniejącego
 bounded mailboxa. `get` odczytuje ten sam worker-owned ledger. Powtórzenie
 identycznego żądania jest idempotentne, a ponowne użycie ID z inną treścią
@@ -186,6 +190,14 @@ Wykonawca Configuration ma osobny konfigurowalny deadline. Po jego
 przekroczeniu nie porzuca transakcji w locie ani kwarantanny spóźnionej
 odpowiedzi; kończy operację dopiero po bezpiecznym oddaniu jedynego arbitra
 RS485. Nieznany node daje jawny błąd i nie zatrzymuje workera.
+
+Scan odpytuje sloty sekwencyjnie przez tego samego arbitra RS485, zapisuje
+ostatni kompletny wynik tylko w pamięci procesu i rozróżnia pusty slot od błędu
+całej rundy. Assign wymaga hardware ID oraz nonce z ostatniego udanego skanu,
+odrzuca adres zajęty przez skonfigurowany node, a sukces publikuje dopiero po
+handshake pod nowym adresem. `RestartNode` kończy się po potwierdzonym wysłaniu
+polecenia; `ResumeRecording` wykonuje później świeży handshake, wykrywa nowy
+`boot_epoch` i przeprowadza trwały rollover Capture oraz Time.
 
 `ApplyConfiguration` i `ResetConfiguration` wymagają `expected_revision` oraz
 Maintenance. Jeszcze przed mutacją host waliduje pełną wartość, sprawdza maskę
@@ -239,7 +251,9 @@ wymianę sesji. Ten sam pion jest dostępny przez lokalne IPC i `hostctl`.
 
 ## Kolejna bramka
 
-1. mapować Commissioning na istniejący `ChannelAgent` i typowane wyniki;
-2. dodać `RestartNode` oraz operacje serwisowe per node do tego samego IPC;
-3. wykonać HIL Apply/Reset i Commissioning na firmware 0.5.8;
-4. dodać operacje grupowe i trwały audit poleceń operatorskich.
+1. wykonać HIL Get/Apply/Reset/RestartNode na firmware 0.5.8 oraz pusty skan
+   Commissioning na przypisanym kanale;
+2. wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node i zatwierdzić
+   procedurę aktualizacji profilu instalacji;
+3. dodać trwały audit poleceń operatorskich;
+4. dodać operacje grupowe na stabilnym kontrakcie wyników per target.

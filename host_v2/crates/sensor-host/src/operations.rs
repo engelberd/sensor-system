@@ -82,6 +82,7 @@ pub enum OperationKind {
     ResetConfiguration {
         expected_revision: u32,
     },
+    RestartNode,
     ScanUnassigned {
         round_nonce: u64,
         slot_count: u16,
@@ -132,7 +133,10 @@ impl OperationRequest {
                 if *round_nonce == 0 {
                     return Err(OperationsError::ZeroRoundNonce);
                 }
-                if !(1..=256).contains(slot_count) || !slot_count.is_power_of_two() {
+                // The wire contract supports 256 slots, while Operations API v1
+                // keeps one complete result inside its bounded 4096-byte IPC
+                // response. A larger scan can be added later with paging.
+                if !(1..=16).contains(slot_count) || !slot_count.is_power_of_two() {
                     return Err(OperationsError::InvalidSlotCount(*slot_count));
                 }
             }
@@ -151,7 +155,8 @@ impl OperationRequest {
             OperationKind::ReadStatus
             | OperationKind::EnterMaintenance
             | OperationKind::ResumeRecording
-            | OperationKind::GetConfiguration => {}
+            | OperationKind::GetConfiguration
+            | OperationKind::RestartNode => {}
         }
         validate_scope(self.target, &self.kind)
     }
@@ -172,6 +177,7 @@ pub fn admit_operation(
         | OperationKind::ValidateConfiguration { .. }
         | OperationKind::ApplyConfiguration { .. }
         | OperationKind::ResetConfiguration { .. }
+        | OperationKind::RestartNode
             if matches!(
                 mode,
                 ChannelOperatingMode::Maintenance | ChannelOperatingMode::Faulted
@@ -216,6 +222,7 @@ fn validate_scope(target: OperationTarget, kind: &OperationKind) -> Result<(), O
                 OperationTarget::Node { .. },
                 OperationKind::ResetConfiguration { .. }
             )
+            | (OperationTarget::Node { .. }, OperationKind::RestartNode)
             | (
                 OperationTarget::Channel { .. },
                 OperationKind::ScanUnassigned { .. }
@@ -255,11 +262,20 @@ pub struct OperationRecord {
     pub error: Option<OperationsError>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationResult {
     ConfigurationObserved(ObservedConfiguration),
     ConfigurationValidated(ConfigValidationResult),
     ConfigurationApplied(ConfigOperationResult),
+    CommissioningScan {
+        round_nonce: u64,
+        slot_count: u16,
+        discovered: Vec<sensor_protocol::CommissioningIdentity>,
+    },
+    AddressAssigned(sensor_protocol::AssignAddressResponse),
+    NodeRestartRequested {
+        node_address: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -762,6 +778,12 @@ pub enum OperationsError {
     ConfigurationFailed,
     ConfigurationAdmissionRejected,
     ConfigurationRejected,
+    CommissioningFailed,
+    CommissioningDeadline,
+    CommissioningIdentityNotScanned,
+    CommissioningAddressConflict,
+    RestartFailed,
+    RestartDeadline,
     MaintenanceBarrierDeadline,
     MaintenanceDrainDeadline,
     MaintenanceConvergenceFailed,
@@ -832,6 +854,18 @@ impl fmt::Display for OperationsError {
             Self::ConfigurationRejected => {
                 formatter.write_str("node rejected the configuration operation")
             }
+            Self::CommissioningFailed => formatter.write_str("commissioning operation failed"),
+            Self::CommissioningDeadline => {
+                formatter.write_str("commissioning operation deadline expired")
+            }
+            Self::CommissioningIdentityNotScanned => {
+                formatter.write_str("hardware identity was not found in the matching scan")
+            }
+            Self::CommissioningAddressConflict => {
+                formatter.write_str("requested node address is already configured")
+            }
+            Self::RestartFailed => formatter.write_str("node restart operation failed"),
+            Self::RestartDeadline => formatter.write_str("node restart deadline expired"),
             Self::MaintenanceBarrierDeadline => {
                 formatter.write_str("maintenance quiesce barrier deadline expired")
             }
@@ -945,7 +979,7 @@ mod tests {
             target: OperationTarget::Channel { channel_id: 1 },
             kind: OperationKind::ScanUnassigned {
                 round_nonce: 9,
-                slot_count: 64,
+                slot_count: 16,
             },
         };
         assert_eq!(
@@ -960,6 +994,14 @@ mod tests {
         assert_eq!(
             invalid.validate(),
             Err(OperationsError::InvalidSlotCount(3))
+        );
+        invalid.kind = OperationKind::ScanUnassigned {
+            round_nonce: 9,
+            slot_count: 32,
+        };
+        assert_eq!(
+            invalid.validate(),
+            Err(OperationsError::InvalidSlotCount(32))
         );
     }
 

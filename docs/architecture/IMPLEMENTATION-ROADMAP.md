@@ -182,9 +182,9 @@ uzasadnią ją pomiary lub testy awarii.
 Interfejs operatorski nie wystawia już tych implementacji jako poleceń
 produkcyjnych. `hostctl` obsługuje wyłącznie V2; zakres i jawne braki opisuje
 [HOSTCTL-V2.md](HOSTCTL-V2.md). Produkcyjny Capture V2 ma własną walidację i
-eksport. Configuration i Commissioning Service są zaimplementowane w protocol 5
-po obu stronach wire; przed HIL i udostępnieniem operatorowi wymagają jeszcze
-Operations API. Archive, kompresja, uploader i dashboard są świadomie odłożone
+eksport. Configuration, Commissioning i RestartNode protocol 5 są podłączone do
+Operations API i `hostctl` przez jedynego właściciela RS485; ich bieżącą bramką
+jest fizyczny HIL firmware 0.5.8. Archive, kompresja, uploader i dashboard są świadomie odłożone
 poza MVP; prostym formatem wymiany pozostaje eksport CSV z Capture.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
@@ -1076,6 +1076,8 @@ Apply/Reset wymagają Maintenance i revision, przed wire przeliczają admission
 całego kanału, po sukcesie zapisują trwały snapshot konfiguracji, rekonfigurują
 quiescent scheduler i zastępują plan używany przez Resume. Bootstrap odczytuje
 rzeczywistą konfigurację node, więc restart hosta rozstrzyga przerwę pomiędzy
-trwałą zmianą node i odpowiedzią hosta. Bieżącą bramką są Commissioning i
-RestartNode per node, a następnie fizyczny HIL Configuration firmware 0.5.8.
+trwałą zmianą node i odpowiedzią hosta. Commissioning i RestartNode są
+podłączone przez ten sam bounded control plane. Bieżącą bramką jest fizyczny HIL
+Configuration/Commissioning/RestartNode firmware 0.5.8, a następnie trwały audit
+operacji operatorskich.
 Dashboard pozostaje poza MVP do czasu ustabilizowania API.

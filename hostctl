@@ -31,6 +31,9 @@ Host v2:
   channel validate-configuration --channel ID --node ID [configuration options]
   channel apply-configuration --channel ID --node ID --expected-revision N [configuration options]
   channel reset-configuration --channel ID --node ID --expected-revision N
+  channel restart-node --channel ID --node ID
+  channel scan-unassigned --channel ID --round-nonce N --slot-count N
+  channel assign-address --channel ID --round-nonce N --hardware-id HEX --new-node-address ID
                          Control a running channel through local Operations IPC
 
 Data:

@@ -105,6 +105,9 @@ Aktywnym kanałem steruje się bez otwierania jego portu szeregowego:
   --high-pass-corner 0 --filter-profile balanced --fifo-watermark 30
 ./hostctl channel reset-configuration --channel 1 --node 1 \
   --expected-revision 2
+./hostctl channel scan-unassigned --channel 1 \
+  --round-nonce 2026101501 --slot-count 16
+./hostctl channel restart-node --channel 1 --node 1
 ./hostctl channel resume --channel 1
 ```
 
@@ -212,8 +215,9 @@ node's mandatory filtering and decimation. The current firmware advertises
 `2000, 1000, 500, 250, 125, 62.5 Hz`; it does not expose the ADXL355 input ODR
 bitmap as if it were the stream rate. The selected current rate belongs to the
 configuration observed state. Firmware 0.5.8 implements the bounded
-Configuration and Commissioning services; the operator-facing path will be
-exposed through Operations API after its Maintenance transition is wired.
+Configuration and Commissioning services. Their operator-facing path, together
+with `RestartNode`, is exposed through Operations API while the channel owns
+the serial port and is in Maintenance.
 
 After an A/B upload, confirm the trial over RS485 with the expected hardware
 identity. This command performs the same fail-closed handshake first:

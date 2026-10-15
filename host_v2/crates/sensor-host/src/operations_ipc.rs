@@ -207,6 +207,31 @@ impl OperationsIpcServer {
                 };
                 OperationKind::ResetConfiguration { expected_revision }
             }
+            Some("restart_node") => OperationKind::RestartNode,
+            Some("scan_unassigned") => OperationKind::ScanUnassigned {
+                round_nonce: match u64_field(object, "round_nonce") {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                },
+                slot_count: match u16_field(object, "slot_count") {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                },
+            },
+            Some("assign_address") => OperationKind::AssignAddress {
+                round_nonce: match u64_field(object, "round_nonce") {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                },
+                hardware_id: match hardware_id_field(object, "hardware_id") {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                },
+                node_address: match u8_field(object, "new_node_address") {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                },
+            },
             Some(_) => {
                 return error_response("unknown_operation", "operation is not exposed by IPC v1")
             }
@@ -221,6 +246,7 @@ impl OperationsIpcServer {
                 | OperationKind::ValidateConfiguration { .. }
                 | OperationKind::ApplyConfiguration { .. }
                 | OperationKind::ResetConfiguration { .. }
+                | OperationKind::RestartNode
         ) {
             let node_address = match u8_field(object, "node_address") {
                 Ok(value) => value,
@@ -258,7 +284,7 @@ impl OperationsIpcServer {
                         operation_id,
                         phase_label(record.phase),
                         Some(snapshot.mode),
-                        record.result,
+                        record.result.clone(),
                         record.error,
                     );
                 }
@@ -319,7 +345,7 @@ impl OperationsIpcServer {
             operation_id,
             phase_label(record.phase),
             Some(snapshot.mode),
-            record.result,
+            record.result.clone(),
             record.error,
         )
     }
@@ -392,6 +418,45 @@ fn u32_field(object: &serde_json::Map<String, Value>, key: &'static str) -> Resu
     };
     u32::try_from(value)
         .map_err(|_| error_response("invalid_request", &format!("{key} is out of range")))
+}
+
+fn u16_field(object: &serde_json::Map<String, Value>, key: &'static str) -> Result<u16, Value> {
+    let value = u64_field(object, key)?;
+    u16::try_from(value)
+        .map_err(|_| error_response("invalid_request", &format!("{key} is out of range")))
+}
+
+fn u64_field(object: &serde_json::Map<String, Value>, key: &'static str) -> Result<u64, Value> {
+    object.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        error_response(
+            "invalid_request",
+            &format!("{key} must be an unsigned integer"),
+        )
+    })
+}
+
+fn hardware_id_field(
+    object: &serde_json::Map<String, Value>,
+    key: &'static str,
+) -> Result<sensor_core::HardwareId, Value> {
+    let Some(value) = object.get(key).and_then(Value::as_str) else {
+        return Err(error_response(
+            "invalid_request",
+            &format!("{key} must be a 16-digit hexadecimal string"),
+        ));
+    };
+    if value.len() != 16 || !value.is_ascii() {
+        return Err(error_response("invalid_request", "invalid hardware_id"));
+    }
+    let mut bytes = [0_u8; 8];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| error_response("invalid_request", "invalid hardware_id"))?;
+    }
+    if bytes == [0; 8] {
+        return Err(error_response("invalid_request", "invalid hardware_id"));
+    }
+    Ok(sensor_core::HardwareId::from_bytes(bytes))
 }
 
 fn configuration_field(
@@ -520,7 +585,42 @@ fn operation_result_json(result: OperationResult) -> Value {
             "observed": observed_configuration_json(value.observed),
             "effective_sample_seq": value.effective_sample_seq
         }),
+        OperationResult::CommissioningScan {
+            round_nonce,
+            slot_count,
+            discovered,
+        } => json!({
+            "kind": "commissioning_scan",
+            "round_nonce": round_nonce,
+            "slot_count": slot_count,
+            "discovered": discovered.into_iter().map(|identity| json!({
+                "hardware_id": hardware_id_hex(identity.hardware_id),
+                "board_revision": identity.board_revision,
+                "firmware": format!("{}.{}.{}", identity.firmware.major, identity.firmware.minor, identity.firmware.patch),
+                "framing_version": identity.protocol.framing,
+                "application_version": identity.protocol.application
+            })).collect::<Vec<_>>()
+        }),
+        OperationResult::AddressAssigned(value) => json!({
+            "kind": "address_assigned",
+            "wire_operation_id": value.operation_id,
+            "hardware_id": hardware_id_hex(value.hardware_id),
+            "node_address": value.node_address
+        }),
+        OperationResult::NodeRestartRequested { node_address } => json!({
+            "kind": "node_restart_requested",
+            "node_address": node_address
+        }),
     }
+}
+
+fn hardware_id_hex(hardware_id: sensor_core::HardwareId) -> String {
+    use core::fmt::Write as _;
+    let mut output = String::with_capacity(16);
+    for byte in hardware_id.bytes() {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
 }
 
 fn observed_configuration_json(value: sensor_protocol::ObservedConfiguration) -> Value {
@@ -992,6 +1092,71 @@ mod tests {
                 expected_revision: 10
             }
         ));
+    }
+
+    #[test]
+    fn routes_restart_and_commissioning_requests() {
+        let path = socket_path("restart-commissioning");
+        let (mut controller, handle) = ChannelOperationsController::new(
+            2,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 2,
+                ledger_capacity: 4,
+            },
+        )
+        .unwrap();
+        controller
+            .set_mode(ChannelOperatingMode::Maintenance)
+            .unwrap();
+        let server = OperationsIpcServer::bind(&path, vec![handle]).unwrap();
+
+        let submitted = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "submit",
+                "channel_id": 2,
+                "node_address": 1,
+                "operation_id": 60,
+                "operation": "restart_node"
+            }),
+        );
+        assert_eq!(submitted["phase"], "queued");
+        let request = match controller.poll_command().unwrap() {
+            ChannelCommandDecision::Started(request) => request,
+            other => panic!("unexpected command decision: {other:?}"),
+        };
+        assert_eq!(request.kind, OperationKind::RestartNode);
+        controller
+            .fail_active(OperationsError::ExecutorUnavailable)
+            .unwrap();
+
+        let submitted = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "submit",
+                "channel_id": 2,
+                "operation_id": 61,
+                "operation": "scan_unassigned",
+                "round_nonce": 1234,
+                "slot_count": 16
+            }),
+        );
+        assert_eq!(submitted["phase"], "queued");
+        let request = match controller.poll_command().unwrap() {
+            ChannelCommandDecision::Started(request) => request,
+            other => panic!("unexpected command decision: {other:?}"),
+        };
+        assert_eq!(
+            request.kind,
+            OperationKind::ScanUnassigned {
+                round_nonce: 1234,
+                slot_count: 16
+            }
+        );
     }
 
     #[test]

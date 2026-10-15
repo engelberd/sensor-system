@@ -186,6 +186,13 @@ pub enum ControlWorkKey {
         node_address: u8,
         operation_id: Option<u32>,
     },
+    CommissioningProbe {
+        round_nonce: u64,
+        slot_index: u16,
+    },
+    CommissioningAssignment {
+        operation_id: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -256,6 +263,21 @@ impl PendingWork {
                 operation.node_address() == node_address
                     && operation.request().operation_id() == operation_id
             }
+            (
+                Self::Commissioning(operation),
+                ControlWorkKey::CommissioningProbe {
+                    round_nonce,
+                    slot_index,
+                },
+            ) => matches!(
+                operation.request(),
+                CommissioningRequest::Probe(value)
+                    if value.round_nonce == round_nonce && value.slot_index == slot_index
+            ),
+            (
+                Self::Commissioning(operation),
+                ControlWorkKey::CommissioningAssignment { operation_id },
+            ) => operation.request().operation_id() == Some(operation_id),
             _ => false,
         }
     }

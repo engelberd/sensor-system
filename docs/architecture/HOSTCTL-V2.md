@@ -14,7 +14,7 @@ RS485 poza jawnymi poleceniami `discover`, `doctor --deep`, `node` i `update`.
 | Build i profil | `build`, `validate`, `paths [--init]` |
 | Recorder | `discover`, `run` |
 | Diagnostyka | `doctor [--offline\|--deep\|--json]` |
-| Operations IPC | `channel status\|maintenance\|resume --channel ID`; `channel get-configuration\|validate-configuration\|apply-configuration\|reset-configuration --channel ID --node ID` |
+| Operations IPC | `channel status\|maintenance\|resume`; konfiguracja i `restart-node` per node; `scan-unassigned\|assign-address` per channel |
 | Dane | `capture validate`, `capture export` |
 | Node protocol 5 | `node identify\|handshake\|diagnostics\|time-probe\|safe-stop\|restart\|prepare-update\|confirm-trial` |
 | Firmware | `update` |
@@ -28,7 +28,8 @@ jako kotwica ścieżek, `/run/sensor-system/host-v2-status.json` oraz
 
 `channel maintenance`, `channel resume`, `channel get-configuration` i
 `channel validate-configuration`, `channel apply-configuration` i
-`channel reset-configuration` wysyłają typowane żądanie do
+`channel reset-configuration`, `channel restart-node`, `channel scan-unassigned`
+i `channel assign-address` wysyłają typowane żądanie do
 działającego procesu i czekają na wynik terminalny workera. Opcjonalny
 `--operation-id` służy do ponowienia dokładnie tej samej operacji. CLI nie
 otwiera portu RS485.
@@ -57,6 +58,24 @@ wynoszą zero. Mutacja wymaga rewizji zwróconej przez GetConfiguration:
 Apply najpierw przelicza budżet całego kanału. Reset przywraca pomiar 250 Hz,
 2 g, HP=0, Balanced, watermark 30 i zerowe offsety; nie zmienia adresu ani
 baudrate. Po mutacjach operator wykonuje `channel resume`.
+
+Commissioning działa tylko w Maintenance. Skan ma ograniczoną liczbę slotów
+`1/2/4/8/16`; assignment wymaga dokładnego hardware ID i nonce ostatniej
+udanej rundy w tym samym procesie hosta:
+
+```bash
+./hostctl channel scan-unassigned --channel 2 \
+  --round-nonce 2026101501 --slot-count 16
+./hostctl channel assign-address --channel 2 \
+  --round-nonce 2026101501 --hardware-id 0011223344556677 \
+  --new-node-address 2
+./hostctl channel restart-node --channel 2 --node 1
+./hostctl channel resume --channel 2
+```
+
+Assignment weryfikuje nowy adres przez handshake, ale nie zapisuje profilu
+instalacji. `restart-node` potwierdza przyjęcie polecenia; dopiero Resume
+potwierdza nowy `boot_epoch` i wykonuje rollover strumieni.
 
 ## Aktualizacja node
 
@@ -94,10 +113,10 @@ jako materiał migracyjny, źródło testów danych i bootloader uploader. Nie j
 specyfikacją V2.
 
 Brakujące funkcje mają otrzymać nowe odpowiedzialności zamiast aliasów do
-legacy. Codeki i runtime Configuration/Commissioning są już gotowe, lecz nie są
-jeszcze publicznymi poleceniami `hostctl` bez Operations API:
+legacy. Configuration, Commissioning i zdalny restart są publicznymi
+poleceniami przez Operations API. Nadal brakuje:
 
-- commissioning i operacje serwisowe per node;
+- trwałego audytu operacji i operacji grupowych;
 - dashboard czytający Runtime Status v1;
 - godzinny compactor Capture → Archive i publisher;
 - natywny uploader bootloadera, po ustabilizowaniu kontraktu A/B.
