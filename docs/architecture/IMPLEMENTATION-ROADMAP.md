@@ -155,6 +155,10 @@ uzasadnią ją pomiary lub testy awarii.
   rekonfigurację quiescent schedulera i trwały WAL znaczenia `config_revision`;
 - bounded walidacja Capture i strumieniowy `capture-export`, generujący
   `samples.csv`, `events.csv` oraz `windows.csv` bez ładowania nagrania do RAM;
+- automatyczny, idempotentny `Analysis CSV v1` per zamknięte okno Capture:
+  próbki raw XYZ z numerem i czasem device, prawdziwy ODR z historii
+  konfiguracji, osobne zdarzenia jakości oraz timer systemd poza gorącą
+  ścieżką RS485;
 
 ### Gotowe jako decyzja lub kontrakt
 
@@ -186,8 +190,9 @@ eksport. Configuration, Commissioning i RestartNode protocol 5 są podłączone 
 Operations API i `hostctl` przez jedynego właściciela RS485. HIL firmware 0.5.8
 potwierdził Configuration, pusty skan, restart i Resume; do zamknięcia
 Commissioning pozostaje Scan/Assign z nieprzypisanym node. Archive, kompresja,
-uploader i dashboard są świadomie odłożone
-poza MVP; prostym formatem wymiany pozostaje eksport CSV z Capture.
+uploader i dashboard są świadomie odłożone poza MVP. Automatyczne pliki
+`Analysis CSV v1` są obecnym prostym formatem wymiany; Capture WAL pozostaje
+źródłem prawdy.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
 Nie oznacza to jeszcze gotowości produkcyjnej dla wielu node, 1–16 channels,
@@ -275,12 +280,12 @@ CSV jest formatem wymiany generowanym z zapieczętowanego i zweryfikowanego
 Capture. Nie zastępuje kompaktowego WAL na gorącej ścieżce, ponieważ tekstowy
 zapis każdej próbki zwiększyłby rozmiar, liczbę konwersji i obciążenie storage.
 Istniejący `capture-export` zapisuje strumieniowo `samples.csv`, `events.csv` i
-`windows.csv` ze stałym użyciem pamięci.
+`windows.csv` ze stałym użyciem pamięci. `analysis-export` publikuje dodatkowo
+osobny, atomowy CSV dla każdego zamkniętego około dziesięciominutowego okna.
 
 Poza MVP pozostają Archive, kompresja, publication outbox, uploader, dashboard,
-automatyczny dobór ODR, pełny commissioning, rozbudowany trwały audit i fizyczna
-kwalifikacja 16 kanałów. Te elementy nie blokują pierwszego recorderowego
-wdrożenia 24/7.
+automatyczny dobór ODR, pełny commissioning i fizyczna kwalifikacja 16 kanałów.
+Te elementy nie blokują pierwszego recorderowego wdrożenia 24/7.
 
 Numery oznaczają obszary i bramki produktu. Fundament, runtime node i pion HIL
 jednej linii są zamknięte. Bieżąca ścieżka zależności prowadzi przez scheduler
@@ -815,7 +820,8 @@ Bieżąca kolejność implementacji:
 
 ### Etap 11 — prosty eksport i migracja produkcyjna
 
-Zakres MVP: walidacja sealed Capture, strumieniowy eksport CSV, porównanie ze
+Zakres MVP: walidacja sealed Capture, automatyczny eksport okien do prostego
+CSV, porównanie ze
 starym recorderem, canary i kontrolowany rollback. Godzinne Archive, kompresja,
 publication outbox, uploader i Derived są odłożone poza MVP. Ich wcześniejsze
 kontrakty pozostają dokumentacją możliwego rozszerzenia, a nie bieżącą bramką.

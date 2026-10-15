@@ -130,8 +130,8 @@ laboratoryjnego; każdy wyjątek analizujemy przed dalszym etapem.
 
 ## 6. Instalacja systemd
 
-Tracked szablon znajduje się w `host_v2/systemd/sensor-host-v2.service.in`.
-Nie jest aktywną jednostką. Instalator generuje z niego lokalną jednostkę,
+Tracked szablony znajdują się w `host_v2/systemd/`. Nie są aktywnymi
+jednostkami. Instalator generuje z nich lokalny recorder oraz timer eksportu,
 dlatego rzeczywiste ścieżki, użytkownik oraz lokalny `host/system_config.json`
 nie trafiają do Git.
 
@@ -147,7 +147,7 @@ nie trafiają do Git.
 
 Pierwsze polecenie pokazuje wynik bez zapisu do `/opt` i `/etc`. Instalacja
 buduje release, ponownie waliduje profil, liczy SHA-256 i umieszcza niezmienne
-binarium w `/opt/sensor-system/releases/<wersja>-<sha>`. Symlink `current` jest
+binaria w `/opt/sensor-system/releases/<wersja>-<sha>`. Symlink `current` jest
 przełączany atomowo, a poprzedni cel zachowuje `previous`. Instalator włącza
 start przy boot, lecz celowo nie uruchamia procesu; start pozostaje jawną
 operacją po zatrzymaniu legacy hosta i sprawdzeniu właścicieli portów.
@@ -162,6 +162,11 @@ nie zastępuje docelowego częściowego bootstrapu przy nieobecnym node; ten
 przypadek pozostaje otwartą bramką Etapu 3. Node wykryty poprawnie, lecz
 odrzucający aktywację, jest już izolowany do swojego kanału: pozostałe kanały
 pracują, a Runtime Status zachowuje jawny `faulted` i ogólny stan `degraded`.
+
+`sensor-analysis-export-v2.timer` uruchamia niezależny proces tylko dla
+zamkniętych manifestów Capture. Eksporter nie posiada portów RS485 i nie może
+wpłynąć na potwierdzanie próbek. Wyniki trafiają domyślnie do `var/analysis`;
+format oraz ograniczenie czasu UTC opisuje `ANALYSIS-CSV-V1.md`.
 
 Przełączenie wykonujemy w oknie serwisowym: zatrzymujemy legacy host, upewniamy
 się, że zwolnił wszystkie porty, uruchamiamy v2 i sprawdzamy discovery oraz

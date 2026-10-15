@@ -492,8 +492,11 @@ fn validate(config: PathBuf, repository_root: PathBuf) -> Result<(), Box<dyn std
         discovery.target_count()
     );
     println!(
-        "storage: capture_root={}",
-        profile.storage().capture().root().display()
+        "storage: capture_root={} analysis_root={} analysis_enabled={} analysis_scan_interval_s={}",
+        profile.storage().capture().root().display(),
+        profile.storage().analysis().root().display(),
+        profile.storage().analysis().enabled(),
+        profile.storage().analysis().scan_interval_seconds(),
     );
     for channel in discovery.channels() {
         println!(
@@ -521,6 +524,7 @@ fn paths(
         ("capture", storage.capture().root()),
         ("checkpoint", storage.checkpoint_root()),
         ("time", storage.time_persistence().root()),
+        ("analysis", storage.analysis().root()),
     ];
     if initialize {
         for (_, path) in &entries[2..] {

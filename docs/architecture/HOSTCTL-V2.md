@@ -15,7 +15,7 @@ RS485 poza jawnymi poleceniami `discover`, `doctor --deep`, `node` i `update`.
 | Recorder | `discover`, `run` |
 | Diagnostyka | `doctor [--offline\|--deep\|--json]` |
 | Operations IPC | `channel status\|maintenance\|resume`; konfiguracja i `restart-node` per node; `scan-unassigned\|assign-address` per channel |
-| Dane | `capture validate`, `capture export` |
+| Dane | `capture validate`, `capture export`, `analysis export-new` |
 | Node protocol 5 | `node identify\|handshake\|diagnostics\|time-probe\|safe-stop\|restart\|prepare-update\|confirm-trial` |
 | Firmware | `update` |
 | systemd | `install-services`, `rollback-services`, `start`, `stop`, `restart`, `status`, `logs` |
@@ -38,6 +38,11 @@ otwiera portu RS485.
 uruchomiony przy aktywnym recorderze: pomija bieżący, nieopublikowany ogon WAL,
 który nie ma jeszcze manifestu. Nie pomija uszkodzeń ani luk w żadnym
 zamkniętym oknie.
+
+`analysis export-new` waliduje i eksportuje każde nowe, zamknięte okno do
+prostego CSV, zachowując numer próbki, device time, raw XYZ i ODR. Operacja
+jest idempotentna; ta sama binarka jest okresowo uruchamiana przez
+`sensor-analysis-export-v2.timer`.
 
 Odczyt i walidacja konfiguracji wymagają Maintenance. Walidacja przyjmuje
 pełną propozycję, bez ukrytego dziedziczenia pól:

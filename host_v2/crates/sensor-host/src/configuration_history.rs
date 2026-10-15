@@ -27,6 +27,39 @@ pub enum ConfigurationAppend {
     Existing,
 }
 
+/// Reads and validates the complete durable configuration history for one
+/// sensor without modifying acquisition data.
+pub fn read_configuration_snapshots(
+    capture_root: &Path,
+    hardware_id: HardwareId,
+) -> Result<Vec<ConfigurationSnapshot>, ConfigurationHistoryError> {
+    let path = capture_root
+        .join(".configuration-v1")
+        .join(format!("{}.wal", hardware_id_hex(hardware_id)));
+    let mut file = File::open(path).map_err(ConfigurationHistoryError::Io)?;
+    let length = file
+        .metadata()
+        .map_err(ConfigurationHistoryError::Io)?
+        .len();
+    if length % RECORD_BYTES as u64 != 0 {
+        return Err(ConfigurationHistoryError::IncompleteRecord);
+    }
+    let record_count = usize::try_from(length / RECORD_BYTES as u64)
+        .map_err(|_| ConfigurationHistoryError::RecordCountOverflow)?;
+    let mut snapshots = Vec::with_capacity(record_count);
+    let mut record = [0_u8; RECORD_BYTES];
+    while snapshots.len() < record_count {
+        file.read_exact(&mut record)
+            .map_err(ConfigurationHistoryError::Io)?;
+        let snapshot = decode_record(&record)?;
+        if snapshot.hardware_id != hardware_id {
+            return Err(ConfigurationHistoryError::InvalidRecord);
+        }
+        snapshots.push(snapshot);
+    }
+    Ok(snapshots)
+}
+
 /// Appends one durable, fixed-size configuration snapshot outside the sample
 /// hot path. A torn final record is removed during recovery; corruption of a
 /// complete record fails closed.
@@ -179,6 +212,8 @@ pub enum ConfigurationHistoryError {
     InvalidSnapshot,
     InvalidRecord,
     ChecksumMismatch,
+    IncompleteRecord,
+    RecordCountOverflow,
     ConflictingRevision {
         boot_epoch: BootEpoch,
         revision: u32,
@@ -269,6 +304,16 @@ mod tests {
             ConfigurationAppend::Appended
         );
         assert_eq!(fs::metadata(path).unwrap().len(), (RECORD_BYTES * 2) as u64);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_only_history_returns_validated_snapshots() {
+        let root = root();
+        append_configuration_snapshot(&root, snapshot(1)).unwrap();
+        append_configuration_snapshot(&root, snapshot(2)).unwrap();
+        let values = read_configuration_snapshots(&root, HardwareId::from_bytes([1; 8])).unwrap();
+        assert_eq!(values, vec![snapshot(1), snapshot(2)]);
         fs::remove_dir_all(root).unwrap();
     }
 }

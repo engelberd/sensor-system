@@ -33,6 +33,28 @@ const TIME_V2_KEYS: [&str; 6] = [
     "sync_estimated_slot_ms",
     "sync_retry_delay_ms",
 ];
+const ANALYSIS_V2_KEYS: [&str; 3] = ["enabled", "root_dir", "scan_interval_seconds"];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalysisExportInstallationProfile {
+    enabled: bool,
+    root: PathBuf,
+    scan_interval_seconds: u64,
+}
+
+impl AnalysisExportInstallationProfile {
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub const fn scan_interval_seconds(&self) -> u64 {
+        self.scan_interval_seconds
+    }
+}
 
 pub struct InstallationStorageProfile {
     capture: CaptureInstallationProfile,
@@ -41,6 +63,7 @@ pub struct InstallationStorageProfile {
     retention: RetentionPolicy,
     time_persistence: TimePersistenceInstallationProfile,
     time_sync: TimeSyncInstallationPolicy,
+    analysis: AnalysisExportInstallationProfile,
 }
 
 impl InstallationStorageProfile {
@@ -64,6 +87,8 @@ impl InstallationStorageProfile {
         reject_unknown_keys(capture_v2, &CAPTURE_V2_KEYS, "capture_v2")?;
         let time_v2 = object_field(storage, "time_v2")?;
         reject_unknown_keys(time_v2, &TIME_V2_KEYS, "time_v2")?;
+        let analysis_v2 = object_field(storage, "analysis_v2")?;
+        reject_unknown_keys(analysis_v2, &ANALYSIS_V2_KEYS, "analysis_v2")?;
 
         let capture_root = anchored_path(repository_root, string_field(storage, "root_dir")?);
         let minimum_free_bytes = nonzero_unsigned_field(storage, "min_free_bytes")?;
@@ -108,6 +133,11 @@ impl InstallationStorageProfile {
             duration_micros_from_ms(time_v2, "sync_retry_delay_ms")?,
         )
         .map_err(InstallationConfigError::TimeProfile)?;
+        let analysis = AnalysisExportInstallationProfile {
+            enabled: boolean_field(analysis_v2, "enabled")?,
+            root: anchored_path(repository_root, string_field(analysis_v2, "root_dir")?),
+            scan_interval_seconds: nonzero_unsigned_field(analysis_v2, "scan_interval_seconds")?,
+        };
 
         Ok(Self {
             capture,
@@ -116,6 +146,7 @@ impl InstallationStorageProfile {
             retention,
             time_persistence,
             time_sync,
+            analysis,
         })
     }
 
@@ -141,6 +172,10 @@ impl InstallationStorageProfile {
 
     pub const fn time_sync(&self) -> TimeSyncInstallationPolicy {
         self.time_sync
+    }
+
+    pub const fn analysis(&self) -> &AnalysisExportInstallationProfile {
+        &self.analysis
     }
 }
 
@@ -279,6 +314,17 @@ fn string_field<'a>(
         .ok_or(InstallationConfigError::MissingField(key))?
         .as_str()
         .filter(|value| !value.trim().is_empty())
+        .ok_or(InstallationConfigError::InvalidFieldType(key))
+}
+
+fn boolean_field(
+    object: &Map<String, Value>,
+    key: &'static str,
+) -> Result<bool, InstallationConfigError> {
+    object
+        .get(key)
+        .ok_or(InstallationConfigError::MissingField(key))?
+        .as_bool()
         .ok_or(InstallationConfigError::InvalidFieldType(key))
 }
 
@@ -438,6 +484,11 @@ mod tests {
                         "sync_estimated_slot_ms": 20,
                         "sync_retry_delay_ms": 250
                         {extra_time}
+                    }},
+                    "analysis_v2": {{
+                        "enabled": true,
+                        "root_dir": "var/analysis",
+                        "scan_interval_seconds": 60
                     }}
                 }},
                 "channels": [{{"name": "line-a", "port": "a", "nodes": [{{"id": 1}}]}}]
@@ -473,6 +524,9 @@ mod tests {
             temp.0.join("var/recordings/time")
         );
         assert_eq!(profile.time_sync().schedule().interval.get(), 10_000_000);
+        assert!(profile.analysis().enabled());
+        assert_eq!(profile.analysis().root(), temp.0.join("var/analysis"));
+        assert_eq!(profile.analysis().scan_interval_seconds(), 60);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SERVICE_NAME="${SENSOR_HOST_SERVICE_NAME:-sensor-host-v2.service}"
+ANALYSIS_TIMER_NAME="${SENSOR_ANALYSIS_TIMER_NAME:-sensor-analysis-export-v2.timer}"
 INSTALL_ROOT="${SENSOR_HOST_INSTALL_ROOT:-/opt/sensor-system}"
 CUSTOM_ROOT=0
 [[ -n ${SENSOR_HOST_INSTALL_ROOT:-} ]] && CUSTOM_ROOT=1
@@ -39,13 +40,19 @@ atomic_replace_symlink() {
 }
 
 # systemctl waits until the service's SIGTERM shutdown and WAL drain finish.
-systemctl stop "$SERVICE_NAME"
+systemctl stop "$ANALYSIS_TIMER_NAME" "$SERVICE_NAME"
 ln -sfn "$previous_target" "$INSTALL_ROOT/current.new"
 ln -sfn "$current_target" "$INSTALL_ROOT/previous.new"
 atomic_replace_symlink "$INSTALL_ROOT/current.new" "$CURRENT"
 atomic_replace_symlink "$INSTALL_ROOT/previous.new" "$PREVIOUS"
 systemctl daemon-reload
 systemctl start "$SERVICE_NAME"
+if [[ -x $previous_target/analysis-export ]]; then
+  systemctl start "$ANALYSIS_TIMER_NAME"
+else
+  systemctl disable "$ANALYSIS_TIMER_NAME"
+  echo "previous release has no analysis exporter; timer disabled" >&2
+fi
 
 echo "rolled back $SERVICE_NAME"
 echo "current=$(readlink "$CURRENT")"

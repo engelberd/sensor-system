@@ -1,0 +1,29 @@
+[Unit]
+Description=Sensor System sealed Capture to analysis CSV exporter
+Documentation=file://@REPOSITORY_ROOT@/host_v2/DEPLOY-RASPBERRY-PI.md
+After=local-fs.target
+RequiresMountsFor=@RUNTIME_DATA_ROOT@
+
+[Service]
+Type=oneshot
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@REPOSITORY_ROOT@
+ExecStart=@CURRENT_ANALYSIS_BINARY@ --config @CONFIG_PATH@ --repository-root @REPOSITORY_ROOT@
+UMask=0027
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sensor-analysis-export-v2
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=@RUNTIME_DATA_ROOT@

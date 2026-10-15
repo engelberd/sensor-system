@@ -1,0 +1,12 @@
+[Unit]
+Description=Export newly sealed Sensor System Capture windows
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=@SCAN_INTERVAL_SECONDS@s
+AccuracySec=1s
+Persistent=true
+Unit=sensor-analysis-export-v2.service
+
+[Install]
+WantedBy=timers.target

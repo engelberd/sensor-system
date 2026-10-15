@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod analysis_export;
 pub mod archive_coverage;
 pub mod archive_retention;
 pub mod bounded_writer;

@@ -8,6 +8,7 @@ HIL_BINARY="${SENSOR_HOST_HIL_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-hi
 CAPTURE_VALIDATE_BINARY="${SENSOR_CAPTURE_VALIDATE_BINARY:-$ROOT_DIR/host_v2/target/release/capture-validate}"
 CAPTURE_EXPORT_BINARY="${SENSOR_CAPTURE_EXPORT_BINARY:-$ROOT_DIR/host_v2/target/release/capture-export}"
 OPERATIONS_BINARY="${SENSOR_OPERATIONS_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-operations}"
+ANALYSIS_EXPORT_BINARY="${SENSOR_ANALYSIS_EXPORT_BINARY:-$ROOT_DIR/host_v2/target/release/analysis-export}"
 HOST_CONFIG="${SENSOR_HOST_CONFIG:-$ROOT_DIR/host/system_config.json}"
 STATUS_FILE="${SENSOR_HOST_STATUS_FILE:-/run/sensor-system/host-v2-status.json}"
 OPERATIONS_SOCKET="${SENSOR_HOST_OPERATIONS_SOCKET:-/run/sensor-system/operations-v1.sock}"
@@ -39,6 +40,7 @@ Host v2:
 Data:
   capture validate ROOT                 Validate all sealed Capture streams
   capture export CAPTURE_DIR OUTPUT_DIR Validate and export one stream to CSV
+  analysis export-new                     Export every newly sealed window to CSV
 
 Node service (protocol 5 over RS485):
   node <sensor-hil command> [args...]    Identity, diagnostics, time and recovery
@@ -157,6 +159,16 @@ case "$COMMAND" in
         ;;
     esac
     ;;
+  analysis)
+    SUBCOMMAND="${1:-}"
+    [[ $SUBCOMMAND == export-new ]] || { echo "[ERROR] analysis requires export-new" >&2; exit 64; }
+    shift
+    require_binary "$ANALYSIS_EXPORT_BINARY"
+    EXECUTION=("$ANALYSIS_EXPORT_BINARY")
+    ((HAS_CONFIG)) || EXECUTION+=(--config "$HOST_CONFIG")
+    ((HAS_REPOSITORY)) || EXECUTION+=(--repository-root "$ROOT_DIR")
+    exec "${EXECUTION[@]}" "$@"
+    ;;
   node)
     require_binary "$HIL_BINARY"
     [[ $# -gt 0 ]] || { "$HIL_BINARY" --help; exit 64; }
@@ -170,9 +182,11 @@ case "$COMMAND" in
       cargo build --release -p sensor-host --manifest-path "$ROOT_DIR/host_v2/Cargo.toml"
     fi
     require_binary "$HOST_BINARY"
+    require_binary "$ANALYSIS_EXPORT_BINARY"
     "$HOST_BINARY" validate --config "$HOST_CONFIG" --repository-root "$ROOT_DIR"
     exec "$ROOT_DIR/host_v2/tools/install_systemd_service.sh" \
       --repository-root "$ROOT_DIR" --config "$HOST_CONFIG" --binary "$HOST_BINARY" \
+      --analysis-binary "$ANALYSIS_EXPORT_BINARY" \
       --user "${SENSOR_HOST_SERVICE_USER:-$(id -un)}" \
       --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" "$@"
     ;;

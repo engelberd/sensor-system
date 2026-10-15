@@ -151,6 +151,28 @@ class HostctlV2Tests(unittest.TestCase):
                 ],
             )
 
+    def test_analysis_export_uses_v2_profile_defaults(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary, output = self.fake_binary(Path(temporary))
+            result = self.run_hostctl(
+                "analysis",
+                "export-new",
+                env={
+                    "SENSOR_ANALYSIS_EXPORT_BINARY": str(binary),
+                    "SENSOR_TEST_ARGUMENTS": str(output),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                output.read_text(encoding="utf-8").splitlines(),
+                [
+                    "--config",
+                    str(ROOT / "host/system_config.json"),
+                    "--repository-root",
+                    str(ROOT),
+                ],
+            )
+
     def test_update_composes_protocol_5_prepare_upload_and_exact_confirm(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
