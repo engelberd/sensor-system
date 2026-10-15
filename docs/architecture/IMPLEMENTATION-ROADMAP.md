@@ -158,7 +158,8 @@ uzasadnią ją pomiary lub testy awarii.
 - automatyczny, idempotentny `Analysis CSV v1` per zamknięte okno Capture:
   próbki raw XYZ z numerem i czasem device, prawdziwy ODR z historii
   konfiguracji, osobne zdarzenia jakości oraz timer systemd poza gorącą
-  ścieżką RS485;
+  ścieżką RS485; pierwszy przebieg ma ograniczony backfill i nie rozwija całej
+  historycznej bazy do tekstu;
 
 ### Gotowe jako decyzja lub kontrakt
 

@@ -31,7 +31,8 @@
     "analysis_v2": {
       "enabled": true,
       "root_dir": "var/analysis",
-      "scan_interval_seconds": 60
+      "scan_interval_seconds": 60,
+      "initial_backfill_windows": 1
     }
   },
   "runtime_v2": {

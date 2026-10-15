@@ -63,7 +63,8 @@ Konfiguracja produktu znajduje się w `storage.analysis_v2`:
 {
   "enabled": true,
   "root_dir": "var/analysis",
-  "scan_interval_seconds": 60
+  "scan_interval_seconds": 60,
+  "initial_backfill_windows": 1
 }
 ```
 
@@ -73,3 +74,10 @@ interwał. Ręczne wykonanie tej samej, idempotentnej operacji:
 ```bash
 ./hostctl analysis export-new
 ```
+
+Przy pierwszym uruchomieniu eksporter bierze tylko podaną liczbę najnowszych
+zamkniętych okien bieżącego `boot_epoch`. Zapobiega to przypadkowemu
+rozwinięciu całej historycznej bazy Capture do wielokrotnie większego tekstu.
+Najwyższy opublikowany ordinal w nazwach CSV jest następnie kursorem: kolejne
+przebiegi eksportują wszystkie późniejsze okna po kolei. Capture z poprzednich
+epok pozostaje dostępny do jawnego eksportu offline.

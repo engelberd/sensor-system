@@ -33,13 +33,19 @@ const TIME_V2_KEYS: [&str; 6] = [
     "sync_estimated_slot_ms",
     "sync_retry_delay_ms",
 ];
-const ANALYSIS_V2_KEYS: [&str; 3] = ["enabled", "root_dir", "scan_interval_seconds"];
+const ANALYSIS_V2_KEYS: [&str; 4] = [
+    "enabled",
+    "root_dir",
+    "scan_interval_seconds",
+    "initial_backfill_windows",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalysisExportInstallationProfile {
     enabled: bool,
     root: PathBuf,
     scan_interval_seconds: u64,
+    initial_backfill_windows: usize,
 }
 
 impl AnalysisExportInstallationProfile {
@@ -53,6 +59,10 @@ impl AnalysisExportInstallationProfile {
 
     pub const fn scan_interval_seconds(&self) -> u64 {
         self.scan_interval_seconds
+    }
+
+    pub const fn initial_backfill_windows(&self) -> usize {
+        self.initial_backfill_windows
     }
 }
 
@@ -137,6 +147,7 @@ impl InstallationStorageProfile {
             enabled: boolean_field(analysis_v2, "enabled")?,
             root: anchored_path(repository_root, string_field(analysis_v2, "root_dir")?),
             scan_interval_seconds: nonzero_unsigned_field(analysis_v2, "scan_interval_seconds")?,
+            initial_backfill_windows: usize_field(analysis_v2, "initial_backfill_windows")?,
         };
 
         Ok(Self {
@@ -488,7 +499,8 @@ mod tests {
                     "analysis_v2": {{
                         "enabled": true,
                         "root_dir": "var/analysis",
-                        "scan_interval_seconds": 60
+                        "scan_interval_seconds": 60,
+                        "initial_backfill_windows": 1
                     }}
                 }},
                 "channels": [{{"name": "line-a", "port": "a", "nodes": [{{"id": 1}}]}}]
@@ -527,6 +539,7 @@ mod tests {
         assert!(profile.analysis().enabled());
         assert_eq!(profile.analysis().root(), temp.0.join("var/analysis"));
         assert_eq!(profile.analysis().scan_interval_seconds(), 60);
+        assert_eq!(profile.analysis().initial_backfill_windows(), 1);
     }
 
     #[test]

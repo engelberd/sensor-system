@@ -792,7 +792,7 @@ mod tests {
             "root_dir":"var/recordings", "window_seconds":600, "min_free_bytes":1073741824,
             "capture_v2":{"checkpoint_dir":"var/recordings/.retention","queue_capacity_records":64,"group_commit_max_records":8,"group_commit_max_wait_ms":5,"worker_prefix":"capture","capture_grace_seconds":172800,"archive_retention_seconds":2592000},
             "time_v2":{"root_dir":"var/recordings/time","queue_capacity_records":64,"worker_name":"time","sync_interval_ms":10000,"sync_estimated_slot_ms":20,"sync_retry_delay_ms":250},
-            "analysis_v2":{"enabled":true,"root_dir":"var/analysis","scan_interval_seconds":60}
+            "analysis_v2":{"enabled":true,"root_dir":"var/analysis","scan_interval_seconds":60,"initial_backfill_windows":1}
         }"#).unwrap();
         document["runtime_v2"] =
             serde_json::from_str::<Value>(include_str!("../../../../host/configs/common.json"))
