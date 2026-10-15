@@ -2,13 +2,16 @@ use core::fmt;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
+use sensor_protocol::RuntimeState;
+
 use crate::capture_profile::{CaptureInstallationProfile, CaptureProfileError};
 use crate::capture_repository::CaptureRepository;
 use crate::capture_repository::CaptureRepositoryError;
 use crate::capture_runtime::{CaptureRolloverError, CaptureRuntimeError};
 use crate::channel_activation::{
-    activate_recording_nodes, stop_recording_nodes, RecordingActivationError,
-    RecordingActivationPolicy, RecordingShutdownError, RecordingShutdownPolicy,
+    activate_recording_nodes, start_recording_nodes, stop_recording_nodes,
+    RecordingActivationError, RecordingActivationPolicy, RecordingShutdownError,
+    RecordingShutdownPolicy,
 };
 use crate::channel_agent::{ChannelAgentError, ChannelEvent, ControlWorkKey};
 use crate::channel_bootstrap::{BootstrappedChannel, NodeBootstrapEvidence};
@@ -61,6 +64,13 @@ use crate::time_wal::HostClockId;
 
 pub type ProductionChannelLoop<P, C, T> =
     ThreadedChannelRecordingLoop<P, C, GroupedPersistenceExecutor<CaptureRepository>, T>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelCompositionPolicy {
+    pub activation: RecordingActivationPolicy,
+    pub takeover: ControlledChannelShutdownPolicy,
+    pub assembly: RecordingAssemblyPolicy,
+}
 
 #[derive(Clone)]
 pub struct ChannelRolloverServices {
@@ -1901,8 +1911,7 @@ pub fn compose_channel_recording<P, C, T>(
     bootstrapped: BootstrappedChannel<P, C>,
     startup: &ChannelStartupPlan,
     capture: &CaptureInstallationProfile,
-    activation_policy: RecordingActivationPolicy,
-    assembly_policy: RecordingAssemblyPolicy,
+    policy: ChannelCompositionPolicy,
     work_id_seed: u64,
     time_observations: T,
 ) -> Result<ProductionChannelLoop<P, C, T>, ChannelWorkerError>
@@ -1913,6 +1922,9 @@ where
 {
     validate_bootstrap(startup, bootstrapped.nodes())?;
     let (mut endpoint, bootstrap_nodes) = bootstrapped.into_parts();
+    let takeover_required = bootstrap_nodes
+        .iter()
+        .any(|node| node.runtime.state == RuntimeState::Recording);
 
     let mut streams = Vec::with_capacity(bootstrap_nodes.len());
     for node in &bootstrap_nodes {
@@ -1965,13 +1977,13 @@ where
         .collect::<Vec<_>>();
 
     if let Err(source) =
-        activate_recording_nodes(&mut endpoint, &mut recovered_nodes, activation_policy)
+        activate_recording_nodes(&mut endpoint, &mut recovered_nodes, policy.activation)
     {
         let rollback = stop_recording_nodes(
             &mut endpoint,
             &activation_targets,
             RecordingShutdownPolicy {
-                node_deadline: activation_policy.node_deadline,
+                node_deadline: policy.activation.node_deadline,
             },
         )
         .err();
@@ -1987,7 +1999,7 @@ where
     let coordinator = match assemble_recording_coordinator(
         startup,
         recovered_nodes,
-        assembly_policy,
+        policy.assembly,
         now,
         work_id_seed,
     ) {
@@ -1997,7 +2009,7 @@ where
                 &mut endpoint,
                 &activation_targets,
                 RecordingShutdownPolicy {
-                    node_deadline: activation_policy.node_deadline,
+                    node_deadline: policy.activation.node_deadline,
                 },
             )
             .err();
@@ -2010,12 +2022,64 @@ where
         }
     };
 
-    Ok(ThreadedChannelRecordingLoop::new_with_time_observations(
+    let recording = ThreadedChannelRecordingLoop::new_with_time_observations(
         endpoint,
         coordinator,
         executor,
         time_observations,
-    ))
+    );
+    if !takeover_required {
+        return Ok(recording);
+    }
+
+    // A process restart can discover a node that kept recording while the
+    // host was down. Stop production first and drain the finite retained tail
+    // through the recovered durable sessions. Starting ordinary scheduling
+    // directly from a full journal can otherwise keep Measurement permanently
+    // urgent and starve TimeSync even when the channel has ample steady-state
+    // capacity.
+    let (recording, takeover) =
+        run_controlled_shutdown(recording, &activation_targets, policy.takeover);
+    if let Err(source) = takeover {
+        let (_endpoint, _measurements, persistence, _time_observations) = recording.into_parts();
+        return Err(ChannelWorkerError::TakeoverDrain {
+            source,
+            shutdown: persistence.shutdown().err(),
+        });
+    }
+
+    let (mut endpoint, measurements, persistence, time_observations) = recording.into_parts();
+    if let Err(source) =
+        start_recording_nodes(&mut endpoint, &activation_targets, policy.activation)
+    {
+        let rollback = stop_recording_nodes(
+            &mut endpoint,
+            &activation_targets,
+            RecordingShutdownPolicy {
+                node_deadline: policy.activation.node_deadline,
+            },
+        )
+        .err();
+        return Err(ChannelWorkerError::TakeoverActivation {
+            source,
+            rollback,
+            shutdown: persistence.shutdown().err(),
+        });
+    }
+    let mut recording = ThreadedChannelRecordingLoop::new_with_time_observations(
+        endpoint,
+        measurements,
+        persistence,
+        time_observations,
+    );
+    if let Err(source) = recording.resume_scheduling() {
+        let (_endpoint, _measurements, persistence, _time_observations) = recording.into_parts();
+        return Err(ChannelWorkerError::TakeoverResume {
+            source,
+            shutdown: persistence.shutdown().err(),
+        });
+    }
+    Ok(recording)
 }
 
 fn validate_bootstrap(
@@ -2081,6 +2145,19 @@ pub enum ChannelWorkerError {
     Assembly {
         source: ChannelAssemblyError,
         rollback: Option<RecordingShutdownError>,
+        shutdown: Option<PersistenceExecutorError>,
+    },
+    TakeoverDrain {
+        source: ControlledChannelShutdownError,
+        shutdown: Option<PersistenceExecutorError>,
+    },
+    TakeoverActivation {
+        source: RecordingActivationError,
+        rollback: Option<RecordingShutdownError>,
+        shutdown: Option<PersistenceExecutorError>,
+    },
+    TakeoverResume {
+        source: MeasurementCoordinatorError,
         shutdown: Option<PersistenceExecutorError>,
     },
 }
@@ -2332,7 +2409,7 @@ mod tests {
     }
 
     #[test]
-    fn composes_replay_activation_and_scheduler_without_reentering_the_cursor() {
+    fn takeover_stops_drains_and_restarts_a_node_found_recording() {
         let discovery = InstallationDiscoveryPlan::from_topology(&topology());
         let mut collector = discovery.collector();
         collector
@@ -2410,7 +2487,7 @@ mod tests {
                 runtime: RuntimeResult {
                     operation_id: 1,
                     code: RuntimeResultCode::Ok,
-                    state: RuntimeState::Idle,
+                    state: RuntimeState::Recording,
                     observability: ObservabilityProfile::Production,
                     sensor_status: SensorStatusCode::Ok,
                 },
@@ -2438,16 +2515,25 @@ mod tests {
             bootstrapped,
             &startup[0],
             &capture,
-            RecordingActivationPolicy {
-                node_deadline: Duration::from_secs(1),
-            },
-            RecordingAssemblyPolicy {
-                scheduler: ChannelSchedulerPolicy {
-                    overflow_guard: duration(100_000),
-                    max_slot: duration(50_000),
+            ChannelCompositionPolicy {
+                activation: RecordingActivationPolicy {
+                    node_deadline: Duration::from_secs(1),
                 },
-                first_time_sync_delay: duration(1_000_000),
-                time_sync_phase_step: duration(100_000),
+                takeover: ControlledChannelShutdownPolicy {
+                    barrier_deadline: Duration::from_secs(1),
+                    node: RecordingShutdownPolicy {
+                        node_deadline: Duration::from_secs(1),
+                    },
+                    drain_deadline: Duration::from_secs(1),
+                },
+                assembly: RecordingAssemblyPolicy {
+                    scheduler: ChannelSchedulerPolicy {
+                        overflow_guard: duration(100_000),
+                        max_slot: duration(50_000),
+                    },
+                    first_time_sync_delay: duration(1_000_000),
+                    time_sync_phase_step: duration(100_000),
+                },
             },
             100,
             RejectingTimeObservationSubmitter,
@@ -2462,8 +2548,9 @@ mod tests {
                 .snapshot(1, now)
                 .unwrap()
                 .received,
-            SequenceCursor::new(140)
+            SequenceCursor::new(141)
         );
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
         let origin = capture
             .inspect_stream_origin("line-a", HARDWARE, EPOCH)
             .unwrap()
@@ -2484,7 +2571,7 @@ mod tests {
             },
         );
         assert!(report.outcome.is_ok());
-        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert_eq!(stops.load(Ordering::SeqCst), 2);
         let shutdown = report.persistence.unwrap();
         assert_eq!(
             shutdown.sink.durable_cursors().next().unwrap().2,

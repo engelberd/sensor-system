@@ -14,9 +14,9 @@ use crate::channel_supervisor::{
     SupervisedChannel, SupervisedChannelTask,
 };
 use crate::channel_worker::{
-    compose_channel_recording, ChannelMaintenanceError, ChannelMaintenancePolicy,
-    ChannelRolloverServices, ChannelWorkerError, ControlledChannelShutdownError,
-    ControlledChannelShutdownPolicy, ProductionChannelTask,
+    compose_channel_recording, ChannelCompositionPolicy, ChannelMaintenanceError,
+    ChannelMaintenancePolicy, ChannelRolloverServices, ChannelWorkerError,
+    ControlledChannelShutdownError, ControlledChannelShutdownPolicy, ProductionChannelTask,
 };
 use crate::discovery::DiscoveryInventory;
 use crate::host_health::{
@@ -489,13 +489,19 @@ where
             bootstrapped,
             &startup,
             capture,
-            policies.activation,
-            policies.assembly,
+            ChannelCompositionPolicy {
+                activation: policies.activation,
+                takeover: policies.shutdown,
+                assembly: policies.assembly,
+            },
             channel_seed,
             time_observations,
         ) {
             Ok(value) => value,
-            Err(source @ ChannelWorkerError::Activation { .. }) => {
+            Err(
+                source @ (ChannelWorkerError::Activation { .. }
+                | ChannelWorkerError::TakeoverActivation { .. }),
+            ) => {
                 startup_channel_faults.push(StartupChannelFault {
                     channel_id,
                     channel_name,

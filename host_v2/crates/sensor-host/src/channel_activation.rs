@@ -69,27 +69,57 @@ where
             }
         }
 
-        endpoint
-            .agent_mut()
-            .submit_lifecycle(
-                node.id().node_address,
-                RuntimeOperation::Start,
-                ObservabilityProfile::Production,
-            )
-            .map_err(RecordingActivationError::Agent)?;
-        let result = wait_for_start(endpoint, node.id(), Instant::now() + policy.node_deadline)?;
-        if result.code != RuntimeResultCode::Ok
-            || result.state != RuntimeState::Recording
-            || result.observability != ObservabilityProfile::Production
-        {
-            return Err(RecordingActivationError::StartRejected {
-                id: node.id(),
-                result,
-            });
-        }
+        let result = start_recording_node(endpoint, node.id(), policy)?;
         node.confirm_runtime(result);
     }
     Ok(())
+}
+
+/// Starts a known set of quiesced nodes after their retained Measurement tail
+/// has been drained. This is used during process takeover: the scheduler and
+/// durable sessions already own the cursors, so only Lifecycle state changes.
+pub fn start_recording_nodes<P, C>(
+    endpoint: &mut ChannelEndpoint<P, C>,
+    nodes: &[DiscoveryTargetId],
+    policy: RecordingActivationPolicy,
+) -> Result<Vec<RuntimeResult>, RecordingActivationError>
+where
+    P: Read + Write,
+    C: MonotonicClock,
+{
+    let policy = policy.validate()?;
+    let mut started = Vec::with_capacity(nodes.len());
+    for id in nodes {
+        started.push(start_recording_node(endpoint, *id, policy)?);
+    }
+    Ok(started)
+}
+
+fn start_recording_node<P, C>(
+    endpoint: &mut ChannelEndpoint<P, C>,
+    id: DiscoveryTargetId,
+    policy: RecordingActivationPolicy,
+) -> Result<RuntimeResult, RecordingActivationError>
+where
+    P: Read + Write,
+    C: MonotonicClock,
+{
+    endpoint
+        .agent_mut()
+        .submit_lifecycle(
+            id.node_address,
+            RuntimeOperation::Start,
+            ObservabilityProfile::Production,
+        )
+        .map_err(RecordingActivationError::Agent)?;
+    let result = wait_for_start(endpoint, id, Instant::now() + policy.node_deadline)?;
+    if result.code != RuntimeResultCode::Ok
+        || result.state != RuntimeState::Recording
+        || result.observability != ObservabilityProfile::Production
+    {
+        return Err(RecordingActivationError::StartRejected { id, result });
+    }
+    Ok(result)
 }
 
 /// Stops nodes only after the caller has quiesced and durably settled its
