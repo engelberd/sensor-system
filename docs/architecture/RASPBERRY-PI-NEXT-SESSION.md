@@ -64,16 +64,20 @@ USB noda nie jest do niego podłączone; widoczny jest tylko konwerter RS485.
 Obecne A odzyska się więc przy najbliższym rzeczywistym zaniku zasilania.
 Trwały rekord diagnostyczny pozostaje w flash.
 
-Node B, C, D, G i H działają już na `0.5.7` i mają zdalne `RestartNode`,
+Node B, C, D, G i H działają już na `0.5.8` i mają zdalne `RestartNode`,
 Diagnostics oraz wejście do bootloadera z `Faulted`. Każdy przeszedł upload A/B
-i exact-version trial confirm. Usługa ponownie nagrywa pięć zdrowych kanałów w
-stanie degraded przez A.
+i exact-version trial confirm. Host z trwałym audytem Operations nagrywa pięć
+zdrowych kanałów; A jest jawnie wyłączone lokalnym override, więc runtime jest
+`healthy`, a nie pozornie `degraded`. Gate pięciu kanałów zakończył się wynikiem
+`hostctl doctor`: 34 OK, zero ostrzeżeń i błędów. Każdy kanał miał zero timeoutów,
+decode errors, retry i storage failures.
 
 ## Najbliższa procedura
 
 Po jednorazowym restarcie zasilania A:
 
-1. Nie zatrzymuj działającej usługi i nie otwieraj portów B/C/D/G/H.
+1. Nie otwieraj portów B/C/D/G/H. Odczytaj A dopiero podczas zaplanowanego okna
+   serwisowego.
 2. Sprawdź A tylko po RS485:
 
    ```bash
@@ -81,7 +85,8 @@ Po jednorazowym restarcie zasilania A:
      /dev/sensor-system-line-a 1 115200
    ```
 
-3. Przełącz aplikację do bootloadera przez Lifecycle V3, a następnie wgraj
+3. Zatrzymaj usługę przez `./hostctl stop`, przełącz aplikację do bootloadera
+   przez Lifecycle V3, a następnie wgraj
    przygotowaną paczkę A/B po RS485:
 
    ```bash
@@ -90,8 +95,8 @@ Po jednorazowym restarcie zasilania A:
      --node 1 \
      --hardware-id 8d626ee02dcea999 \
      --board-revision 2 \
-     --expected-firmware 0.5.7 \
-     --image node/build/releases/sensor-system-node-v0.5.7/sensor-system-node-v0.5.7-update-package.json
+     --expected-firmware 0.5.8 \
+     --image node/build/sensor-system-node-update-package.json
    ```
 
    Polecenie samo wykonuje protocol-5 PrepareFirmwareUpdate i odmawia pracy,
@@ -102,10 +107,12 @@ Po jednorazowym restarcie zasilania A:
 
    ```bash
    host_v2/target/release/sensor-hil confirm-trial \
-     /dev/sensor-system-line-a 1 8d626ee02dcea999 2 0.5.7 115200
+     /dev/sensor-system-line-a 1 8d626ee02dcea999 2 0.5.8 115200
    ```
 
-5. Odczytaj diagnostykę bez zmiany lifecycle:
+5. Po aktualizacji odczytaj diagnostykę bez zmiany lifecycle. Firmware 0.5.6
+   nie reklamuje Diagnostics Service, więc przed aktualizacją polecenie ma
+   prawo jawnie odmówić:
 
    ```bash
    host_v2/target/release/sensor-hil diagnostics \

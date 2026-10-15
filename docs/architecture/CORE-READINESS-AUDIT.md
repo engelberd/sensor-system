@@ -50,6 +50,13 @@ wymaga rzeczywistego nieprzypisanego node.
    Trzeba potwierdzić eksport na długim nagraniu oraz wykonać benchmark na
    docelowym SSD. Archive, kompresja i uploader nie blokują MVP.
 
+Rollout Raspberry Pi 2026-10-15 uruchomił B/C/D/G/H na firmware 0.5.8 i hoście
+z trwałym audytem. Fizyczny gate pięciu kanałów miał 34 wyniki Doctor OK oraz
+zero timeoutów, decode errors, retry i storage failures. A pozostaje na 0.5.6
+w `Faulted`; ta wersja powstała przed ratunkowym PrepareUpdate/Restart z tego
+stanu i wymaga jednorazowego restartu zasilania przed aktualizacją po RS485.
+Lokalny override wyłącza wyłącznie A. E i F nie są fizycznie podłączone.
+
 ## Przepustowość nowego Measurement Service
 
 Przy maksymalnym chunku 48 próbek request ma do 42 B na przewodzie, a response
