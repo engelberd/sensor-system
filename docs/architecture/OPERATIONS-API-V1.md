@@ -175,6 +175,12 @@ wiadomością JSON schema 1; request i response mają limit 4096 B, a koordynato
 obsługuje najwyżej cztery żądania na jeden obrót. Klient nie może utrzymać
 blokującego połączenia ani wejść na drogę próbek.
 
+Na Linuksie klient tworzy krótkotrwałe gniazdo odpowiedzi obok gniazda serwera
+w `/run/sensor-system`, z uprawnieniami `0600`, i usuwa je po zakończeniu
+żądania. Jest ono dzięki temu widoczne dla usługi uruchomionej z
+`PrivateTmp=true`; użycie publicznego `/tmp` rozdzielałoby klienta i serwer na
+dwie przestrzenie nazw.
+
 Adapter udostępnia odczyt trybu kanału, `EnterMaintenance`, `ResumeRecording`,
 pełny pierwszy zakres Configuration, `RestartNode`, `ScanUnassigned` i
 `AssignAddress`. Operacje per node działają wyłącznie w Maintenance/Faulted,
@@ -212,7 +218,7 @@ Awaria hosta po trwałej mutacji node, lecz przed aktualizacją pamięci procesu
 jest rozstrzygana przez `GetConfig` podczas następnego bootstrapu. Host przyjmuje
 rzeczywistą konfigurację node jako wejście do admission; nie odtwarza ślepo
 wartości z profilu instalacji. `ResetConfiguration` ustawia produktowy profil
-pomiarowy 250 Hz, 2 g, HP=0, Balanced, watermark 30 i zerowe offsety. Nie zmienia
+pomiarowy 125 Hz, 2 g, HP=0, Balanced, watermark 30 i zerowe offsety. Nie zmienia
 adresu ani parametrów łącza.
 
 Dashboard powstaje po ustabilizowaniu pozostałych operacji i będzie czytał
@@ -251,9 +257,13 @@ wymianę sesji. Ten sam pion jest dostępny przez lokalne IPC i `hostctl`.
 
 ## Kolejna bramka
 
-1. wykonać HIL Get/Apply/Reset/RestartNode na firmware 0.5.8 oraz pusty skan
-   Commissioning na przypisanym kanale;
-2. wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node i zatwierdzić
+1. wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node i zatwierdzić
    procedurę aktualizacji profilu instalacji;
-3. dodać trwały audit poleceń operatorskich;
-4. dodać operacje grupowe na stabilnym kontrakcie wyników per target.
+2. dodać trwały audit poleceń operatorskich;
+3. dodać operacje grupowe na stabilnym kontrakcie wyników per target.
+
+HIL na Raspberry Pi z firmware 0.5.8 potwierdził Get/Apply/Reset, pusty
+ScanUnassigned, RestartNode, zmianę `boot_epoch` i późniejszy ResumeRecording.
+Reset zwrócił produktowy profil 125 Hz. Po restarcie pojawił się jeden
+przejściowy timeout i jeden decode error; kolejne transakcje i Measurement były
+stabilne, bez gapów.

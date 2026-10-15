@@ -16,8 +16,10 @@ oraz Time WAL, uruchamia niezależne workery i zamyka je kontrolowanie po
 macierz na Raspberry Pi. Capabilities schema 2 odpowiada faktycznym output
 rates i rodzajowi obrazu. Configuration, Commissioning i RestartNode mają już
 zgodne codeki, bounded wykonanie oraz publiczną ścieżkę Operations API przez
-jedynego właściciela RS485. Nie zostały jeszcze potwierdzone w pełnym HIL
-firmware 0.5.8.
+jedynego właściciela RS485. HIL na Raspberry Pi z firmware 0.5.8 potwierdził
+Get/Apply/Reset Configuration, pusty ScanUnassigned, RestartNode, zmianę
+`boot_epoch`, rollover Capture + Time i powrót do Recording. AssignAddress nadal
+wymaga rzeczywistego nieprzypisanego node.
 
 ## Blokery rdzenia
 
@@ -31,9 +33,12 @@ firmware 0.5.8.
    osiągalne przez Operations API; mutacje aktualizują admission, scheduler i
    trwałą historię konfiguracji. Commissioning i RestartNode są osiągalne tym
    samym IPC; brakuje trwałego audytu poleceń operatorskich.
-2. Configuration/Commissioning wymagają fizycznego HIL firmware 0.5.8:
-   odczytu, walidacji, konfliktu revision, apply/rollback, discovery slotów,
-   przypisania adresu i końcowego handshake po restarcie.
+2. Configuration i ratunkowy restart przeszły fizyczny HIL firmware 0.5.8.
+   Commissioning ma potwierdzony pusty skan; nadal wymaga HIL discovery,
+   przypisania adresu i końcowego handshake z rzeczywistym nieprzypisanym node.
+   Test restartu zanotował pojedynczy timeout i decode error w czasie zmiany
+   epoki, po czym kanał ustabilizował się bez gapów i kolejnych błędów. Ten
+   kontrolowany transient trzeba jeszcze objąć testem powtarzalnym.
 3. Production/Diagnostic zmienia dziś stan lifecycle, lecz nie steruje jeszcze
    kompletną, budżetowaną telemetrią po RS485. Diagnostics jest read-only;
    osobna polityka kompaktowego Health nadal wymaga implementacji.
@@ -161,9 +166,9 @@ a nie strojenia instalacji.
 
 ## Kolejność dalszej pracy
 
-1. Wykonać pełny HIL Configuration/Commissioning/RestartNode firmware 0.5.8.
+1. Wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node.
 2. Dodać trwały audit poleceń.
 3. Usunąć flash write z pozostałych hot path.
-4. Wykonać HIL restartu po zatrzymaniu heartbeat core 1, wielu node, długiego
-   przewodu, zakłóceń, wolnego storage i soak.
+4. Wykonać powtarzalny HIL restartu, restart po zatrzymaniu heartbeat core 1,
+   wielu node, długiego przewodu, zakłóceń, wolnego storage i soak.
 5. Dodać kompaktową politykę Health z osobnym budżetem Production.

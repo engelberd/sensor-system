@@ -682,13 +682,7 @@ pub fn request(
     request: &Value,
     timeout: Duration,
 ) -> Result<Value, OperationsIpcClientError> {
-    // Keep the pathname below the small sockaddr_un limit on macOS as well as
-    // Linux. std::env::temp_dir() can expand to a very long per-user path.
-    let client_path = Path::new("/tmp").join(format!(
-        "sensor-operations-{}-{}.sock",
-        std::process::id(),
-        client_nonce()
-    ));
+    let client_path = client_socket_path(socket_path);
     let client = UnixDatagram::bind(&client_path).map_err(OperationsIpcClientError::Bind)?;
     let cleanup = ClientSocketCleanup(client_path);
     fs::set_permissions(&cleanup.0, fs::Permissions::from_mode(0o600))
@@ -712,6 +706,22 @@ pub fn request(
         return Err(OperationsIpcClientError::ResponseTooLarge(size));
     }
     serde_json::from_slice(&response[..size]).map_err(OperationsIpcClientError::Deserialize)
+}
+
+fn client_socket_path(_server_path: &Path) -> PathBuf {
+    let file_name = format!(
+        "op-{}-{:016x}.sock",
+        std::process::id(),
+        client_nonce() as u64
+    );
+    // A systemd service with PrivateTmp=true cannot reply to a pathname in the
+    // caller's /tmp namespace. Linux clients therefore bind beside the server
+    // socket. Other platforms retain a short /tmp path for sockaddr_un.
+    #[cfg(target_os = "linux")]
+    let directory = _server_path.parent().unwrap_or_else(|| Path::new("/tmp"));
+    #[cfg(not(target_os = "linux"))]
+    let directory = Path::new("/tmp");
+    directory.join(file_name)
 }
 
 fn client_nonce() -> u128 {
@@ -758,6 +768,16 @@ mod tests {
         ChannelCommandDecision, ChannelOperationsController, ChannelOperationsPolicy,
         OperationResult,
     };
+
+    #[test]
+    fn client_reply_socket_is_visible_to_a_private_tmp_server() {
+        let server = Path::new("/run/sensor-system/operations-v1.sock");
+        let client = client_socket_path(server);
+        #[cfg(target_os = "linux")]
+        assert_eq!(client.parent(), server.parent());
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(client.parent(), Some(Path::new("/tmp")));
+    }
     use sensor_protocol::{Adxl355Odr, ObservedConfiguration};
     use std::sync::atomic::{AtomicU64, Ordering};
 

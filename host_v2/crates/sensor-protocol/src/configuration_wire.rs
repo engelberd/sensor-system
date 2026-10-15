@@ -53,7 +53,7 @@ impl MeasurementConfiguration {
     /// ConfigManager default and intentionally excludes address and link data.
     pub const fn product_default() -> Self {
         Self {
-            output_rate: OutputRateCode::Hz250,
+            output_rate: OutputRateCode::Hz125,
             range_g: 2,
             high_pass_corner: 0,
             filter_profile: DecimationFilterProfile::Balanced,
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn reset_product_default_is_explicit_and_valid() {
         let value = MeasurementConfiguration::product_default();
-        assert_eq!(value.output_rate, OutputRateCode::Hz250);
+        assert_eq!(value.output_rate, OutputRateCode::Hz125);
         assert_eq!(value.range_g, 2);
         assert_eq!(value.high_pass_corner, 0);
         assert_eq!(value.filter_profile, DecimationFilterProfile::Balanced);

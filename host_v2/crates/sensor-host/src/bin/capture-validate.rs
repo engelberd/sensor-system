@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use sensor_host::capture_export::validate_capture_chain;
+use sensor_host::capture_export::validate_sealed_capture_chain;
 
 fn main() -> ExitCode {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
@@ -51,7 +51,7 @@ fn validate_streams(streams: BTreeSet<PathBuf>) -> Result<TreeSummary, String> {
     }
     let mut total = TreeSummary::default();
     for stream in streams {
-        let summary = validate_capture_chain(&stream)
+        let summary = validate_sealed_capture_chain(&stream)
             .map_err(|error| format!("{}: {error}", stream.display()))?;
         println!(
             "capture stream valid: path={} windows={} samples={} gaps={} continuity_breaks={} cursor_range=[{},{})",

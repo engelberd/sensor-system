@@ -1317,7 +1317,7 @@ mod tests {
                 Some(OperationResult::ConfigurationApplied(value))
                     if value.code == sensor_protocol::ConfigOperationCode::Applied
                         && value.observed.revision == 3
-                        && value.observed.desired.output_rate == OutputRateCode::Hz250
+                        && value.observed.desired.output_rate == OutputRateCode::Hz125
                         && value.observed.desired.offset_x == 0
             ));
 

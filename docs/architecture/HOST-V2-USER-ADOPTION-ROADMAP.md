@@ -436,8 +436,10 @@ wykonujemy zapisu flash wyłącznie w celu testu CLI.
 Bieżąca ścieżka produktu domknęła Configuration per node oraz bounded
 Commissioning i RestartNode przez Operations API i `hostctl`. Mutacje
 konfiguracji przeliczają admission całego kanału, aktualizują scheduler oraz
-zapisują trwałą historię. Najbliższą bramką jest ich HIL na firmware 0.5.8,
-a następnie trwały audit operacji operatorskich.
+zapisują trwałą historię. HIL kanału B na firmware 0.5.8 potwierdził
+Get/Apply/Reset, pusty skan commissioning, zdalny restart, rollover po zmianie
+epoki i powrót do Recording. Najbliższą bramką jest Scan/Assign z rzeczywistym
+nieprzypisanym node, a następnie trwały audit operacji operatorskich.
 Następnie powstanie godzinny compactor Archive.
 Dashboard pozostaje ostatnim, cienkim klientem API. Nie
 tworzymy dla tych funkcji drugiego modelu stanu ani osobnej ścieżki RS485.

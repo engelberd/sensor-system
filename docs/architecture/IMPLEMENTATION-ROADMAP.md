@@ -183,8 +183,10 @@ Interfejs operatorski nie wystawia już tych implementacji jako poleceń
 produkcyjnych. `hostctl` obsługuje wyłącznie V2; zakres i jawne braki opisuje
 [HOSTCTL-V2.md](HOSTCTL-V2.md). Produkcyjny Capture V2 ma własną walidację i
 eksport. Configuration, Commissioning i RestartNode protocol 5 są podłączone do
-Operations API i `hostctl` przez jedynego właściciela RS485; ich bieżącą bramką
-jest fizyczny HIL firmware 0.5.8. Archive, kompresja, uploader i dashboard są świadomie odłożone
+Operations API i `hostctl` przez jedynego właściciela RS485. HIL firmware 0.5.8
+potwierdził Configuration, pusty skan, restart i Resume; do zamknięcia
+Commissioning pozostaje Scan/Assign z nieprzypisanym node. Archive, kompresja,
+uploader i dashboard są świadomie odłożone
 poza MVP; prostym formatem wymiany pozostaje eksport CSV z Capture.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
@@ -292,7 +294,7 @@ wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
 | 2. Discovery | runtime oraz fizyczny fail-closed handshake gotowe | inventory i testy wielu node |
 | 3. Transfer/`NodeSession` | fizyczny wire-to-durable pion oraz produkcyjny Capture gotowe | recovery po utracie procesu/zasilania w HIL |
 | 4. Scheduler/`ChannelRuntime` | pełny pion Measurement, TimeSync i symulacja wielu node gotowe | wykonawcy Health/Diagnostic i HIL wielu node |
-| 5. Firmware protocol 5 | Configuration/Commissioning, obrazy A/B, rollback, migracja i confirm gotowe w kodzie | HIL firmware 0.5.8, soak i pomiary granic pojemności |
+| 5. Firmware protocol 5 | Configuration, restart i pusty skan potwierdzone HIL 0.5.8; Commissioning, obrazy A/B, rollback, migracja i confirm gotowe w kodzie | HIL AssignAddress, soak i pomiary granic pojemności |
 | 6. Adapter RS485/HIL | handshake, update i pełny transfer jednej linii gotowe | wiele node, długi przewód, zakłócenia i restart hosta |
 | 7. Capture | WAL, recovery, segmenty, bounded handoff, group commit, fault injection, walidacja, CSV i rollover podłączony do Resume gotowe | benchmark, process-kill matrix i dane rzeczywiste |
 | 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja, HIL jednego node i koordynowany rollover gotowe | UTC, długi pomiar dryfu i wiele node |
@@ -1077,7 +1079,8 @@ całego kanału, po sukcesie zapisują trwały snapshot konfiguracji, rekonfigur
 quiescent scheduler i zastępują plan używany przez Resume. Bootstrap odczytuje
 rzeczywistą konfigurację node, więc restart hosta rozstrzyga przerwę pomiędzy
 trwałą zmianą node i odpowiedzią hosta. Commissioning i RestartNode są
-podłączone przez ten sam bounded control plane. Bieżącą bramką jest fizyczny HIL
-Configuration/Commissioning/RestartNode firmware 0.5.8, a następnie trwały audit
-operacji operatorskich.
+podłączone przez ten sam bounded control plane. Fizyczny HIL firmware 0.5.8 na
+kanale B potwierdził Get/Apply/Reset, pusty ScanUnassigned, RestartNode, zmianę
+epoki, rollover i ResumeRecording. Bieżącą bramką jest Scan/Assign z rzeczywistym
+nieprzypisanym node, a następnie trwały audit operacji operatorskich.
 Dashboard pozostaje poza MVP do czasu ustabilizowania API.

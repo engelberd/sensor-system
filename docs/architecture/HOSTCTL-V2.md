@@ -34,6 +34,11 @@ działającego procesu i czekają na wynik terminalny workera. Opcjonalny
 `--operation-id` służy do ponowienia dokładnie tej samej operacji. CLI nie
 otwiera portu RS485.
 
+`capture validate` sprawdza opublikowany łańcuch zamkniętych okien. Może być
+uruchomiony przy aktywnym recorderze: pomija bieżący, nieopublikowany ogon WAL,
+który nie ma jeszcze manifestu. Nie pomija uszkodzeń ani luk w żadnym
+zamkniętym oknie.
+
 Odczyt i walidacja konfiguracji wymagają Maintenance. Walidacja przyjmuje
 pełną propozycję, bez ukrytego dziedziczenia pól:
 
@@ -55,7 +60,7 @@ wynoszą zero. Mutacja wymaga rewizji zwróconej przez GetConfiguration:
   --expected-revision 8
 ```
 
-Apply najpierw przelicza budżet całego kanału. Reset przywraca pomiar 250 Hz,
+Apply najpierw przelicza budżet całego kanału. Reset przywraca pomiar 125 Hz,
 2 g, HP=0, Balanced, watermark 30 i zerowe offsety; nie zmienia adresu ani
 baudrate. Po mutacjach operator wykonuje `channel resume`.
 
