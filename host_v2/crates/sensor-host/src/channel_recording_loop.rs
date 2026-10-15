@@ -167,6 +167,14 @@ where
         self.measurements.resume_scheduling()
     }
 
+    pub fn reconfigure_node(
+        &mut self,
+        config: crate::channel_runtime::NodeScheduleConfig,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements.reconfigure_node(config, now)
+    }
+
     pub fn into_parts(self) -> (ChannelEndpoint<P, C>, ChannelWorkCoordinator, S, T) {
         (
             self.endpoint,
@@ -459,6 +467,14 @@ where
 
     pub fn resume_scheduling(&mut self) -> Result<(), MeasurementCoordinatorError> {
         self.measurements.resume_scheduling()
+    }
+
+    pub fn reconfigure_node(
+        &mut self,
+        config: crate::channel_runtime::NodeScheduleConfig,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements.reconfigure_node(config, now)
     }
 
     pub fn reconcile_resume_stream(

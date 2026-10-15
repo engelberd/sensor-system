@@ -174,6 +174,39 @@ impl OperationsIpcServer {
                 };
                 OperationKind::ValidateConfiguration { configuration }
             }
+            Some("apply_configuration") => {
+                let configuration = match configuration_field(object) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let expected_revision = match u32_field(object, "expected_revision") {
+                    Ok(value) if value != 0 => value,
+                    Ok(_) => {
+                        return error_response(
+                            "invalid_request",
+                            "expected_revision must be non-zero",
+                        )
+                    }
+                    Err(response) => return response,
+                };
+                OperationKind::ApplyConfiguration {
+                    expected_revision,
+                    configuration,
+                }
+            }
+            Some("reset_configuration") => {
+                let expected_revision = match u32_field(object, "expected_revision") {
+                    Ok(value) if value != 0 => value,
+                    Ok(_) => {
+                        return error_response(
+                            "invalid_request",
+                            "expected_revision must be non-zero",
+                        )
+                    }
+                    Err(response) => return response,
+                };
+                OperationKind::ResetConfiguration { expected_revision }
+            }
             Some(_) => {
                 return error_response("unknown_operation", "operation is not exposed by IPC v1")
             }
@@ -184,7 +217,10 @@ impl OperationsIpcServer {
         };
         let target = if matches!(
             kind,
-            OperationKind::GetConfiguration | OperationKind::ValidateConfiguration { .. }
+            OperationKind::GetConfiguration
+                | OperationKind::ValidateConfiguration { .. }
+                | OperationKind::ApplyConfiguration { .. }
+                | OperationKind::ResetConfiguration { .. }
         ) {
             let node_address = match u8_field(object, "node_address") {
                 Ok(value) => value,
@@ -344,6 +380,17 @@ fn i16_field(object: &serde_json::Map<String, Value>, key: &'static str) -> Resu
         ));
     };
     i16::try_from(value)
+        .map_err(|_| error_response("invalid_request", &format!("{key} is out of range")))
+}
+
+fn u32_field(object: &serde_json::Map<String, Value>, key: &'static str) -> Result<u32, Value> {
+    let Some(value) = object.get(key).and_then(Value::as_u64) else {
+        return Err(error_response(
+            "invalid_request",
+            &format!("{key} must be an integer"),
+        ));
+    };
+    u32::try_from(value)
         .map_err(|_| error_response("invalid_request", &format!("{key} is out of range")))
 }
 
@@ -868,9 +915,20 @@ mod tests {
     }
 
     #[test]
-    fn mutating_configuration_is_not_exposed_before_admission_recalculation() {
-        let path = socket_path("no-apply");
-        let server = OperationsIpcServer::bind(&path, vec![]).unwrap();
+    fn routes_mutating_configuration_with_required_revision() {
+        let path = socket_path("apply-reset");
+        let (mut controller, handle) = ChannelOperationsController::new(
+            1,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 2,
+                ledger_capacity: 4,
+            },
+        )
+        .unwrap();
+        controller
+            .set_mode(ChannelOperatingMode::Maintenance)
+            .unwrap();
+        let server = OperationsIpcServer::bind(&path, vec![handle]).unwrap();
         let response = exchange(
             &server,
             &path,
@@ -880,11 +938,60 @@ mod tests {
                 "channel_id": 1,
                 "node_address": 1,
                 "operation_id": 51,
-                "operation": "apply_configuration"
+                "operation": "apply_configuration",
+                "expected_revision": 9,
+                "configuration": {
+                    "output_rate_code": 6,
+                    "range_g": 2,
+                    "high_pass_corner": 0,
+                    "filter_profile": 1,
+                    "fifo_watermark": 30,
+                    "offset_x": 0,
+                    "offset_y": 0,
+                    "offset_z": 0
+                }
             }),
         );
-        assert_eq!(response["ok"], false);
-        assert_eq!(response["error"]["code"], "unknown_operation");
+        assert_eq!(response["phase"], "queued");
+        let request = match controller.poll_command().unwrap() {
+            ChannelCommandDecision::Started(request) => request,
+            other => panic!("unexpected command decision: {other:?}"),
+        };
+        assert!(matches!(
+            request.kind,
+            OperationKind::ApplyConfiguration {
+                expected_revision: 9,
+                configuration
+            } if configuration.output_rate == OutputRateCode::Hz62_5
+        ));
+        controller
+            .fail_active(crate::operations::OperationsError::ExecutorUnavailable)
+            .unwrap();
+
+        let response = exchange(
+            &server,
+            &path,
+            json!({
+                "schema_version": 1,
+                "action": "submit",
+                "channel_id": 1,
+                "node_address": 1,
+                "operation_id": 53,
+                "operation": "reset_configuration",
+                "expected_revision": 10
+            }),
+        );
+        assert_eq!(response["phase"], "queued");
+        let request = match controller.poll_command().unwrap() {
+            ChannelCommandDecision::Started(request) => request,
+            other => panic!("unexpected command decision: {other:?}"),
+        };
+        assert!(matches!(
+            request.kind,
+            OperationKind::ResetConfiguration {
+                expected_revision: 10
+            }
+        ));
     }
 
     #[test]

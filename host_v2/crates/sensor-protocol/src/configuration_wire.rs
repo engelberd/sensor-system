@@ -49,6 +49,21 @@ pub struct MeasurementConfiguration {
 }
 
 impl MeasurementConfiguration {
+    /// Product default used by ResetConfig. It mirrors the firmware
+    /// ConfigManager default and intentionally excludes address and link data.
+    pub const fn product_default() -> Self {
+        Self {
+            output_rate: OutputRateCode::Hz250,
+            range_g: 2,
+            high_pass_corner: 0,
+            filter_profile: DecimationFilterProfile::Balanced,
+            fifo_watermark: 30,
+            offset_x: 0,
+            offset_y: 0,
+            offset_z: 0,
+        }
+    }
+
     pub fn validate(self) -> Result<Self, ConfigurationWireError> {
         if !matches!(self.range_g, 2 | 4 | 8) {
             return Err(ConfigurationWireError::InvalidRange(self.range_g));
@@ -473,6 +488,18 @@ mod tests {
         let encoded = encode_configuration(config()).unwrap();
         assert_eq!(encoded, [1, 5, 2, 0, 1, 30, 0xf4, 0xff, 34, 0, 0xc8, 0xff]);
         assert_eq!(decode_configuration(&encoded).unwrap(), config());
+    }
+
+    #[test]
+    fn reset_product_default_is_explicit_and_valid() {
+        let value = MeasurementConfiguration::product_default();
+        assert_eq!(value.output_rate, OutputRateCode::Hz250);
+        assert_eq!(value.range_g, 2);
+        assert_eq!(value.high_pass_corner, 0);
+        assert_eq!(value.filter_profile, DecimationFilterProfile::Balanced);
+        assert_eq!(value.fifo_watermark, 30);
+        assert_eq!((value.offset_x, value.offset_y, value.offset_z), (0, 0, 0));
+        assert_eq!(value.validate(), Ok(value));
     }
 
     #[test]

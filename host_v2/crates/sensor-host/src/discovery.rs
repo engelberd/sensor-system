@@ -3,8 +3,8 @@ use std::collections::HashSet;
 
 use sensor_core::{HardwareId, SequenceCursor};
 use sensor_protocol::{
-    NodeCapabilities, NodeIdentity, OutputRateCode, ServiceId, FEATURE_DRDY_TIMESTAMPS,
-    FEATURE_SAMPLE_JOURNAL,
+    NodeCapabilities, NodeIdentity, ObservedConfiguration, OutputRateCode, ServiceId,
+    FEATURE_DRDY_TIMESTAMPS, FEATURE_SAMPLE_JOURNAL,
 };
 
 use crate::capture_profile::DiscoveredCaptureStream;
@@ -178,6 +178,26 @@ impl DiscoveryInventoryCollector<'_> {
         identity: NodeIdentity,
         capabilities: NodeCapabilities,
     ) -> Result<(), DiscoveryError> {
+        self.accept_inner(id, identity, capabilities, None)
+    }
+
+    pub fn accept_runtime(
+        &mut self,
+        id: DiscoveryTargetId,
+        identity: NodeIdentity,
+        capabilities: NodeCapabilities,
+        configuration: ObservedConfiguration,
+    ) -> Result<(), DiscoveryError> {
+        self.accept_inner(id, identity, capabilities, Some(configuration))
+    }
+
+    fn accept_inner(
+        &mut self,
+        id: DiscoveryTargetId,
+        identity: NodeIdentity,
+        capabilities: NodeCapabilities,
+        configuration: Option<ObservedConfiguration>,
+    ) -> Result<(), DiscoveryError> {
         let (channel, target) = self
             .plan
             .target(id)
@@ -215,13 +235,27 @@ impl DiscoveryInventoryCollector<'_> {
                 rate: target.output_rate,
             });
         }
+        if let Some(observed) = configuration {
+            observed
+                .validate()
+                .map_err(|_| DiscoveryError::InvalidObservedConfiguration(id))?;
+            if !capabilities.supports_output_rate(observed.desired.output_rate) {
+                return Err(DiscoveryError::UnsupportedObservedOutputRate {
+                    id,
+                    rate: observed.desired.output_rate,
+                });
+            }
+        }
 
         self.completed.insert(id);
         self.nodes.push(DiscoveredNode {
             channel_name: channel.channel_name.clone(),
             channel_id: channel.channel_id,
             node_address: id.node_address,
-            output_rate: target.output_rate,
+            output_rate: configuration
+                .map(|value| value.desired.output_rate)
+                .unwrap_or(target.output_rate),
+            configuration,
             identity,
             capabilities,
         });
@@ -254,6 +288,7 @@ pub struct DiscoveredNode {
     output_rate: OutputRateCode,
     identity: NodeIdentity,
     capabilities: NodeCapabilities,
+    configuration: Option<ObservedConfiguration>,
 }
 
 impl DiscoveredNode {
@@ -279,6 +314,10 @@ impl DiscoveredNode {
 
     pub const fn capabilities(&self) -> NodeCapabilities {
         self.capabilities
+    }
+
+    pub const fn configuration(&self) -> Option<ObservedConfiguration> {
+        self.configuration
     }
 
     pub fn time_stream(&self) -> DiscoveredTimeStream {
@@ -341,6 +380,11 @@ pub enum DiscoveryError {
         bits: u64,
     },
     UnsupportedOutputRate {
+        id: DiscoveryTargetId,
+        rate: OutputRateCode,
+    },
+    InvalidObservedConfiguration(DiscoveryTargetId),
+    UnsupportedObservedOutputRate {
         id: DiscoveryTargetId,
         rate: OutputRateCode,
     },

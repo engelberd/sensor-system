@@ -1,7 +1,7 @@
 # Kontrakt operatorski `hostctl` dla hosta v2
 
 - Status: obowiązujący
-- Ostatnia aktualizacja: 2026-10-14
+- Ostatnia aktualizacja: 2026-10-15
 
 `hostctl` jest cienkim, lokalnym adapterem do binariów Rust hosta v2,
 narzędzi danych v2 oraz systemd. Nie zawiera logiki akwizycji i nie otwiera
@@ -14,7 +14,7 @@ RS485 poza jawnymi poleceniami `discover`, `doctor --deep`, `node` i `update`.
 | Build i profil | `build`, `validate`, `paths [--init]` |
 | Recorder | `discover`, `run` |
 | Diagnostyka | `doctor [--offline\|--deep\|--json]` |
-| Operations IPC | `channel status\|maintenance\|resume --channel ID`; `channel get-configuration\|validate-configuration --channel ID --node ID` |
+| Operations IPC | `channel status\|maintenance\|resume --channel ID`; `channel get-configuration\|validate-configuration\|apply-configuration\|reset-configuration --channel ID --node ID` |
 | Dane | `capture validate`, `capture export` |
 | Node protocol 5 | `node identify\|handshake\|diagnostics\|time-probe\|safe-stop\|restart\|prepare-update\|confirm-trial` |
 | Firmware | `update` |
@@ -27,7 +27,8 @@ jako kotwica ścieżek, `/run/sensor-system/host-v2-status.json` oraz
 `SENSOR_HOST_OPERATIONS_SOCKET` albo jawnymi opcjami binariów.
 
 `channel maintenance`, `channel resume`, `channel get-configuration` i
-`channel validate-configuration` wysyłają typowane żądanie do
+`channel validate-configuration`, `channel apply-configuration` i
+`channel reset-configuration` wysyłają typowane żądanie do
 działającego procesu i czekają na wynik terminalny workera. Opcjonalny
 `--operation-id` służy do ponowienia dokładnie tej samej operacji. CLI nie
 otwiera portu RS485.
@@ -43,9 +44,19 @@ pełną propozycję, bez ukrytego dziedziczenia pól:
 ```
 
 Offsety `--offset-x`, `--offset-y` i `--offset-z` są opcjonalne i domyślnie
-wynoszą zero. Mutujące `ApplyConfiguration` i `ResetConfiguration` pozostają
-zamknięte w lokalnym IPC, dopóki ich wynik nie aktualizuje planu startowego i
-nie uruchamia ponownego admission control przed Resume.
+wynoszą zero. Mutacja wymaga rewizji zwróconej przez GetConfiguration:
+
+```bash
+./hostctl channel apply-configuration --channel 1 --node 1 \
+  --expected-revision 7 --output-rate 125 --range 2 \
+  --high-pass-corner 0 --filter-profile balanced --fifo-watermark 30
+./hostctl channel reset-configuration --channel 1 --node 1 \
+  --expected-revision 8
+```
+
+Apply najpierw przelicza budżet całego kanału. Reset przywraca pomiar 250 Hz,
+2 g, HP=0, Balanced, watermark 30 i zerowe offsety; nie zmienia adresu ani
+baudrate. Po mutacjach operator wykonuje `channel resume`.
 
 ## Aktualizacja node
 
@@ -86,7 +97,7 @@ Brakujące funkcje mają otrzymać nowe odpowiedzialności zamiast aliasów do
 legacy. Codeki i runtime Configuration/Commissioning są już gotowe, lecz nie są
 jeszcze publicznymi poleceniami `hostctl` bez Operations API:
 
-- mutująca konfiguracja z ponownym admission control, commissioning i update;
+- commissioning i operacje serwisowe per node;
 - dashboard czytający Runtime Status v1;
 - godzinny compactor Capture → Archive i publisher;
 - natywny uploader bootloadera, po ustabilizowaniu kontraktu A/B.

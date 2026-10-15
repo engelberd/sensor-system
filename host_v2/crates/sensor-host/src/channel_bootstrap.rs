@@ -3,8 +3,8 @@ use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 use sensor_protocol::{
-    NodeCapabilities, NodeIdentity, ObservabilityProfile, RuntimeOperation, RuntimeResult,
-    RuntimeResultCode, StreamState,
+    NodeCapabilities, NodeIdentity, ObservabilityProfile, ObservedConfiguration, RuntimeOperation,
+    RuntimeResult, RuntimeResultCode, StreamState,
 };
 
 use crate::channel_agent::{ChannelAgentError, ChannelEvent};
@@ -35,6 +35,7 @@ pub struct NodeBootstrapEvidence {
     pub id: DiscoveryTargetId,
     pub identity: NodeIdentity,
     pub capabilities: NodeCapabilities,
+    pub configuration: ObservedConfiguration,
     pub runtime: RuntimeResult,
     pub stream: StreamState,
 }
@@ -93,6 +94,18 @@ where
             .map_err(ChannelBootstrapError::Agent)?;
         let (identity, capabilities) =
             wait_for_handshake(&mut endpoint, *target, deadline, &mut diagnostics)?;
+        if capabilities.service_flags & sensor_protocol::ServiceId::Configuration.capability_bit()
+            == 0
+        {
+            return Err(ChannelBootstrapError::MissingConfigurationService { id: target.id() });
+        }
+
+        endpoint
+            .agent_mut()
+            .submit_get_configuration(target.id().node_address)
+            .map_err(ChannelBootstrapError::Agent)?;
+        let configuration =
+            wait_for_configuration(&mut endpoint, target.id(), deadline, &mut diagnostics)?;
 
         endpoint
             .agent_mut()
@@ -125,11 +138,37 @@ where
             id: target.id(),
             identity,
             capabilities,
+            configuration,
             runtime,
             stream,
         });
     }
     Ok(BootstrappedChannel::from_parts(endpoint, nodes))
+}
+
+fn wait_for_configuration<P, C>(
+    endpoint: &mut ChannelEndpoint<P, C>,
+    id: DiscoveryTargetId,
+    deadline: Instant,
+    diagnostics: &mut BootstrapDiagnostics,
+) -> Result<ObservedConfiguration, ChannelBootstrapError>
+where
+    P: Read + Write,
+    C: MonotonicClock,
+{
+    loop {
+        ensure_deadline(id, deadline, *diagnostics)?;
+        match step(endpoint, id, diagnostics)? {
+            ChannelEndpointEvent::Agent(ChannelEvent::ConfigurationComplete {
+                node_address,
+                outcome: crate::configuration::ConfigurationOutcome::Observed(configuration),
+            }) if node_address == id.node_address => return Ok(configuration),
+            ChannelEndpointEvent::Agent(ChannelEvent::ConfigurationComplete { .. }) => {
+                return Err(ChannelBootstrapError::UnexpectedNode(id));
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -238,6 +277,7 @@ where
         }
         ChannelEndpointEvent::Agent(
             ChannelEvent::HandshakeTimedOut { .. }
+            | ChannelEvent::ConfigurationTimedOut { .. }
             | ChannelEvent::LifecycleTimedOut { .. }
             | ChannelEvent::StreamStateTimedOut { .. },
         ) => {
@@ -291,6 +331,9 @@ pub enum ChannelBootstrapError {
         advertised: u32,
         observed: u32,
     },
+    MissingConfigurationService {
+        id: DiscoveryTargetId,
+    },
 }
 
 impl fmt::Display for ChannelBootstrapError {
@@ -309,12 +352,13 @@ mod tests {
 
     use sensor_core::{BootEpoch, SequenceCursor};
     use sensor_protocol::{
-        decode_lifecycle_request, encode_lifecycle_response, encode_stream_state_success,
-        FirmwareVersion, Frame, FrameRole, NodeCapabilities, NodeIdentity, RuntimeState,
-        SensorStatusCode, ServiceId, StreamDecoder, CAPABILITIES_SCHEMA_VERSION,
-        GET_CAPABILITIES_MESSAGE_ID, GET_IDENTITY_MESSAGE_ID, GET_STREAM_STATE_MESSAGE_ID,
-        HOST_ADDRESS, IDENTITY_SERVICE_ID, LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES,
-        MAX_WIRE_FRAME_BYTES,
+        decode_lifecycle_request, encode_get_config_response, encode_lifecycle_response,
+        encode_stream_state_success, Adxl355Odr, DecimationFilterProfile, FirmwareVersion, Frame,
+        FrameRole, MeasurementConfiguration, NodeCapabilities, NodeIdentity, OutputRateCode,
+        RuntimeState, SensorStatusCode, ServiceId, StreamDecoder, CAPABILITIES_SCHEMA_VERSION,
+        CONFIGURATION_SERVICE_ID, GET_CAPABILITIES_MESSAGE_ID, GET_CONFIG_MESSAGE_ID,
+        GET_IDENTITY_MESSAGE_ID, GET_STREAM_STATE_MESSAGE_ID, HOST_ADDRESS, IDENTITY_SERVICE_ID,
+        LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES,
     };
     use serde_json::json;
 
@@ -328,6 +372,7 @@ mod tests {
     struct NodeFixture {
         identity: NodeIdentity,
         capabilities: NodeCapabilities,
+        configuration: ObservedConfiguration,
         runtime: RuntimeResult,
         stream: StreamState,
     }
@@ -369,6 +414,11 @@ mod tests {
                     }
                     (IDENTITY_SERVICE_ID, GET_CAPABILITIES_MESSAGE_ID) => {
                         fixture.capabilities.encode_success().unwrap().to_vec()
+                    }
+                    (CONFIGURATION_SERVICE_ID, GET_CONFIG_MESSAGE_ID) => {
+                        encode_get_config_response(fixture.configuration)
+                            .unwrap()
+                            .to_vec()
                     }
                     (service, message) if service == ServiceId::Lifecycle as u8 => {
                         let command = decode_lifecycle_request(message, request.payload()).unwrap();
@@ -427,6 +477,7 @@ mod tests {
                 schema_version: CAPABILITIES_SCHEMA_VERSION,
                 service_flags: ServiceId::Identity.capability_bit()
                     | ServiceId::Measurement.capability_bit()
+                    | ServiceId::Configuration.capability_bit()
                     | ServiceId::Lifecycle.capability_bit()
                     | ServiceId::Time.capability_bit(),
                 feature_flags: REQUIRED_RECORDING_FEATURES,
@@ -434,6 +485,21 @@ mod tests {
                 journal_capacity_samples: 2048,
                 output_rate_mask: sensor_protocol::IMPLEMENTED_OUTPUT_RATE_MASK,
                 max_sample_chunk_samples: 48,
+            },
+            configuration: ObservedConfiguration {
+                revision: 1,
+                desired: MeasurementConfiguration {
+                    output_rate: OutputRateCode::Hz125,
+                    range_g: 2,
+                    high_pass_corner: 0,
+                    filter_profile: DecimationFilterProfile::Balanced,
+                    fifo_watermark: 30,
+                    offset_x: 0,
+                    offset_y: 0,
+                    offset_z: 0,
+                },
+                sensor_odr: Adxl355Odr::Hz125,
+                decimation_factor: 1,
             },
             runtime: RuntimeResult {
                 operation_id: 0,

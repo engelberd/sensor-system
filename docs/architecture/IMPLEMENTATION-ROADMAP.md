@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-14
+- Ostatnia aktualizacja: 2026-10-15
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -150,6 +150,9 @@ uzasadnią ją pomiary lub testy awarii.
 - lokalne Operations IPC schema 1 przez bounded Unix datagram oraz natywny
   adapter `hostctl channel`; status kanału, Maintenance i Resume docierają do
   istniejącego worker-owned ledgera bez otwierania RS485 przez klienta;
+- Get/Validate/Apply/Reset Configuration per node przez ten sam control plane;
+  mutacje mają optimistic revision, preflight admission całego kanału,
+  rekonfigurację quiescent schedulera i trwały WAL znaczenia `config_revision`;
 - bounded walidacja Capture i strumieniowy `capture-export`, generujący
   `samples.csv`, `events.csv` oraz `windows.csv` bez ładowania nagrania do RAM;
 
@@ -1066,11 +1069,13 @@ Przejście od tego baseline do automatycznej pracy na Raspberry Pi, natywnego
 [HOST-V2-USER-ADOPTION-ROADMAP.md](HOST-V2-USER-ADOPTION-ROADMAP.md). Jego Etap 1,
 wersjonowany snapshot statusu, jest gotowy. Rollover Capture + Time po restarcie
 node przechodzi pełną symulację, a podstawowy pion Operations IPC jest gotowy.
-Pierwszy pion Configuration per node jest podłączony przez ten sam control
-plane: `GetConfiguration` i `ValidateConfiguration` przechodzą od `hostctl`,
-przez ograniczone IPC i worker-owned ledger, do jedynego `ChannelAgent` i
-wracają jako typowane wyniki. Wykonawca ma deadline oraz bezpieczne porzucenie
-dopiero po rozliczeniu wire/quarantine. Mutujące Apply/Reset są celowo zamknięte
-do czasu ponownego obliczania admission control z nowego ODR. Bieżącą bramką
-jest właśnie ta aktualizacja zatwierdzonego planu, a następnie Commissioning i
-RestartNode per node. Dashboard pozostaje poza MVP do czasu ustabilizowania API.
+Pion Configuration per node jest podłączony przez ten sam control plane:
+Get/Validate/Apply/Reset przechodzą od `hostctl`, przez ograniczone IPC i
+worker-owned ledger, do jedynego `ChannelAgent` i wracają jako typowane wyniki.
+Apply/Reset wymagają Maintenance i revision, przed wire przeliczają admission
+całego kanału, po sukcesie zapisują trwały snapshot konfiguracji, rekonfigurują
+quiescent scheduler i zastępują plan używany przez Resume. Bootstrap odczytuje
+rzeczywistą konfigurację node, więc restart hosta rozstrzyga przerwę pomiędzy
+trwałą zmianą node i odpowiedzią hosta. Bieżącą bramką są Commissioning i
+RestartNode per node, a następnie fizyczny HIL Configuration firmware 0.5.8.
+Dashboard pozostaje poza MVP do czasu ustabilizowania API.

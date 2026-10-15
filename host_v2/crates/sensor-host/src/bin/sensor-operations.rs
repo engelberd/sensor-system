@@ -11,24 +11,7 @@ fn main() -> ExitCode {
         Ok(Command::Status { socket, channel }) => {
             run_status(&socket, channel).unwrap_or_else(report_error)
         }
-        Ok(Command::Submit {
-            socket,
-            channel,
-            node,
-            operation,
-            configuration,
-            operation_id,
-            timeout,
-        }) => run_operation(
-            &socket,
-            channel,
-            node,
-            operation,
-            configuration,
-            operation_id,
-            timeout,
-        )
-        .unwrap_or_else(report_error),
+        Ok(command @ Command::Submit { .. }) => run_operation(command).unwrap_or_else(report_error),
         Ok(Command::Help) => {
             print_usage();
             ExitCode::SUCCESS
@@ -58,15 +41,20 @@ fn run_status(socket: &Path, channel: u8) -> Result<ExitCode, String> {
     })
 }
 
-fn run_operation(
-    socket: &Path,
-    channel: u8,
-    node: Option<u8>,
-    operation: &'static str,
-    configuration: Option<Value>,
-    operation_id: u64,
-    timeout: Duration,
-) -> Result<ExitCode, String> {
+fn run_operation(command: Command) -> Result<ExitCode, String> {
+    let Command::Submit {
+        socket,
+        channel,
+        node,
+        operation,
+        configuration,
+        expected_revision,
+        operation_id,
+        timeout,
+    } = command
+    else {
+        unreachable!("run_operation receives only Submit commands")
+    };
     eprintln!("operation_id={operation_id}");
     let mut submit = json!({
         "schema_version": OPERATIONS_IPC_SCHEMA_VERSION,
@@ -84,10 +72,13 @@ fn run_operation(
     if let Some(configuration) = configuration {
         object.insert("configuration".to_owned(), configuration);
     }
+    if let Some(expected_revision) = expected_revision {
+        object.insert("expected_revision".to_owned(), json!(expected_revision));
+    }
     let mut submit_error = None;
     let mut submitted = None;
     for _ in 0..3 {
-        match exchange(socket, &submit) {
+        match exchange(&socket, &submit) {
             Ok(response) => {
                 submitted = Some(response);
                 break;
@@ -110,7 +101,7 @@ fn run_operation(
     let deadline = Instant::now() + timeout;
     loop {
         let result = match exchange(
-            socket,
+            &socket,
             &json!({
                 "schema_version": OPERATIONS_IPC_SCHEMA_VERSION,
                 "action": "get",
@@ -193,6 +184,7 @@ enum Command {
         node: Option<u8>,
         operation: &'static str,
         configuration: Option<Value>,
+        expected_revision: Option<u32>,
         operation_id: u64,
         timeout: Duration,
     },
@@ -207,7 +199,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
         return Ok(Command::Help);
     }
     let action = arguments.first().and_then(|value| value.to_str()).ok_or(
-        "expected status, maintenance, resume, get-configuration or validate-configuration",
+        "expected status, maintenance, resume, get-configuration, validate-configuration, apply-configuration or reset-configuration",
     )?;
     let operation =
         match action {
@@ -216,16 +208,26 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
             "resume" => Some("resume_recording"),
             "get-configuration" => Some("get_configuration"),
             "validate-configuration" => Some("validate_configuration"),
+            "apply-configuration" => Some("apply_configuration"),
+            "reset-configuration" => Some("reset_configuration"),
             _ => return Err(
-                "expected status, maintenance, resume, get-configuration or validate-configuration",
+                "expected status, maintenance, resume, get-configuration, validate-configuration, apply-configuration or reset-configuration",
             ),
         };
-    let needs_node = matches!(action, "get-configuration" | "validate-configuration");
-    let needs_configuration = action == "validate-configuration";
+    let needs_node = matches!(
+        action,
+        "get-configuration"
+            | "validate-configuration"
+            | "apply-configuration"
+            | "reset-configuration"
+    );
+    let needs_configuration = matches!(action, "validate-configuration" | "apply-configuration");
+    let needs_revision = matches!(action, "apply-configuration" | "reset-configuration");
     let mut socket = None;
     let mut channel = None;
     let mut node = None;
     let mut operation_id = None;
+    let mut expected_revision = None;
     let mut timeout_ms = 120_000_u64;
     let mut output_rate = None;
     let mut range_g = None;
@@ -249,6 +251,9 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
             }
             "--operation-id" if operation_id.is_none() && operation.is_some() => {
                 operation_id = Some(parse_u64(value, "invalid operation ID")?)
+            }
+            "--expected-revision" if expected_revision.is_none() && needs_revision => {
+                expected_revision = Some(parse_u32(value, "invalid expected revision")?)
             }
             "--timeout-ms" if operation.is_some() => {
                 timeout_ms = parse_u64(value, "invalid timeout")?
@@ -317,6 +322,11 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                 } else {
                     None
                 },
+                expected_revision: if needs_revision {
+                    Some(expected_revision.ok_or("--expected-revision is required")?)
+                } else {
+                    None
+                },
                 operation_id: operation_id.unwrap_or_else(fresh_operation_id),
                 timeout: Duration::from_millis(timeout_ms),
             })
@@ -343,6 +353,14 @@ fn parse_i16(value: &OsString, error: &'static str) -> Result<i16, &'static str>
     value
         .to_str()
         .and_then(|value| value.parse().ok())
+        .ok_or(error)
+}
+
+fn parse_u32(value: &OsString, error: &'static str) -> Result<u32, &'static str> {
+    value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value != 0)
         .ok_or(error)
 }
 
@@ -383,7 +401,7 @@ fn fresh_operation_id() -> u64 {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  sensor-operations status --channel ID --socket PATH\n  sensor-operations maintenance --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations resume --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations get-configuration --channel ID --node ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations validate-configuration --channel ID --node ID --socket PATH --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]"
+        "usage:\n  sensor-operations status --channel ID --socket PATH\n  sensor-operations maintenance --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations resume --channel ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations get-configuration --channel ID --node ID --socket PATH [--operation-id ID] [--timeout-ms MS]\n  sensor-operations validate-configuration --channel ID --node ID --socket PATH --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]\n  sensor-operations apply-configuration --channel ID --node ID --socket PATH --expected-revision N --output-rate HZ --range G --high-pass-corner CODE --filter-profile light|balanced|aggressive --fifo-watermark N [--offset-x N] [--offset-y N] [--offset-z N] [--operation-id ID] [--timeout-ms MS]\n  sensor-operations reset-configuration --channel ID --node ID --socket PATH --expected-revision N [--operation-id ID] [--timeout-ms MS]"
     );
 }
 
@@ -428,6 +446,7 @@ mod tests {
                 node: None,
                 operation: "enter_maintenance",
                 configuration: None,
+                expected_revision: None,
                 operation_id: 99,
                 timeout: Duration::from_millis(5000)
             })
@@ -470,6 +489,7 @@ mod tests {
                 node: Some(7),
                 operation: "get_configuration",
                 configuration: None,
+                expected_revision: None,
                 operation_id: 101,
                 timeout: Duration::from_millis(120_000),
             })
@@ -511,5 +531,78 @@ mod tests {
         assert_eq!(node, Some(7));
         assert_eq!(operation, "validate_configuration");
         assert_eq!(configuration.unwrap()["output_rate_code"], 6);
+    }
+
+    #[test]
+    fn mutating_configuration_requires_and_preserves_the_expected_revision() {
+        let applied = parse_arguments(strings(&[
+            "apply-configuration",
+            "--channel",
+            "1",
+            "--node",
+            "7",
+            "--socket",
+            "/run/op.sock",
+            "--expected-revision",
+            "9",
+            "--output-rate",
+            "125",
+            "--range",
+            "2",
+            "--high-pass-corner",
+            "0",
+            "--filter-profile",
+            "balanced",
+            "--fifo-watermark",
+            "30",
+            "--operation-id",
+            "103",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            applied,
+            Command::Submit {
+                operation: "apply_configuration",
+                expected_revision: Some(9),
+                operation_id: 103,
+                ..
+            }
+        ));
+
+        let reset = parse_arguments(strings(&[
+            "reset-configuration",
+            "--channel",
+            "1",
+            "--node",
+            "7",
+            "--socket",
+            "/run/op.sock",
+            "--expected-revision",
+            "10",
+            "--operation-id",
+            "104",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            reset,
+            Command::Submit {
+                operation: "reset_configuration",
+                expected_revision: Some(10),
+                configuration: None,
+                operation_id: 104,
+                ..
+            }
+        ));
+
+        assert!(parse_arguments(strings(&[
+            "reset-configuration",
+            "--channel",
+            "1",
+            "--node",
+            "7",
+            "--socket",
+            "/run/op.sock"
+        ]))
+        .is_err());
     }
 }

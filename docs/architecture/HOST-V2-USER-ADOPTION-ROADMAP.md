@@ -433,11 +433,10 @@ są zamknięte lokalnie. Fizyczny gate nowego `hostctl update`
 pozostaje do wykonania przy najbliższej planowanej aktualizacji noda; nie
 wykonujemy zapisu flash wyłącznie w celu testu CLI.
 
-Bieżącą ścieżką produktu jest domknięcie mutującej konfiguracji per node z
-ponownym admission control. Get/Validate są już dostępne przez Operations API i
-`hostctl`; kolejne są Commissioning oraz RestartNode.
-Kodeki Configuration i Commissioning Service są gotowe w protocol 5. Mutacje
-Configuration oraz Commissioning czekają na mapowanie do istniejącego control
-plane i HIL firmware 0.5.8. Następnie powstanie godzinny compactor Archive.
+Bieżąca ścieżka produktu domknęła Configuration per node: Get/Validate/Apply/
+Reset są dostępne przez Operations API i `hostctl`, a mutacje przeliczają
+admission całego kanału, aktualizują scheduler oraz zapisują trwałą historię.
+Kolejne są Commissioning oraz RestartNode i ich HIL na firmware 0.5.8.
+Następnie powstanie godzinny compactor Archive.
 Dashboard pozostaje ostatnim, cienkim klientem API. Nie
 tworzymy dla tych funkcji drugiego modelu stanu ani osobnej ścieżki RS485.

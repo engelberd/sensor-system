@@ -29,6 +29,7 @@ pub mod channel_supervisor;
 pub mod channel_worker;
 pub mod commissioning;
 pub mod configuration;
+pub mod configuration_history;
 pub mod discovery;
 pub mod discovery_executor;
 pub mod handshake;

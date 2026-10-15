@@ -215,9 +215,10 @@ mod tests {
     use super::*;
     use sensor_core::SequenceCursor;
     use sensor_protocol::{
-        FirmwareVersion, NodeCapabilities, NodeIdentity, ObservabilityProfile, RuntimeResultCode,
-        RuntimeState, SensorStatusCode, StreamState, CAPABILITIES_SCHEMA_VERSION,
-        LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES,
+        Adxl355Odr, DecimationFilterProfile, FirmwareVersion, MeasurementConfiguration,
+        NodeCapabilities, NodeIdentity, ObservabilityProfile, ObservedConfiguration,
+        OutputRateCode, RuntimeResultCode, RuntimeState, SensorStatusCode, StreamState,
+        CAPABILITIES_SCHEMA_VERSION, LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES,
     };
 
     use crate::capture_window::CaptureWindowPolicy;
@@ -253,6 +254,21 @@ mod tests {
                 journal_capacity_samples: 2048,
                 output_rate_mask: 1,
                 max_sample_chunk_samples: 48,
+            },
+            configuration: ObservedConfiguration {
+                revision: 1,
+                desired: MeasurementConfiguration {
+                    output_rate: OutputRateCode::Hz125,
+                    range_g: 2,
+                    high_pass_corner: 0,
+                    filter_profile: DecimationFilterProfile::Balanced,
+                    fifo_watermark: 30,
+                    offset_x: 0,
+                    offset_y: 0,
+                    offset_z: 0,
+                },
+                sensor_odr: Adxl355Odr::Hz125,
+                decimation_factor: 1,
             },
             runtime: RuntimeResult {
                 operation_id: 7,

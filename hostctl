@@ -29,6 +29,8 @@ Host v2:
   channel status|maintenance|resume --channel ID
   channel get-configuration --channel ID --node ID
   channel validate-configuration --channel ID --node ID [configuration options]
+  channel apply-configuration --channel ID --node ID --expected-revision N [configuration options]
+  channel reset-configuration --channel ID --node ID --expected-revision N
                          Control a running channel through local Operations IPC
 
 Data:

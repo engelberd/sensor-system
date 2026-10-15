@@ -99,6 +99,12 @@ Aktywnym kanałem steruje się bez otwierania jego portu szeregowego:
 ```bash
 ./hostctl channel status --channel 1
 ./hostctl channel maintenance --channel 1
+./hostctl channel get-configuration --channel 1 --node 1
+./hostctl channel apply-configuration --channel 1 --node 1 \
+  --expected-revision 1 --output-rate 125 --range 2 \
+  --high-pass-corner 0 --filter-profile balanced --fifo-watermark 30
+./hostctl channel reset-configuration --channel 1 --node 1 \
+  --expected-revision 2
 ./hostctl channel resume --channel 1
 ```
 

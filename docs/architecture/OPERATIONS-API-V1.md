@@ -1,7 +1,7 @@
 # Operations API v1 — kontrakt domenowy
 
 - Status: pierwszy pion lokalnego API gotowy
-- Ostatnia aktualizacja: 2026-10-14
+- Ostatnia aktualizacja: 2026-10-15
 - Zakres: lokalne sterowanie host v2, per channel i per node
 
 Operations API jest jedyną drogą sterowania aktywnym hostem. `hostctl`, przyszły
@@ -172,9 +172,10 @@ obsługuje najwyżej cztery żądania na jeden obrót. Klient nie może utrzyma�
 blokującego połączenia ani wejść na drogę próbek.
 
 Adapter udostępnia obecnie odczyt trybu kanału, `EnterMaintenance`,
-`ResumeRecording`, `GetConfiguration` i `ValidateConfiguration`. Dwie operacje
-Configuration mają target node, działają wyłącznie w Maintenance/Faulted i
-zwracają typowany wynik zapisany w tym samym bounded ledgerze. `submit`
+`ResumeRecording`, `GetConfiguration`, `ValidateConfiguration`,
+`ApplyConfiguration` i `ResetConfiguration`. Operacje Configuration mają target
+node, działają wyłącznie w Maintenance/Faulted i zwracają typowany wynik zapisany
+w tym samym bounded ledgerze. `submit`
 przekazuje pełne `operation_id` do istniejącego
 bounded mailboxa. `get` odczytuje ten sam worker-owned ledger. Powtórzenie
 identycznego żądania jest idempotentne, a ponowne użycie ID z inną treścią
@@ -186,11 +187,21 @@ przekroczeniu nie porzuca transakcji w locie ani kwarantanny spóźnionej
 odpowiedzi; kończy operację dopiero po bezpiecznym oddaniu jedynego arbitra
 RS485. Nieznany node daje jawny błąd i nie zatrzymuje workera.
 
-`ApplyConfiguration` i `ResetConfiguration` istnieją w domenie i kodekach, ale
-nie są jeszcze wystawione przez IPC. Ich publiczne podłączenie wymaga atomowej
-aktualizacji zatwierdzonego planu konfiguracji oraz ponownego obliczenia
-admission control przed Resume. Do tego czasu adapter odrzuca je jako
-`unknown_operation`, zamiast dopuścić zmianę ODR, której scheduler nie zna.
+`ApplyConfiguration` i `ResetConfiguration` wymagają `expected_revision` oraz
+Maintenance. Jeszcze przed mutacją host waliduje pełną wartość, sprawdza maskę
+ODR z capabilities i przelicza admission dla wszystkich node na kanale. Wynik
+odrzucony przez budżet nie trafia na wire. Po odpowiedzi `Applied` worker:
+
+1. dopisuje trwały snapshot konfiguracji i `effective_sample_seq`;
+2. rekonfiguruje quiescent scheduler;
+3. atomowo zastępuje zatwierdzony plan startowy i wymagany ODR handshake.
+
+Awaria hosta po trwałej mutacji node, lecz przed aktualizacją pamięci procesu,
+jest rozstrzygana przez `GetConfig` podczas następnego bootstrapu. Host przyjmuje
+rzeczywistą konfigurację node jako wejście do admission; nie odtwarza ślepo
+wartości z profilu instalacji. `ResetConfiguration` ustawia produktowy profil
+pomiarowy 250 Hz, 2 g, HP=0, Balanced, watermark 30 i zerowe offsety. Nie zmienia
+adresu ani parametrów łącza.
 
 Dashboard powstaje po ustabilizowaniu pozostałych operacji i będzie czytał
 status oraz składał polecenia bez dostępu do portów urządzeń, Capture WAL lub
@@ -217,10 +228,9 @@ samej epoce worker ponownie buduje `NodeSession` wyłącznie z cursora trwałego
 Capture, wymaga zgodnego kursora schedulera, uruchamia node sekwencyjnie i na
 końcu otwiera Measurement/TimeSync.
 
-Do czasu podłączenia mutacji Configuration admission używa zatwierdzonego planu
-startowego, którego ODR i capabilities są ponownie sprawdzane przez handshake.
-Podłączenie `ApplyConfiguration` musi zastąpić ten skrót ponownym obliczeniem
-budżetu z nowej konfiguracji przed aktywacją.
+Admission używa zatwierdzonego planu aktualizowanego po każdej udanej mutacji.
+Bootstrap i Resume ponownie odczytują lub weryfikują faktyczny ODR oraz
+capabilities przed aktywacją Measurement.
 
 Pion Recording → Maintenance → Recording przechodzi przez rzeczywisty framing,
 codeki, symulowany RS485 i produkcyjny worker w macierzy 1/4/8 channels. Zmiana
@@ -229,8 +239,7 @@ wymianę sesji. Ten sam pion jest dostępny przez lokalne IPC i `hostctl`.
 
 ## Kolejna bramka
 
-1. domknąć mutujące Configuration wraz z ponownym admission control;
-2. mapować Commissioning na istniejący `ChannelAgent` i typowane wyniki;
-3. dodać `RestartNode` oraz operacje serwisowe per node do tego samego IPC;
-4. wykonać HIL firmware 0.5.8;
-5. dodać operacje grupowe i trwały audit.
+1. mapować Commissioning na istniejący `ChannelAgent` i typowane wyniki;
+2. dodać `RestartNode` oraz operacje serwisowe per node do tego samego IPC;
+3. wykonać HIL Apply/Reset i Commissioning na firmware 0.5.8;
+4. dodać operacje grupowe i trwały audit poleceń operatorskich.

@@ -34,6 +34,8 @@ Logiczny strumień node łączący zwarty ring próbek z dokładnymi lukami
 opisuje [MEASUREMENT-JOURNAL.md](architecture/MEASUREMENT-JOURNAL.md).
 Fizyczny format trwałych rekordów hosta i reguły recovery opisuje
 [CAPTURE-WAL-V1.md](architecture/CAPTURE-WAL-V1.md).
+Mapowanie `config_revision` próbek na pełne ustawienia i jego recovery opisuje
+[CONFIGURATION-HISTORY-V1.md](architecture/CONFIGURATION-HISTORY-V1.md).
 Warunki bezpiecznego usuwania Capture i Archive opisuje
 [RETENTION-CHECKPOINT.md](architecture/RETENTION-CHECKPOINT.md).
 Granice timestampów `t1..t4`, model dryfu i zasady niepewności opisuje

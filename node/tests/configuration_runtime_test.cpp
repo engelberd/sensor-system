@@ -36,7 +36,17 @@ struct FakeConfigManager {
         ++revision;
         return true;
     }
-    static DeviceConfig default_device_config() { return {}; }
+    static DeviceConfig default_device_config() {
+        DeviceConfig value{};
+        value.node_id = 0;
+        value.baudrate = 115200;
+        value.odr_hz = 250;
+        value.range_g = 2;
+        value.high_pass_corner = 0;
+        value.filter_profile = 1;
+        value.fifo_watermark = 30;
+        return value;
+    }
 };
 
 struct FakeSink {
@@ -137,6 +147,35 @@ void failed_sensor_apply_reports_failed_rollback() {
     assert(config.revision == 3);
 }
 
+void reset_uses_the_product_measurement_default() {
+    FakeSensorRuntime sensor{};
+    sensor.value.state = runtime::SensorRuntimeState::Maintenance;
+    FakeAcquisition acquisition{};
+    FakeConfigManager config{};
+    config.value.node_id = 7;
+    config.value.baudrate = 115200;
+    config.value.odr_hz = 125;
+    config.value.range_g = 8;
+    config.value.offset_x = 12;
+    FakeSink sink{};
+    Runtime runtime(sensor, acquisition, config, sink);
+
+    auto value = command();
+    value.operation = runtime::ConfigurationOperation::Reset;
+    const auto result = runtime.handle(value);
+    assert(result.code == runtime::ConfigurationResultCode::Applied);
+    assert(config.value.node_id == 7);
+    assert(config.value.baudrate == 115200);
+    assert(config.value.odr_hz == 250);
+    assert(config.value.range_g == 2);
+    assert(config.value.high_pass_corner == 0);
+    assert(config.value.filter_profile == 1);
+    assert(config.value.fifo_watermark == 30);
+    assert(config.value.offset_x == 0);
+    assert(config.value.offset_y == 0);
+    assert(config.value.offset_z == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -144,5 +183,6 @@ int main() {
     rejects_stale_revision_before_touching_hardware();
     storage_failure_restores_the_previous_runtime_config();
     failed_sensor_apply_reports_failed_rollback();
+    reset_uses_the_product_measurement_default();
     return 0;
 }

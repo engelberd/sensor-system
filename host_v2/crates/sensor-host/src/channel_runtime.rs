@@ -308,6 +308,31 @@ impl ChannelRuntime {
         Ok(())
     }
 
+    pub fn reconfigure_node(
+        &mut self,
+        config: NodeScheduleConfig,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        let config = config.validate()?;
+        if self.active_dispatch.is_some() {
+            return Err(ChannelRuntimeError::ReconfigurationWhileActive);
+        }
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|node| node.config.node_address == config.node_address)
+            .ok_or(ChannelRuntimeError::UnknownNode(config.node_address))?;
+        if node.in_flight || node.recovery_required {
+            return Err(ChannelRuntimeError::ReconfigurationWhileActive);
+        }
+        node.config = config;
+        node.observed_at = now;
+        node.service_deadline = now;
+        node.ready_at = now;
+        node.queued_at = now;
+        Ok(())
+    }
+
     pub const fn observability(&self) -> ObservabilityProfile {
         self.observability
     }
@@ -929,6 +954,7 @@ pub enum ChannelRuntimeError {
     RecoveryNotRequired(u8),
     RecoveryRequired(u8),
     ResumeWhileActive,
+    ReconfigurationWhileActive,
     ResumeCursorMismatch {
         node_address: u8,
         scheduled: SequenceCursor,

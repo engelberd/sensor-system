@@ -4,7 +4,7 @@ use crate::channel_admission::{
     AdmissionError, AdmissionPolicy, AdmissionReport, ChannelAdmission, NodeTrafficDemand,
     PeriodicTraffic,
 };
-use sensor_protocol::{ObservabilityProfile, RuntimeState, ServiceId};
+use sensor_protocol::{ObservabilityProfile, ObservedConfiguration, RuntimeState, ServiceId};
 
 use crate::channel_recovery::RecoveredNode;
 use crate::channel_runtime::{
@@ -62,6 +62,8 @@ pub struct NodeStartupPlan {
     pub requirements: HandshakeRequirements,
     pub schedule: NodeScheduleConfig,
     pub time_sync: TimeSyncScheduleConfig,
+    pub configuration: ObservedConfiguration,
+    pub output_rate_mask: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +80,7 @@ pub struct ChannelStartupPlan {
     channel_name: String,
     admission: AdmissionReport,
     nodes: Vec<NodeStartupPlan>,
+    policy: ChannelStartupPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +105,64 @@ impl ChannelStartupPlan {
 
     pub fn nodes(&self) -> &[NodeStartupPlan] {
         &self.nodes
+    }
+
+    pub fn node(&self, node_address: u8) -> Option<&NodeStartupPlan> {
+        self.nodes
+            .iter()
+            .find(|node| node.discovered.node_address == node_address)
+    }
+
+    pub fn preview_configuration(
+        &self,
+        node_address: u8,
+        configuration: sensor_protocol::MeasurementConfiguration,
+    ) -> Result<AdmissionReport, ChannelStartupError> {
+        configuration
+            .validate()
+            .map_err(|_| ChannelStartupError::InvalidConfiguration)?;
+        let mut nodes = self.nodes.clone();
+        let node = nodes
+            .iter_mut()
+            .find(|node| node.discovered.node_address == node_address)
+            .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+        if node.output_rate_mask & configuration.output_rate.capability_bit() == 0 {
+            return Err(ChannelStartupError::UnsupportedOutputRate {
+                node_address,
+                rate: configuration.output_rate,
+            });
+        }
+        node.schedule.output_rate = configuration.output_rate.sample_rate();
+        let admission =
+            ChannelAdmission::new(self.policy.admission).map_err(ChannelStartupError::Admission)?;
+        evaluate_plan_admission(&admission, &nodes, self.policy)
+    }
+
+    pub fn accept_configuration(
+        &mut self,
+        node_address: u8,
+        observed: ObservedConfiguration,
+    ) -> Result<AdmissionReport, ChannelStartupError> {
+        observed
+            .validate()
+            .map_err(|_| ChannelStartupError::InvalidConfiguration)?;
+        let report = self.preview_configuration(node_address, observed.desired)?;
+        if !report.accepted() {
+            return Err(ChannelStartupError::ChannelOverCapacity {
+                channel_id: self.channel_id,
+                report,
+            });
+        }
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|node| node.discovered.node_address == node_address)
+            .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+        node.configuration = observed;
+        node.schedule.output_rate = observed.desired.output_rate.sample_rate();
+        node.requirements.required_output_rate = Some(observed.desired.output_rate);
+        self.admission = report;
+        Ok(report)
     }
 }
 
@@ -130,6 +191,7 @@ pub fn build_channel_startup_plans(
                     maximum_utilization_ppm: policy.admission.maximum_utilization_ppm,
                 },
                 nodes: Vec::new(),
+                policy,
             });
         }
         let plan = plans
@@ -144,25 +206,7 @@ pub fn build_channel_startup_plans(
     }
 
     for plan in &mut plans {
-        let demands = plan
-            .nodes
-            .iter()
-            .map(|node| NodeTrafficDemand {
-                output_rate: node.schedule.output_rate,
-                samples_per_chunk: node.schedule.target_chunk_samples,
-                measurement_transaction_time: policy.measurement_transaction_time,
-                time_sync: Some(PeriodicTraffic {
-                    transaction_time: policy.time_sync_transaction_time,
-                    interval: policy.time_sync_schedule.interval,
-                }),
-                // Health Service is deliberately absent until its wire executor
-                // exists. Adding it requires a measured, explicit traffic term.
-                health: None,
-            })
-            .collect::<Vec<_>>();
-        plan.admission = admission
-            .evaluate(&demands)
-            .map_err(ChannelStartupError::Admission)?;
+        plan.admission = evaluate_plan_admission(&admission, &plan.nodes, policy)?;
         if !plan.admission.accepted() {
             return Err(ChannelStartupError::ChannelOverCapacity {
                 channel_id: plan.channel_id,
@@ -277,6 +321,13 @@ fn node_plan(
 ) -> Result<NodeStartupPlan, ChannelStartupError> {
     let identity = discovered.identity();
     let capabilities = discovered.capabilities();
+    let configuration =
+        discovered
+            .configuration()
+            .ok_or(ChannelStartupError::MissingObservedConfiguration {
+                channel_id: discovered.channel_id(),
+                node_address: discovered.node_address(),
+            })?;
     let target_chunk_samples = policy
         .target_chunk_samples
         .min(capabilities.max_sample_chunk_samples);
@@ -302,7 +353,8 @@ fn node_plan(
         REQUIRED_RECORDING_FEATURES,
     )
     .with_output_rate(discovered.output_rate());
-    requirements.required_services |= ServiceId::Time.capability_bit();
+    requirements.required_services |=
+        ServiceId::Time.capability_bit() | ServiceId::Configuration.capability_bit();
     Ok(NodeStartupPlan {
         discovered: DiscoveredNodeRef {
             channel_id: discovered.channel_id(),
@@ -313,7 +365,32 @@ fn node_plan(
         requirements,
         schedule,
         time_sync: policy.time_sync_schedule,
+        configuration,
+        output_rate_mask: capabilities.output_rate_mask,
     })
+}
+
+fn evaluate_plan_admission(
+    admission: &ChannelAdmission,
+    nodes: &[NodeStartupPlan],
+    policy: ChannelStartupPolicy,
+) -> Result<AdmissionReport, ChannelStartupError> {
+    let demands = nodes
+        .iter()
+        .map(|node| NodeTrafficDemand {
+            output_rate: node.schedule.output_rate,
+            samples_per_chunk: node.schedule.target_chunk_samples,
+            measurement_transaction_time: policy.measurement_transaction_time,
+            time_sync: Some(PeriodicTraffic {
+                transaction_time: policy.time_sync_transaction_time,
+                interval: policy.time_sync_schedule.interval,
+            }),
+            health: None,
+        })
+        .collect::<Vec<_>>();
+    admission
+        .evaluate(&demands)
+        .map_err(ChannelStartupError::Admission)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -329,6 +406,16 @@ pub enum ChannelStartupError {
     Admission(AdmissionError),
     Runtime(ChannelRuntimeError),
     InvariantViolation,
+    MissingObservedConfiguration {
+        channel_id: u8,
+        node_address: u8,
+    },
+    InvalidConfiguration,
+    UnknownNode(u8),
+    UnsupportedOutputRate {
+        node_address: u8,
+        rate: sensor_protocol::OutputRateCode,
+    },
 }
 
 impl fmt::Display for ChannelStartupError {
@@ -427,26 +514,58 @@ mod tests {
                 schema_version: CAPABILITIES_SCHEMA_VERSION,
                 service_flags: ServiceId::Identity.capability_bit()
                     | ServiceId::Measurement.capability_bit()
+                    | ServiceId::Configuration.capability_bit()
                     | ServiceId::Lifecycle.capability_bit()
                     | ServiceId::Time.capability_bit(),
                 feature_flags: REQUIRED_RECORDING_FEATURES,
                 max_payload_bytes: MAX_PAYLOAD_BYTES as u16,
                 journal_capacity_samples: 2048,
-                output_rate_mask: output_rate.capability_bit(),
+                output_rate_mask: sensor_protocol::IMPLEMENTED_OUTPUT_RATE_MASK,
                 max_sample_chunk_samples: 48,
             };
             collector
-                .accept(
+                .accept_runtime(
                     DiscoveryTargetId {
                         channel_id: 1,
                         node_address: target.id().node_address,
                     },
                     identity,
                     capabilities,
+                    ObservedConfiguration {
+                        revision: 1,
+                        desired: sensor_protocol::MeasurementConfiguration {
+                            output_rate,
+                            range_g: 2,
+                            high_pass_corner: 0,
+                            filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+                            fifo_watermark: 30,
+                            offset_x: 0,
+                            offset_y: 0,
+                            offset_z: 0,
+                        },
+                        sensor_odr: output_rate_odr(output_rate),
+                        decimation_factor: 1,
+                    },
                 )
                 .unwrap();
         }
         collector.finish().unwrap()
+    }
+
+    fn output_rate_odr(rate: OutputRateCode) -> sensor_protocol::Adxl355Odr {
+        match rate {
+            OutputRateCode::Hz4000 => sensor_protocol::Adxl355Odr::Hz4000,
+            OutputRateCode::Hz2000 => sensor_protocol::Adxl355Odr::Hz2000,
+            OutputRateCode::Hz1000 => sensor_protocol::Adxl355Odr::Hz1000,
+            OutputRateCode::Hz500 => sensor_protocol::Adxl355Odr::Hz500,
+            OutputRateCode::Hz250 => sensor_protocol::Adxl355Odr::Hz250,
+            OutputRateCode::Hz125 => sensor_protocol::Adxl355Odr::Hz125,
+            OutputRateCode::Hz62_5 => sensor_protocol::Adxl355Odr::Hz62_5,
+            OutputRateCode::Hz31_25 => sensor_protocol::Adxl355Odr::Hz31_25,
+            OutputRateCode::Hz15_625 => sensor_protocol::Adxl355Odr::Hz15_625,
+            OutputRateCode::Hz7_8125 => sensor_protocol::Adxl355Odr::Hz7_8125,
+            OutputRateCode::Hz3_90625 => sensor_protocol::Adxl355Odr::Hz3_90625,
+        }
     }
 
     #[test]
@@ -477,6 +596,38 @@ mod tests {
             build_channel_startup_plans(&inventory(4, OutputRateCode::Hz125), policy(600_000)),
             Err(ChannelStartupError::ChannelOverCapacity { channel_id: 1, .. })
         ));
+    }
+
+    #[test]
+    fn configuration_preview_recalculates_the_whole_channel_before_mutation() {
+        let mut plans =
+            build_channel_startup_plans(&inventory(4, OutputRateCode::Hz125), policy(700_000))
+                .unwrap();
+        let original = plans[0].clone();
+        let faster = sensor_protocol::MeasurementConfiguration {
+            output_rate: OutputRateCode::Hz250,
+            ..original.nodes()[0].configuration.desired
+        };
+        let report = plans[0].preview_configuration(1, faster).unwrap();
+        assert!(!report.accepted());
+        assert_eq!(plans[0], original);
+
+        let slower = ObservedConfiguration {
+            revision: 2,
+            desired: sensor_protocol::MeasurementConfiguration {
+                output_rate: OutputRateCode::Hz62_5,
+                ..original.nodes()[0].configuration.desired
+            },
+            sensor_odr: sensor_protocol::Adxl355Odr::Hz62_5,
+            decimation_factor: 1,
+        };
+        let report = plans[0].accept_configuration(1, slower).unwrap();
+        assert!(report.accepted());
+        assert_eq!(plans[0].nodes()[0].configuration, slower);
+        assert_eq!(
+            plans[0].nodes()[0].requirements.required_output_rate,
+            Some(OutputRateCode::Hz62_5)
+        );
     }
 
     #[test]

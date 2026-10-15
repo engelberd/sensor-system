@@ -5,19 +5,21 @@ use std::sync::Arc;
 
 use sensor_core::{BootEpoch, HardwareId, SampleAxes, SampleAxis, SampleRate, SequenceCursor};
 use sensor_protocol::{
-    decode_configuration, decode_lifecycle_request, decode_pull_request,
+    decode_apply_config_request, decode_configuration, decode_lifecycle_request,
+    decode_pull_request, decode_reset_config_request, encode_config_operation_response,
     encode_get_config_response, encode_lifecycle_response, encode_pull_response,
     encode_stream_state_success, encode_time_success, encode_validate_config_response,
-    validate_time_request, Adxl355Odr, ConfigField, ConfigValidationCode, ConfigValidationResult,
-    DecimationFilterProfile, FirmwareVersion, Frame, FrameRole, MeasurementConfiguration,
-    NodeCapabilities, NodeIdentity, ObservabilityProfile, ObservedConfiguration, OutputRateCode,
-    PullResponse, PullSamplesRequest, RuntimeOperation, RuntimeResult, RuntimeResultCode,
-    RuntimeState, SampleChunk, SampleChunkHeader, SensorStatusCode, ServiceId, StreamDecoder,
-    StreamState, TimeExchangeResponse, TimingEvidence, CAPABILITIES_SCHEMA_VERSION,
-    CONFIGURATION_SERVICE_ID, GET_CAPABILITIES_MESSAGE_ID, GET_CONFIG_MESSAGE_ID,
-    GET_IDENTITY_MESSAGE_ID, GET_STREAM_STATE_MESSAGE_ID, HOST_ADDRESS, IDENTITY_SERVICE_ID,
-    LIFECYCLE_SERVICE_ID, LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES,
-    OBSERVE_CLOCK_MESSAGE_ID, PULL_SAMPLES_MESSAGE_ID, TIME_SERVICE_ID, TIMING_VALID,
+    validate_time_request, Adxl355Odr, ConfigField, ConfigOperationCode, ConfigOperationResult,
+    ConfigValidationCode, ConfigValidationResult, DecimationFilterProfile, FirmwareVersion, Frame,
+    FrameRole, MeasurementConfiguration, NodeCapabilities, NodeIdentity, ObservabilityProfile,
+    ObservedConfiguration, OutputRateCode, PullResponse, PullSamplesRequest, RuntimeOperation,
+    RuntimeResult, RuntimeResultCode, RuntimeState, SampleChunk, SampleChunkHeader,
+    SensorStatusCode, ServiceId, StreamDecoder, StreamState, TimeExchangeResponse, TimingEvidence,
+    APPLY_CONFIG_MESSAGE_ID, CAPABILITIES_SCHEMA_VERSION, CONFIGURATION_SERVICE_ID,
+    GET_CAPABILITIES_MESSAGE_ID, GET_CONFIG_MESSAGE_ID, GET_IDENTITY_MESSAGE_ID,
+    GET_STREAM_STATE_MESSAGE_ID, HOST_ADDRESS, IDENTITY_SERVICE_ID, LIFECYCLE_SERVICE_ID,
+    LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, MAX_WIRE_FRAME_BYTES, OBSERVE_CLOCK_MESSAGE_ID,
+    PULL_SAMPLES_MESSAGE_ID, RESET_CONFIG_MESSAGE_ID, TIME_SERVICE_ID, TIMING_VALID,
     VALIDATE_CONFIG_MESSAGE_ID,
 };
 
@@ -250,6 +252,7 @@ pub struct SimulatedWireNode {
     capabilities: NodeCapabilities,
     reboot_on_maintenance: Option<BootEpoch>,
     configuration: ObservedConfiguration,
+    default_configuration: MeasurementConfiguration,
 }
 
 impl SimulatedWireNode {
@@ -317,6 +320,7 @@ impl SimulatedWireNode {
             capabilities,
             reboot_on_maintenance: None,
             configuration,
+            default_configuration: default_measurement_configuration(),
         }
     }
 
@@ -403,6 +407,36 @@ impl SimulatedWireNode {
                 ..self.time_profile
             },
         );
+    }
+
+    fn apply_configuration(&mut self, desired: MeasurementConfiguration) {
+        self.configuration = ObservedConfiguration {
+            revision: self.configuration.revision.saturating_add(1),
+            desired,
+            sensor_odr: output_rate_sensor_odr(desired.output_rate),
+            decimation_factor: 1,
+        };
+        self.output_rate = desired.output_rate.sample_rate();
+    }
+}
+
+fn default_measurement_configuration() -> MeasurementConfiguration {
+    MeasurementConfiguration::product_default()
+}
+
+fn output_rate_sensor_odr(rate: OutputRateCode) -> Adxl355Odr {
+    match rate {
+        OutputRateCode::Hz4000 => Adxl355Odr::Hz4000,
+        OutputRateCode::Hz2000 => Adxl355Odr::Hz2000,
+        OutputRateCode::Hz1000 => Adxl355Odr::Hz1000,
+        OutputRateCode::Hz500 => Adxl355Odr::Hz500,
+        OutputRateCode::Hz250 => Adxl355Odr::Hz250,
+        OutputRateCode::Hz125 => Adxl355Odr::Hz125,
+        OutputRateCode::Hz62_5 => Adxl355Odr::Hz62_5,
+        OutputRateCode::Hz31_25 => Adxl355Odr::Hz31_25,
+        OutputRateCode::Hz15_625 => Adxl355Odr::Hz15_625,
+        OutputRateCode::Hz7_8125 => Adxl355Odr::Hz7_8125,
+        OutputRateCode::Hz3_90625 => Adxl355Odr::Hz3_90625,
     }
 }
 
@@ -575,6 +609,58 @@ impl SimulatedRs485Bus {
                 payload[..encoded.len()].copy_from_slice(&encoded);
                 (encoded.len(), now_us.saturating_add(turnaround_us))
             }
+            (CONFIGURATION_SERVICE_ID, APPLY_CONFIG_MESSAGE_ID) => {
+                let operation =
+                    decode_apply_config_request(request.payload()).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("invalid apply-configuration request: {error}"),
+                        )
+                    })?;
+                let code = if node.runtime_state != RuntimeState::Maintenance {
+                    ConfigOperationCode::WrongMode
+                } else if operation.expected_revision != node.configuration.revision {
+                    ConfigOperationCode::RevisionConflict
+                } else {
+                    node.apply_configuration(operation.configuration);
+                    ConfigOperationCode::Applied
+                };
+                let encoded = encode_config_operation_response(ConfigOperationResult {
+                    operation_id: operation.operation_id,
+                    code,
+                    observed: node.configuration,
+                    effective_sample_seq: node.link.state().produced.get(),
+                })
+                .map_err(io::Error::other)?;
+                payload[..encoded.len()].copy_from_slice(&encoded);
+                (encoded.len(), now_us.saturating_add(turnaround_us))
+            }
+            (CONFIGURATION_SERVICE_ID, RESET_CONFIG_MESSAGE_ID) => {
+                let (operation_id, expected_revision) =
+                    decode_reset_config_request(request.payload()).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("invalid reset-configuration request: {error}"),
+                        )
+                    })?;
+                let code = if node.runtime_state != RuntimeState::Maintenance {
+                    ConfigOperationCode::WrongMode
+                } else if expected_revision != node.configuration.revision {
+                    ConfigOperationCode::RevisionConflict
+                } else {
+                    node.apply_configuration(node.default_configuration);
+                    ConfigOperationCode::Applied
+                };
+                let encoded = encode_config_operation_response(ConfigOperationResult {
+                    operation_id,
+                    code,
+                    observed: node.configuration,
+                    effective_sample_seq: node.link.state().produced.get(),
+                })
+                .map_err(io::Error::other)?;
+                payload[..encoded.len()].copy_from_slice(&encoded);
+                (encoded.len(), now_us.saturating_add(turnaround_us))
+            }
             (service, PULL_SAMPLES_MESSAGE_ID) if service == ServiceId::Measurement as u8 => {
                 let pull = decode_pull_request(request.payload()).map_err(|error| {
                     io::Error::new(io::ErrorKind::InvalidData, format!("invalid pull: {error}"))
@@ -588,7 +674,7 @@ impl SimulatedRs485Bus {
                             .expect("valid simulated chunk range");
                         PullResponse::SampleChunk(SampleChunk {
                             header,
-                            config_revision: 1,
+                            config_revision: node.configuration.revision,
                             timing: TimingEvidence {
                                 segment_id: 1,
                                 first_device_time_us,

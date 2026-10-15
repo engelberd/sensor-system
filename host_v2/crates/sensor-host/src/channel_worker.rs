@@ -33,6 +33,9 @@ use crate::channel_startup::{
     RecordingAssemblyPolicy,
 };
 use crate::channel_supervisor::SupervisedChannelTask;
+use crate::configuration_history::{
+    append_configuration_snapshot, ConfigurationHistoryError, ConfigurationSnapshot,
+};
 use crate::discovery::DiscoveryTargetId;
 use crate::handshake::HandshakeRequirements;
 use crate::measurement_coordinator::MeasurementCoordinatorError;
@@ -151,7 +154,7 @@ pub struct ProductionChannelTask<P, C, T> {
     maintenance: Option<MaintenanceEntryExecution>,
     resume: Option<ResumeRecordingExecution>,
     configuration: Option<ConfigurationExecution>,
-    startup_admitted: bool,
+    configuration_plan: ChannelStartupPlan,
     rollover: ChannelRolloverServices,
 }
 
@@ -160,6 +163,7 @@ pub struct ChannelControlNode {
     pub id: DiscoveryTargetId,
     pub requirements: HandshakeRequirements,
     pub boot_epoch: sensor_core::BootEpoch,
+    pub configuration: sensor_protocol::ObservedConfiguration,
 }
 
 struct MaintenanceEntryExecution {
@@ -198,6 +202,10 @@ fn configuration_key_node(key: ControlWorkKey) -> u8 {
         unreachable!("configuration execution owns a configuration key")
     };
     node_address
+}
+
+fn default_measurement_configuration() -> sensor_protocol::MeasurementConfiguration {
+    sensor_protocol::MeasurementConfiguration::product_default()
 }
 
 impl ResumeRecordingExecution {
@@ -278,6 +286,7 @@ where
                 },
                 requirements: node.requirements,
                 boot_epoch: node.discovered.boot_epoch,
+                configuration: node.configuration,
             })
             .collect();
         let storage_metrics = recording.persistence().metrics_reader();
@@ -296,7 +305,7 @@ where
             maintenance: None,
             resume: None,
             configuration: None,
-            startup_admitted: startup.admission().accepted(),
+            configuration_plan: startup.clone(),
             rollover,
         })
     }
@@ -332,6 +341,31 @@ where
             return Ok(None);
         }
 
+        let kind = request.kind.clone();
+        let proposed = match &kind {
+            OperationKind::ApplyConfiguration { configuration, .. } => Some(*configuration),
+            OperationKind::ResetConfiguration { .. } => Some(default_measurement_configuration()),
+            _ => None,
+        };
+        if let Some(configuration) = proposed {
+            match self
+                .configuration_plan
+                .preview_configuration(node_address, configuration)
+            {
+                Ok(report) if report.accepted() => {}
+                Ok(_) => {
+                    self.operations
+                        .fail_active(OperationsError::ConfigurationAdmissionRejected)?;
+                    return Ok(None);
+                }
+                Err(_) => {
+                    self.operations
+                        .fail_active(OperationsError::ConfigurationFailed)?;
+                    return Ok(None);
+                }
+            }
+        }
+
         let submission = match request.kind {
             OperationKind::GetConfiguration => self
                 .recording
@@ -345,6 +379,21 @@ where
                 .agent_mut()
                 .submit_validate_configuration(node_address, configuration)
                 .map(|()| None),
+            OperationKind::ApplyConfiguration {
+                expected_revision,
+                configuration,
+            } => self
+                .recording
+                .endpoint_mut()
+                .agent_mut()
+                .submit_apply_configuration(node_address, expected_revision, configuration)
+                .map(Some),
+            OperationKind::ResetConfiguration { expected_revision } => self
+                .recording
+                .endpoint_mut()
+                .agent_mut()
+                .submit_reset_configuration(node_address, expected_revision)
+                .map(Some),
             _ => {
                 self.operations
                     .fail_active(OperationsError::ExecutorUnavailable)?;
@@ -423,7 +472,67 @@ where
                         OperationResult::ConfigurationValidated(value)
                     }
                     crate::configuration::ConfigurationOutcome::Applied(value) => {
-                        OperationResult::ConfigurationApplied(value)
+                        let result = OperationResult::ConfigurationApplied(value);
+                        if value.code != sensor_protocol::ConfigOperationCode::Applied {
+                            self.operations.fail_active_with_result(
+                                result,
+                                OperationsError::ConfigurationRejected,
+                            )?;
+                            return Ok(None);
+                        }
+                        let mut candidate = self.configuration_plan.clone();
+                        if candidate
+                            .accept_configuration(node_address, value.observed)
+                            .is_err()
+                        {
+                            execution.terminal_error =
+                                Some(OperationsError::ConfigurationAdmissionRejected);
+                            return Ok(Some(execution));
+                        }
+                        let schedule = candidate
+                            .node(node_address)
+                            .ok_or(ProductionChannelStepError::Operations(
+                                OperationsError::NodeNotConfigured,
+                            ))?
+                            .schedule;
+                        let identity = self
+                            .nodes
+                            .iter()
+                            .find(|node| node.id.node_address == node_address)
+                            .copied()
+                            .ok_or(ProductionChannelStepError::Operations(
+                                OperationsError::NodeNotConfigured,
+                            ))?;
+                        if append_configuration_snapshot(
+                            self.rollover.capture.root(),
+                            ConfigurationSnapshot {
+                                hardware_id: identity.requirements.hardware_id,
+                                boot_epoch: identity.boot_epoch,
+                                observed: value.observed,
+                                effective_sample_seq: value.effective_sample_seq,
+                            },
+                        )
+                        .is_err()
+                        {
+                            execution.terminal_error = Some(OperationsError::ConfigurationFailed);
+                            return Ok(Some(execution));
+                        }
+                        if self.recording.reconfigure_node(schedule).is_err() {
+                            execution.terminal_error = Some(OperationsError::ConfigurationFailed);
+                            return Ok(Some(execution));
+                        }
+                        self.configuration_plan = candidate;
+                        let node = self
+                            .nodes
+                            .iter_mut()
+                            .find(|node| node.id.node_address == node_address)
+                            .ok_or(ProductionChannelStepError::Operations(
+                                OperationsError::NodeNotConfigured,
+                            ))?;
+                        node.configuration = value.observed;
+                        node.requirements.required_output_rate =
+                            Some(value.observed.desired.output_rate);
+                        result
                     }
                     crate::configuration::ConfigurationOutcome::NotAccepted => {
                         execution.terminal_error = Some(OperationsError::ConfigurationFailed);
@@ -794,7 +903,7 @@ where
                 }
             }
             ResumeRecordingDirective::CheckAdmission => {
-                if !self.startup_admitted {
+                if !self.configuration_plan.admission().accepted() {
                     execution.plan.accept(ResumeRecordingEvent::Failed)?;
                 } else {
                     execution
@@ -848,7 +957,7 @@ where
                 return Ok(None);
             }
             ResumeRecordingDirective::Faulted => {
-                let error = if self.startup_admitted {
+                let error = if self.configuration_plan.admission().accepted() {
                     OperationsError::ResumeActivationFailed
                 } else {
                     OperationsError::ResumeAdmissionRejected
@@ -903,6 +1012,7 @@ where
             id: node.id,
             identity: evidence.identity,
             capabilities: evidence.capabilities,
+            configuration: node.configuration,
             runtime: evidence.runtime,
             stream: evidence.stream,
         };
@@ -1004,7 +1114,10 @@ where
                     )?);
                 } else if matches!(
                     request.kind,
-                    OperationKind::GetConfiguration | OperationKind::ValidateConfiguration { .. }
+                    OperationKind::GetConfiguration
+                        | OperationKind::ValidateConfiguration { .. }
+                        | OperationKind::ApplyConfiguration { .. }
+                        | OperationKind::ResetConfiguration { .. }
                 ) && self.configuration.is_none()
                 {
                     self.configuration = self.begin_configuration(request)?;
@@ -1374,6 +1487,16 @@ where
 
     let mut streams = Vec::with_capacity(bootstrap_nodes.len());
     for node in &bootstrap_nodes {
+        append_configuration_snapshot(
+            capture.root(),
+            ConfigurationSnapshot {
+                hardware_id: node.identity.hardware_id,
+                boot_epoch: node.identity.boot_epoch,
+                observed: node.configuration,
+                effective_sample_seq: node.stream.produced.get(),
+            },
+        )
+        .map_err(ChannelWorkerError::ConfigurationHistory)?;
         let origin = capture
             .inspect_stream_origin(
                 startup.channel_name(),
@@ -1516,6 +1639,7 @@ pub enum ChannelWorkerError {
     CaptureProfile(CaptureProfileError),
     PrepareCapture(ChannelRecoveryError),
     CaptureRuntime(CaptureRuntimeError),
+    ConfigurationHistory(ConfigurationHistoryError),
     Reconcile {
         source: ChannelRecoveryError,
         shutdown: Option<PersistenceExecutorError>,
@@ -1737,6 +1861,7 @@ mod tests {
             schema_version: CAPABILITIES_SCHEMA_VERSION,
             service_flags: ServiceId::Identity.capability_bit()
                 | ServiceId::Measurement.capability_bit()
+                | ServiceId::Configuration.capability_bit()
                 | ServiceId::Lifecycle.capability_bit()
                 | ServiceId::Time.capability_bit(),
             feature_flags: REQUIRED_RECORDING_FEATURES,
@@ -1744,6 +1869,24 @@ mod tests {
             journal_capacity_samples: 2048,
             output_rate_mask: OutputRateCode::Hz125.capability_bit(),
             max_sample_chunk_samples: 48,
+        }
+    }
+
+    fn observed_configuration() -> sensor_protocol::ObservedConfiguration {
+        sensor_protocol::ObservedConfiguration {
+            revision: 1,
+            desired: sensor_protocol::MeasurementConfiguration {
+                output_rate: OutputRateCode::Hz125,
+                range_g: 2,
+                high_pass_corner: 0,
+                filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+                fifo_watermark: 30,
+                offset_x: 0,
+                offset_y: 0,
+                offset_z: 0,
+            },
+            sensor_odr: sensor_protocol::Adxl355Odr::Hz125,
+            decimation_factor: 1,
         }
     }
 
@@ -1764,13 +1907,14 @@ mod tests {
         let discovery = InstallationDiscoveryPlan::from_topology(&topology());
         let mut collector = discovery.collector();
         collector
-            .accept(
+            .accept_runtime(
                 DiscoveryTargetId {
                     channel_id: 1,
                     node_address: 1,
                 },
                 identity(),
                 capabilities(),
+                observed_configuration(),
             )
             .unwrap();
         let inventory = collector.finish().unwrap();
@@ -1833,6 +1977,7 @@ mod tests {
                 },
                 identity: identity(),
                 capabilities: capabilities(),
+                configuration: observed_configuration(),
                 runtime: RuntimeResult {
                     operation_id: 1,
                     code: RuntimeResultCode::Ok,

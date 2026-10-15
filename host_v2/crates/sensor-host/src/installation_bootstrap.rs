@@ -120,7 +120,12 @@ where
     for entry in &results {
         for node in entry.channel.nodes() {
             collector
-                .accept(node.id, node.identity, node.capabilities)
+                .accept_runtime(
+                    node.id,
+                    node.identity,
+                    node.capabilities,
+                    node.configuration,
+                )
                 .map_err(InstallationBootstrapError::Inventory)?;
         }
     }
@@ -370,6 +375,7 @@ mod tests {
             schema_version: CAPABILITIES_SCHEMA_VERSION,
             service_flags: ServiceId::Identity.capability_bit()
                 | ServiceId::Measurement.capability_bit()
+                | ServiceId::Configuration.capability_bit()
                 | ServiceId::Lifecycle.capability_bit()
                 | ServiceId::Time.capability_bit(),
             feature_flags: REQUIRED_RECORDING_FEATURES,
@@ -392,6 +398,24 @@ mod tests {
             released: sensor_core::SequenceCursor::new(0),
             capacity_samples: 2048,
             overwritten_samples: 0,
+        };
+        let configuration = sensor_protocol::ObservedConfiguration {
+            revision: 1,
+            desired: sensor_protocol::MeasurementConfiguration {
+                output_rate: target.output_rate(),
+                range_g: 2,
+                high_pass_corner: 0,
+                filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+                fifo_watermark: 30,
+                offset_x: 0,
+                offset_y: 0,
+                offset_z: 0,
+            },
+            sensor_odr: match target.output_rate() {
+                sensor_protocol::OutputRateCode::Hz125 => sensor_protocol::Adxl355Odr::Hz125,
+                _ => panic!("test fixture only supports 125 Hz"),
+            },
+            decimation_factor: 1,
         };
         let agent = ChannelAgent::new(
             1,
@@ -416,6 +440,7 @@ mod tests {
                 id: target.id(),
                 identity,
                 capabilities,
+                configuration,
                 runtime,
                 stream,
             }],

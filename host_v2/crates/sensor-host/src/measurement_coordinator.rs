@@ -219,6 +219,24 @@ impl ChannelWorkCoordinator {
         Ok(())
     }
 
+    pub fn reconfigure_node(
+        &mut self,
+        config: NodeScheduleConfig,
+        now: MonotonicMicros,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        if !self.quiescing
+            || self.has_active_dispatch()
+            || self.pending_completion.is_some()
+            || !self.in_flight_writes.is_empty()
+            || self.shutdown_drain_nodes.is_some()
+        {
+            return Err(MeasurementCoordinatorError::ReconfigurationNotQuiescent);
+        }
+        self.runtime
+            .reconfigure_node(config, now)
+            .map_err(MeasurementCoordinatorError::Runtime)
+    }
+
     pub fn node_metrics_readers(&self) -> Vec<NodeMetricsReader> {
         self.sessions
             .iter()
@@ -987,6 +1005,7 @@ pub enum MeasurementCoordinatorError {
     ShutdownDrainIncomplete,
     ShutdownDrainOrder,
     ResumeNotReady,
+    ReconfigurationNotQuiescent,
     StreamRecovery(StreamRecoveryError),
     ResumeHardwareMismatch(u8),
 }

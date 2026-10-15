@@ -857,8 +857,28 @@ mod tests {
             feature_flags: REQUIRED_RECORDING_FEATURES,
             max_payload_bytes: MAX_PAYLOAD_BYTES as u16,
             journal_capacity_samples: 2048,
-            output_rate_mask: OutputRateCode::Hz125.capability_bit(),
+            output_rate_mask: OutputRateCode::Hz62_5.capability_bit()
+                | OutputRateCode::Hz125.capability_bit()
+                | OutputRateCode::Hz250.capability_bit(),
             max_sample_chunk_samples: 48,
+        }
+    }
+
+    fn observed_configuration() -> sensor_protocol::ObservedConfiguration {
+        sensor_protocol::ObservedConfiguration {
+            revision: 1,
+            desired: sensor_protocol::MeasurementConfiguration {
+                output_rate: OutputRateCode::Hz125,
+                range_g: 2,
+                high_pass_corner: 0,
+                filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+                fifo_watermark: 30,
+                offset_x: 0,
+                offset_y: 0,
+                offset_z: 0,
+            },
+            sensor_odr: sensor_protocol::Adxl355Odr::Hz125,
+            decimation_factor: 1,
         }
     }
 
@@ -922,13 +942,14 @@ mod tests {
         let mut collector = discovery.collector();
         for channel_id in 1..=channel_count {
             collector
-                .accept(
+                .accept_runtime(
                     DiscoveryTargetId {
                         channel_id,
                         node_address: 1,
                     },
                     identity(channel_id),
                     capabilities(),
+                    observed_configuration(),
                 )
                 .unwrap();
         }
@@ -979,6 +1000,7 @@ mod tests {
                     },
                     identity: identity(channel_id),
                     capabilities: capabilities(),
+                    configuration: observed_configuration(),
                     runtime: RuntimeResult {
                         operation_id: 1,
                         code: RuntimeResultCode::Ok,
@@ -1202,6 +1224,78 @@ mod tests {
             first_operations
                 .try_submit(OperationRequest {
                     operation_id: OperationId::new(46).unwrap(),
+                    target: OperationTarget::Node {
+                        channel_id: 1,
+                        node_address: 1,
+                    },
+                    kind: OperationKind::ApplyConfiguration {
+                        expected_revision: 1,
+                        configuration: sensor_protocol::MeasurementConfiguration {
+                            output_rate: OutputRateCode::Hz62_5,
+                            range_g: 2,
+                            high_pass_corner: 0,
+                            filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+                            fifo_watermark: 30,
+                            offset_x: -4,
+                            offset_y: 0,
+                            offset_z: 4,
+                        },
+                    },
+                })
+                .unwrap();
+            let apply_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.records.len() < 5
+                    || snapshot.records[4].phase != OperationPhase::Succeeded)
+                    && Instant::now() < apply_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let applied = first_operations.snapshot().unwrap();
+            assert!(matches!(
+                applied.records[4].result,
+                Some(OperationResult::ConfigurationApplied(value))
+                    if value.code == sensor_protocol::ConfigOperationCode::Applied
+                        && value.observed.revision == 2
+                        && value.observed.desired.output_rate == OutputRateCode::Hz62_5
+                        && value.observed.desired.offset_x == -4
+            ));
+
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(47).unwrap(),
+                    target: OperationTarget::Node {
+                        channel_id: 1,
+                        node_address: 1,
+                    },
+                    kind: OperationKind::ResetConfiguration {
+                        expected_revision: 2,
+                    },
+                })
+                .unwrap();
+            let reset_deadline = Instant::now() + Duration::from_secs(2);
+            while {
+                let snapshot = first_operations.snapshot().unwrap();
+                (snapshot.records.len() < 6
+                    || snapshot.records[5].phase != OperationPhase::Succeeded)
+                    && Instant::now() < reset_deadline
+            } {
+                std::thread::yield_now();
+            }
+            let reset = first_operations.snapshot().unwrap();
+            assert!(matches!(
+                reset.records[5].result,
+                Some(OperationResult::ConfigurationApplied(value))
+                    if value.code == sensor_protocol::ConfigOperationCode::Applied
+                        && value.observed.revision == 3
+                        && value.observed.desired.output_rate == OutputRateCode::Hz250
+                        && value.observed.desired.offset_x == 0
+            ));
+
+            first_operations
+                .try_submit(OperationRequest {
+                    operation_id: OperationId::new(48).unwrap(),
                     target: OperationTarget::Channel { channel_id: 1 },
                     kind: OperationKind::ResumeRecording,
                 })
@@ -1210,8 +1304,8 @@ mod tests {
             while {
                 let snapshot = first_operations.snapshot().unwrap();
                 (snapshot.mode != crate::operations::ChannelOperatingMode::Recording
-                    || snapshot.records.len() < 5
-                    || snapshot.records[4].phase != OperationPhase::Succeeded)
+                    || snapshot.records.len() < 7
+                    || snapshot.records[6].phase != OperationPhase::Succeeded)
                     && Instant::now() < resume_deadline
             } {
                 let _ = runtime.supervise_once();
@@ -1224,8 +1318,8 @@ mod tests {
                 "operation={resumed:?} worker={:?}",
                 runtime.channels()[0].snapshot()
             );
-            assert_eq!(resumed.records[4].phase, OperationPhase::Succeeded);
-            assert_eq!(resumed.records[4].error, None);
+            assert_eq!(resumed.records[6].phase, OperationPhase::Succeeded);
+            assert_eq!(resumed.records[6].error, None);
             assert!(runtime
                 .time_health()
                 .streams()

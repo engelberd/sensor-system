@@ -686,6 +686,22 @@ impl ChannelOperationsController {
         Ok(operation_id)
     }
 
+    pub fn fail_active_with_result(
+        &mut self,
+        result: OperationResult,
+        error: OperationsError,
+    ) -> Result<OperationId, OperationsError> {
+        let operation_id = self
+            .active_operation
+            .take()
+            .ok_or(OperationsError::NoActiveOperation)?;
+        self.ledger.set_result(operation_id, result)?;
+        self.ledger
+            .set_error(operation_id, OperationPhase::Failed, error)?;
+        self.publish()?;
+        Ok(operation_id)
+    }
+
     fn publish(&self) -> Result<(), OperationsError> {
         let mut snapshot = self
             .publisher
@@ -744,6 +760,8 @@ pub enum OperationsError {
     NodeNotConfigured,
     ConfigurationDeadline,
     ConfigurationFailed,
+    ConfigurationAdmissionRejected,
+    ConfigurationRejected,
     MaintenanceBarrierDeadline,
     MaintenanceDrainDeadline,
     MaintenanceConvergenceFailed,
@@ -808,6 +826,12 @@ impl fmt::Display for OperationsError {
                 formatter.write_str("configuration operation deadline expired")
             }
             Self::ConfigurationFailed => formatter.write_str("configuration operation failed"),
+            Self::ConfigurationAdmissionRejected => {
+                formatter.write_str("configuration would exceed the channel admission budget")
+            }
+            Self::ConfigurationRejected => {
+                formatter.write_str("node rejected the configuration operation")
+            }
             Self::MaintenanceBarrierDeadline => {
                 formatter.write_str("maintenance quiesce barrier deadline expired")
             }
