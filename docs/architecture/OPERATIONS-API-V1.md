@@ -192,6 +192,15 @@ identycznego żądania jest idempotentne, a ponowne użycie ID z inną treścią
 kończy się konfliktem w domenie. IPC nie otwiera RS485, nie posiada lifecycle i
 nie tworzy drugiego modelu stanu.
 
+Każdy channel worker ma własny trwały audit w
+`<capture-root>/.operations-audit-v1/channel-NN.wal`. Kontroler synchronizuje
+`Accepted` przed rozpoczęciem operacji, a następnie zapisuje `Running` oraz
+wynik `Succeeded`, `Rejected` albo `Failed`. Rekord zawiera pełny target,
+parametry polecenia, `operation_id`, czas UTC i typowany wynik. Każdy rekord ma
+CRC i monotoniczny numer zdarzenia; recovery usuwa wyłącznie niepełny rekord na
+końcu. Uszkodzenie pełnego rekordu lub błąd trwałego zapisu zatrzymuje operację
+fail-closed. Audit nie obejmuje próbek, TimeSync ani zwykłych transakcji RS485.
+
 Wykonawca Configuration ma osobny konfigurowalny deadline. Po jego
 przekroczeniu nie porzuca transakcji w locie ani kwarantanny spóźnionej
 odpowiedzi; kończy operację dopiero po bezpiecznym oddaniu jedynego arbitra
@@ -259,8 +268,7 @@ wymianę sesji. Ten sam pion jest dostępny przez lokalne IPC i `hostctl`.
 
 1. wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node i zatwierdzić
    procedurę aktualizacji profilu instalacji;
-2. dodać trwały audit poleceń operatorskich;
-3. dodać operacje grupowe na stabilnym kontrakcie wyników per target.
+2. dodać operacje grupowe na stabilnym kontrakcie wyników per target.
 
 HIL na Raspberry Pi z firmware 0.5.8 potwierdził Get/Apply/Reset, pusty
 ScanUnassigned, RestartNode, zmianę `boot_epoch` i późniejszy ResumeRecording.

@@ -32,7 +32,8 @@ wymaga rzeczywistego nieprzypisanego node.
    `hostctl` bez otwierania RS485. Get/Validate/Apply/Reset Configuration są
    osiągalne przez Operations API; mutacje aktualizują admission, scheduler i
    trwałą historię konfiguracji. Commissioning i RestartNode są osiągalne tym
-   samym IPC; brakuje trwałego audytu poleceń operatorskich.
+   samym IPC. Każde przejście operacji jest zapisywane w osobnym per-channel
+   WAL z CRC przed wykonaniem i po wyniku.
 2. Configuration i ratunkowy restart przeszły fizyczny HIL firmware 0.5.8.
    Commissioning ma potwierdzony pusty skan; nadal wymaga HIL discovery,
    przypisania adresu i końcowego handshake z rzeczywistym nieprzypisanym node.
@@ -167,8 +168,7 @@ a nie strojenia instalacji.
 ## Kolejność dalszej pracy
 
 1. Wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node.
-2. Dodać trwały audit poleceń.
-3. Usunąć flash write z pozostałych hot path.
-4. Wykonać powtarzalny HIL restartu, restart po zatrzymaniu heartbeat core 1,
+2. Usunąć flash write z pozostałych hot path.
+3. Wykonać powtarzalny HIL restartu, restart po zatrzymaniu heartbeat core 1,
    wielu node, długiego przewodu, zakłóceń, wolnego storage i soak.
-5. Dodać kompaktową politykę Health z osobnym budżetem Production.
+4. Dodać kompaktową politykę Health z osobnym budżetem Production.

@@ -47,6 +47,7 @@ pub mod measurement_transfer;
 pub mod node_metrics;
 pub mod node_session;
 pub mod operations;
+pub mod operations_audit;
 pub mod operations_ipc;
 pub mod persistence_executor;
 pub mod retention_checkpoint;

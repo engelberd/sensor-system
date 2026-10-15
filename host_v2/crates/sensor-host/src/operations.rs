@@ -262,6 +262,24 @@ pub struct OperationRecord {
     pub error: Option<OperationsError>,
 }
 
+/// Durable boundary for rare operator commands. Implementations must complete
+/// the append before returning; a failed append prevents the controller from
+/// starting or acknowledging the corresponding transition.
+pub trait OperationsAuditSink: Send {
+    fn append(&mut self, record: &OperationRecord) -> Result<(), OperationsAuditWriteError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationsAuditWriteError;
+
+struct NoopOperationsAudit;
+
+impl OperationsAuditSink for NoopOperationsAudit {
+    fn append(&mut self, _record: &OperationRecord) -> Result<(), OperationsAuditWriteError> {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationResult {
     ConfigurationObserved(ObservedConfiguration),
@@ -551,12 +569,21 @@ pub struct ChannelOperationsController {
     ledger: OperationLedger,
     active_operation: Option<OperationId>,
     publisher: ChannelOperationsPublisher,
+    audit: Box<dyn OperationsAuditSink>,
 }
 
 impl ChannelOperationsController {
     pub fn new(
         channel_id: u8,
         policy: ChannelOperationsPolicy,
+    ) -> Result<(Self, ChannelOperationsHandle), OperationsError> {
+        Self::new_with_audit(channel_id, policy, Box::new(NoopOperationsAudit))
+    }
+
+    pub fn new_with_audit(
+        channel_id: u8,
+        policy: ChannelOperationsPolicy,
+        audit: Box<dyn OperationsAuditSink>,
     ) -> Result<(Self, ChannelOperationsHandle), OperationsError> {
         OperationTarget::Channel { channel_id }.validate()?;
         let policy = policy.validate()?;
@@ -584,6 +611,7 @@ impl ChannelOperationsController {
                 ledger,
                 active_operation: None,
                 publisher: ChannelOperationsPublisher { snapshot },
+                audit,
             },
             handle,
         ))
@@ -617,9 +645,11 @@ impl ChannelOperationsController {
             }
             RegisterOutcome::Accepted => {}
         }
+        self.audit_record(request.operation_id)?;
         if let Err(reason) = admit_operation(&request, self.mode) {
             self.ledger
                 .set_error(request.operation_id, OperationPhase::Rejected, reason)?;
+            self.audit_record(request.operation_id)?;
             self.publish()?;
             return Ok(ChannelCommandDecision::Rejected {
                 operation_id: request.operation_id,
@@ -632,6 +662,7 @@ impl ChannelOperationsController {
                 OperationPhase::Rejected,
                 OperationsError::OperationInProgress,
             )?;
+            self.audit_record(request.operation_id)?;
             self.publish()?;
             return Ok(ChannelCommandDecision::Rejected {
                 operation_id: request.operation_id,
@@ -640,9 +671,11 @@ impl ChannelOperationsController {
         }
         self.ledger
             .set_phase(request.operation_id, OperationPhase::Running)?;
+        self.audit_record(request.operation_id)?;
         if request.kind == OperationKind::ReadStatus {
             self.ledger
                 .set_phase(request.operation_id, OperationPhase::Succeeded)?;
+            self.audit_record(request.operation_id)?;
             self.publish()?;
             return Ok(ChannelCommandDecision::Existing {
                 operation_id: request.operation_id,
@@ -672,6 +705,7 @@ impl ChannelOperationsController {
                 OperationPhase::Failed
             },
         )?;
+        self.audit_record(operation_id)?;
         self.publish()?;
         Ok(operation_id)
     }
@@ -687,6 +721,7 @@ impl ChannelOperationsController {
         self.ledger.set_result(operation_id, result)?;
         self.ledger
             .set_phase(operation_id, OperationPhase::Succeeded)?;
+        self.audit_record(operation_id)?;
         self.publish()?;
         Ok(operation_id)
     }
@@ -698,6 +733,7 @@ impl ChannelOperationsController {
             .ok_or(OperationsError::NoActiveOperation)?;
         self.ledger
             .set_error(operation_id, OperationPhase::Failed, error)?;
+        self.audit_record(operation_id)?;
         self.publish()?;
         Ok(operation_id)
     }
@@ -714,6 +750,7 @@ impl ChannelOperationsController {
         self.ledger.set_result(operation_id, result)?;
         self.ledger
             .set_error(operation_id, OperationPhase::Failed, error)?;
+        self.audit_record(operation_id)?;
         self.publish()?;
         Ok(operation_id)
     }
@@ -731,6 +768,17 @@ impl ChannelOperationsController {
             records: self.ledger.records(),
         };
         Ok(())
+    }
+
+    fn audit_record(&mut self, operation_id: OperationId) -> Result<(), OperationsError> {
+        let record = self
+            .ledger
+            .get(operation_id)
+            .cloned()
+            .ok_or(OperationsError::UnknownOperation(operation_id))?;
+        self.audit
+            .append(&record)
+            .map_err(|_| OperationsError::AuditUnavailable)
     }
 }
 
@@ -772,6 +820,7 @@ pub enum OperationsError {
     OperationInProgress,
     NoActiveOperation,
     StatusUnavailable,
+    AuditUnavailable,
     ExecutorUnavailable,
     NodeNotConfigured,
     ConfigurationDeadline,
@@ -840,6 +889,7 @@ impl fmt::Display for OperationsError {
             Self::StatusUnavailable => {
                 formatter.write_str("channel operation status is unavailable")
             }
+            Self::AuditUnavailable => formatter.write_str("operation audit is unavailable"),
             Self::ExecutorUnavailable => formatter.write_str("operation executor is not connected"),
             Self::NodeNotConfigured => {
                 formatter.write_str("operation target is not configured on this channel")
@@ -899,6 +949,14 @@ mod tests {
     use super::*;
     use sensor_protocol::{DecimationFilterProfile, OutputRateCode};
 
+    struct FailingAudit;
+
+    impl OperationsAuditSink for FailingAudit {
+        fn append(&mut self, _record: &OperationRecord) -> Result<(), OperationsAuditWriteError> {
+            Err(OperationsAuditWriteError)
+        }
+    }
+
     fn id(value: u64) -> OperationId {
         OperationId::new(value).unwrap()
     }
@@ -925,6 +983,25 @@ mod tests {
             },
             kind: OperationKind::GetConfiguration,
         }
+    }
+
+    #[test]
+    fn audit_failure_prevents_an_operation_from_starting() {
+        let (mut controller, handle) = ChannelOperationsController::new_with_audit(
+            2,
+            ChannelOperationsPolicy {
+                mailbox_capacity: 1,
+                ledger_capacity: 2,
+            },
+            Box::new(FailingAudit),
+        )
+        .unwrap();
+        handle.try_submit(get_configuration(99)).unwrap();
+        assert_eq!(
+            controller.poll_command(),
+            Err(OperationsError::AuditUnavailable)
+        );
+        assert_eq!(controller.active_operation(), None);
     }
 
     #[test]

@@ -82,6 +82,11 @@ Assignment weryfikuje nowy adres przez handshake, ale nie zapisuje profilu
 instalacji. `restart-node` potwierdza przyjęcie polecenia; dopiero Resume
 potwierdza nowy `boot_epoch` i wykonuje rollover strumieni.
 
+Polecenia operatorskie są audytowane przez proces hosta w trwałych plikach
+`<capture-root>/.operations-audit-v1/channel-NN.wal`. CLI nie zapisuje własnej
+historii, dzięki czemu dashboard i przyszłe API korzystają z tego samego
+źródła prawdy.
+
 ## Aktualizacja node
 
 `hostctl update` wymaga jawnej tożsamości sprzętu, rewizji płytki i oczekiwanej
@@ -121,7 +126,7 @@ Brakujące funkcje mają otrzymać nowe odpowiedzialności zamiast aliasów do
 legacy. Configuration, Commissioning i zdalny restart są publicznymi
 poleceniami przez Operations API. Nadal brakuje:
 
-- trwałego audytu operacji i operacji grupowych;
+- operacji grupowych;
 - dashboard czytający Runtime Status v1;
 - godzinny compactor Capture → Archive i publisher;
 - natywny uploader bootloadera, po ustabilizowaniu kontraktu A/B.

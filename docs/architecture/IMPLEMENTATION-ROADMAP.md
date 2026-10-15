@@ -299,7 +299,7 @@ wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
 | 7. Capture | WAL, recovery, segmenty, bounded handoff, group commit, fault injection, walidacja, CSV i rollover podłączony do Resume gotowe | benchmark, process-kill matrix i dane rzeczywiste |
 | 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja, HIL jednego node i koordynowany rollover gotowe | UTC, długi pomiar dryfu i wiele node |
 | 9. Skala 1–16 | runtime i symulacja 1/4/8 gotowe | fizyczny test macierzy i wiele node na kanał |
-| 10. Operations | bounded command path, ledger, status i wykonanie Maintenance/Resume także po zmianie epoki gotowe | API/IPC, audit i operacje grupowe |
+| 10. Operations | bounded command path, IPC, trwały audit oraz wykonanie Maintenance/Resume/Configuration/Commissioning/Restart gotowe | operacje grupowe i HIL AssignAddress |
 | 11. Migracja | eksport CSV gotowy | canary, rollback, procedura operacyjna i usunięcie legacy |
 
 ### Etap 0 — fundament projektu — ukończony
@@ -1081,6 +1081,7 @@ rzeczywistą konfigurację node, więc restart hosta rozstrzyga przerwę pomięd
 trwałą zmianą node i odpowiedzią hosta. Commissioning i RestartNode są
 podłączone przez ten sam bounded control plane. Fizyczny HIL firmware 0.5.8 na
 kanale B potwierdził Get/Apply/Reset, pusty ScanUnassigned, RestartNode, zmianę
-epoki, rollover i ResumeRecording. Bieżącą bramką jest Scan/Assign z rzeczywistym
-nieprzypisanym node, a następnie trwały audit operacji operatorskich.
+epoki, rollover i ResumeRecording. Trwały per-channel audit zapisuje każde
+przejście operacji przed wykonaniem i po wyniku. Bieżącą bramką jest Scan/Assign
+z rzeczywistym nieprzypisanym node oraz pełny wielokanałowy rollout firmware.
 Dashboard pozostaje poza MVP do czasu ustabilizowania API.

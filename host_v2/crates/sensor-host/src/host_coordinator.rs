@@ -29,6 +29,7 @@ use crate::operations::{
     ChannelOperationsController, ChannelOperationsHandle, ChannelOperationsPolicy,
     ChannelOperationsSnapshot, OperationsError,
 };
+use crate::operations_audit::{OperationsAuditError, OperationsAuditWal};
 use crate::storage_health::{
     StorageHealthObservation, StorageHealthProbe, StorageHealthProbeError,
 };
@@ -461,6 +462,18 @@ where
             }
         };
         let (startup, bootstrapped) = planned.into_parts();
+        let operations_audit = match OperationsAuditWal::open(capture.root(), channel_id) {
+            Ok(value) => value,
+            Err(source) => {
+                drop(time_observations);
+                let cleanup = cleanup_prepared_channels(prepared, time);
+                return Err(HostRuntimeStartError::OperationsAudit {
+                    channel_id,
+                    source,
+                    cleanup,
+                });
+            }
+        };
         let channel_seed = match work_id_seed.checked_add(u64::from(channel_id.saturating_sub(1))) {
             Some(value) => value,
             None => {
@@ -499,9 +512,12 @@ where
                 });
             }
         };
-        let (operations, operations_handle) =
-            ChannelOperationsController::new(channel_id, policies.operations)
-                .expect("operations policy was validated before channel composition");
+        let (operations, operations_handle) = ChannelOperationsController::new_with_audit(
+            channel_id,
+            policies.operations,
+            Box::new(operations_audit),
+        )
+        .expect("operations policy was validated before channel composition");
         let task = ProductionChannelTask::new(
             recording,
             &startup,
@@ -676,6 +692,11 @@ pub enum HostRuntimeStartError {
     },
     WorkIdSeedOverflow {
         channel_id: u8,
+        cleanup: HostStartupCleanup,
+    },
+    OperationsAudit {
+        channel_id: u8,
+        source: OperationsAuditError,
         cleanup: HostStartupCleanup,
     },
     Channel {
