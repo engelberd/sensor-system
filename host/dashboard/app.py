@@ -1026,7 +1026,12 @@ INDEX_HTML = """<!doctype html>
         </p>
         <input id="config-channel-id" type="hidden" />
         <input id="config-node-id" type="hidden" />
-        <div class="config-form-grid">
+        <div class="commission-scan-stage" id="config-load-stage" hidden>
+          <strong id="config-load-title">Odczytywanie konfiguracji</strong>
+          <progress></progress>
+          <p class="commission-scan-detail" id="config-load-detail">Oczekiwanie na Operations API.</p>
+        </div>
+        <div class="config-form-grid" id="config-fields">
           <label class="field">Revision
             <input id="config-revision" type="number" readonly />
           </label>
@@ -2292,6 +2297,18 @@ INDEX_HTML = """<!doctype html>
         $("node-config-status").textContent = message;
       }
 
+      function showConfigurationLoading(title, detail) {
+        $("config-load-stage").hidden = false;
+        $("config-fields").hidden = true;
+        $("config-load-title").textContent = title;
+        $("config-load-detail").textContent = detail;
+      }
+
+      function showConfigurationFields() {
+        $("config-load-stage").hidden = true;
+        $("config-fields").hidden = false;
+      }
+
       function configurationFromForm() {
         return {
           output_rate_code: Number($("config-output-rate").value),
@@ -2332,24 +2349,50 @@ INDEX_HTML = """<!doctype html>
         const previousLabel = button.textContent;
         button.disabled = true;
         button.textContent = "Odczytywanie...";
+        $("config-channel-id").value = channelId;
+        $("config-node-id").value = nodeAddress;
+        $("node-config-form").dataset.channelName = channelName;
+        $("node-config-form").dataset.channelMode = channelMode;
+        $("node-config-title").textContent = `${channelName} · node ${nodeAddress}`;
+        showConfigurationLoading(
+          "Odczytywanie konfiguracji",
+          "Host przygotowuje kanał i oczekuje na odpowiedź node…",
+        );
+        setConfigurationFormBusy(true, "Odczytywanie aktualnej konfiguracji node…");
+        $("node-config-dialog").showModal();
         try {
-          const response = await submitV2Operation(channelId, "get_configuration", { node_address: nodeAddress });
+          const startedAt = Date.now();
+          const response = await submitV2Operation(
+            channelId,
+            "get_configuration",
+            { node_address: nodeAddress },
+            (progress) => {
+              const seconds = ((Date.now() - startedAt) / 1000).toFixed(1).replace(".", ",");
+              const phase = progress.phase === "running" ? "Node odpowiada" : "Operacja oczekuje";
+              $("config-load-title").textContent = phase;
+              $("config-load-detail").textContent = `Czas ${seconds} s · operacja ${progress.operation_id || "-"}`;
+            },
+          );
           if (!response.result || response.result.kind !== "configuration_observed") {
             throw new Error("Nieoczekiwany wynik GetConfiguration");
           }
-          $("config-channel-id").value = channelId;
-          $("config-node-id").value = nodeAddress;
-          $("node-config-form").dataset.channelName = channelName;
           $("node-config-form").dataset.channelMode = response.mode || channelMode;
-          $("node-config-title").textContent = `${channelName} · node ${nodeAddress}`;
           Array.from($("config-output-rate").options).forEach((option) => {
             const code = Number(option.value);
             option.disabled = outputRateMask !== 0 && (outputRateMask & (1 << code)) === 0;
           });
           showObservedConfiguration(response.result.observed);
+          showConfigurationFields();
           setConfigurationFormBusy(false, `Odczytano revision ${response.result.observed.revision}.`);
-          $("node-config-dialog").showModal();
           await loadDashboard();
+        } catch (error) {
+          $("config-load-title").textContent = "Nie udało się odczytać konfiguracji";
+          $("config-load-detail").textContent = error.message;
+          ["config-apply-btn", "config-validate-btn", "config-reset-btn"].forEach((id) => {
+            $(id).disabled = true;
+          });
+          $("config-close-btn").disabled = false;
+          $("node-config-status").textContent = `Błąd: ${error.message}`;
         } finally {
           button.disabled = false;
           button.textContent = previousLabel;

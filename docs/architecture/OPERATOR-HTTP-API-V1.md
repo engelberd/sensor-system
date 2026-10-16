@@ -76,7 +76,10 @@ jest automatycznie uruchamiany. Błąd konfiguracji pozostawia stabilne
 `Maintenance`, `Faulted` albo `Offline`; nigdy nie jest maskowany samym Resume.
 Formularz udostępnia ODR, zakres, high-pass, profil filtra, FIFO watermark,
 offsety i revision. ODR nierozgłaszane przez capabilities danego node są
-wyłączone w UI.
+wyłączone w UI. Okno Configuration otwiera się synchronicznie po potwierdzeniu
+operatora, a podczas asynchronicznego GetConfiguration pokazuje fazę i czas
+operacji. Pola edycji pojawiają się dopiero po otrzymaniu kompletnej
+konfiguracji; błąd pozostawia widoczne wyjaśnienie i bezpiecznie blokuje mutacje.
 
 Commissioning oznacza całą procedurę przyjęcia nowego urządzenia: wyłączne okno
 Maintenance, slotowany `ScanUnassigned`, wybór po `hardware_id`,
