@@ -52,7 +52,19 @@ class V2DashboardRepositoryTests(unittest.TestCase):
                                     "output_rate_hz": 125,
                                 }
                             ],
-                        }
+                        },
+                        {
+                            "name": "line-a",
+                            "channel_id": 1,
+                            "label": "Linia A",
+                            "enabled": False,
+                            "transport": {
+                                "kind": "serial-rs485",
+                                "endpoint": "/dev/line-a",
+                                "baud_rate": 115200,
+                            },
+                            "nodes": [],
+                        },
                     ],
                 }
             ),
@@ -164,6 +176,10 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertEqual(node["last_measurement_age_ms"], 40)
             self.assertEqual(node["release_backlog"], 40)
             self.assertEqual(node["board_revision"], 2)
+            disabled = payload["channels"][1]
+            self.assertFalse(disabled["enabled"])
+            self.assertFalse(disabled["controls_enabled"])
+            self.assertIsNone(disabled["operating_mode"])
 
     @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
     def test_stale_status_marks_channel_offline(self, _journal: object) -> None:

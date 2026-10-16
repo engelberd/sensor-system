@@ -400,6 +400,7 @@ class V2DashboardRepository:
             operations_mode = None
             active_operation_id = None
             operations_available = False
+            operations_status = None
             if enabled:
                 operations_status = self._operations_status(channel_id)
                 if operations_status is not None and operations_status.get("ok") is True:
@@ -499,7 +500,6 @@ class V2DashboardRepository:
                     "runtime_v2": True,
                     "label": raw_channel.get("label"),
                     "channel_id": channel_id,
-                    "runtime_v2": True,
                     "enabled": enabled,
                     "desired_running": enabled,
                     "controls_enabled": operations_available,
@@ -509,8 +509,7 @@ class V2DashboardRepository:
                     "running": running,
                     "health": health,
                     "phase": phase,
-                    "operating_mode": (operations_status or {}).get("mode"),
-                    "active_operation_id": (operations_status or {}).get("active_operation_id"),
+                    "operating_mode": operations_mode,
                     "port": transport.get("endpoint", "-"),
                     "baud": _safe_int(transport.get("baud_rate")),
                     "updated_utc": updated_utc,
