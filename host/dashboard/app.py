@@ -247,6 +247,28 @@ INDEX_HTML = """<!doctype html>
       }
       .config-form-status { min-height: 1.5em; color: var(--muted); }
 
+      .commission-scan-stage {
+        margin: 18px 0;
+        padding: 18px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.62);
+        border: 1px solid rgba(69, 50, 26, 0.08);
+      }
+
+      .commission-scan-stage progress {
+        width: 100%;
+        height: 12px;
+        margin: 12px 0 8px;
+        accent-color: var(--accent);
+      }
+
+      .commission-scan-detail {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
       .hero-meta {
         min-width: min(100%, 300px);
         display: grid;
@@ -1055,10 +1077,17 @@ INDEX_HTML = """<!doctype html>
         <p class="eyebrow">Nowy node · protocol 5</p>
         <h2 class="section-title" id="commission-title">Dodaj node</h2>
         <p class="section-note">
-          Podłącz jeden nieprzypisany node do wybranego kanału. Dashboard wykryje go, nada adres i zapisze w profilu instalacji.
+          Podłącz jeden nieprzypisany node do wybranego kanału. Skan obejmuje 16 szczelin odpowiedzi urządzeń bez adresu; nie przegląda kolejno 256 adresów.
         </p>
         <input id="commission-channel-id" type="hidden" />
-        <div class="config-form-grid">
+        <div class="commission-scan-stage" id="commission-scan-stage">
+          <strong id="commission-scan-title">Przygotowanie skanu</strong>
+          <progress id="commission-scan-progress"></progress>
+          <p class="commission-scan-detail" id="commission-scan-detail">Oczekiwanie na rozpoczęcie operacji.</p>
+        </div>
+        <div id="commission-details-stage" hidden>
+          <p class="section-note">Skan zakończony. Uzupełnij dane wykrytego urządzenia.</p>
+          <div class="config-form-grid">
           <label class="field">Nazwa node
             <input id="commission-name" type="text" maxlength="64" required placeholder="np. Łożysko północ" />
           </label>
@@ -1071,6 +1100,7 @@ INDEX_HTML = """<!doctype html>
           <label class="field">Wykryty node
             <input id="commission-identity" type="text" readonly />
           </label>
+          </div>
         </div>
         <p class="config-form-status" id="commission-status"></p>
         <div class="actions">
@@ -1631,6 +1661,7 @@ INDEX_HTML = """<!doctype html>
                       data-channel-id="${escapeHtml(channel.channel_id)}"
                       data-channel-name="${escapeHtml(channel.name)}"
                       data-node-id="${escapeHtml(node.node_id)}"
+                      data-channel-mode="${escapeHtml(channel.operation_mode || "unknown")}"
                       data-output-rate-mask="${escapeHtml(node.output_rate_mask || 0)}"
                       type="button"
                       ${channel.enabled && node.enabled && ["recording", "maintenance", "faulted"].includes(channel.operation_mode) && !channel.active_operation_id ? "" : "disabled"}
@@ -2036,10 +2067,11 @@ INDEX_HTML = """<!doctype html>
         }, 900);
       }
 
-      async function waitForV2Operation(channelId, operationId, timeoutMs = 120000) {
+      async function waitForV2Operation(channelId, operationId, timeoutMs = 120000, onProgress = null) {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
           const result = await fetchJson(`/api/v2/channels/${encodeURIComponent(channelId)}/operations/${encodeURIComponent(operationId)}`);
+          if (onProgress) onProgress(result);
           if (result.phase === "succeeded") {
             return result;
           }
@@ -2051,7 +2083,7 @@ INDEX_HTML = """<!doctype html>
         throw new Error(`Operacja ${operationId} nie zakończyła się w wyznaczonym czasie`);
       }
 
-      async function submitV2Operation(channelId, operation, fields = {}) {
+      async function submitV2Operation(channelId, operation, fields = {}, onProgress = null) {
         const submitted = await fetchJson(`/api/v2/channels/${encodeURIComponent(channelId)}/operations`, {
           method: "POST",
           headers: {
@@ -2060,18 +2092,33 @@ INDEX_HTML = """<!doctype html>
           },
           body: JSON.stringify({ operation, ...fields }),
         });
+        if (onProgress) onProgress(submitted);
         if (submitted.phase === "succeeded") {
           return submitted;
         }
-        return waitForV2Operation(channelId, submitted.operation_id);
+        return waitForV2Operation(channelId, submitted.operation_id, 120000, onProgress);
       }
 
       function setCommissioningBusy(busy, message = "") {
+        if (commissioningState) commissioningState.busy = busy;
         ["commission-name", "commission-address", "commission-scan-btn", "commission-close-btn"].forEach((id) => {
           $(id).disabled = busy;
         });
         $("commission-apply-btn").disabled = busy || !commissioningState || !commissioningState.identity;
         $("commission-status").textContent = message;
+      }
+
+      function showCommissioningScanStage(title, detail, scanning = false) {
+        $("commission-scan-stage").hidden = false;
+        $("commission-details-stage").hidden = true;
+        $("commission-scan-title").textContent = title;
+        $("commission-scan-detail").textContent = detail;
+        $("commission-scan-progress").hidden = !scanning;
+      }
+
+      function showCommissioningDetailsStage() {
+        $("commission-scan-stage").hidden = true;
+        $("commission-details-stage").hidden = false;
       }
 
       function newCommissioningNonce() {
@@ -2083,9 +2130,15 @@ INDEX_HTML = """<!doctype html>
       async function scanCommissioningChannel() {
         if (!commissioningState) return;
         const state = commissioningState;
+        let scanStartedAt = null;
         state.identity = null;
         $("commission-hardware-id").value = "";
         $("commission-identity").value = "";
+        showCommissioningScanStage(
+          "Przygotowanie kanału",
+          "Kanał przechodzi do Maintenance przed rozpoczęciem skanu.",
+          true,
+        );
         setCommissioningBusy(true, "Przygotowanie kanału do skanowania…");
         try {
           if (state.modeBefore === "recording" && !state.enteredMaintenance) {
@@ -2095,10 +2148,27 @@ INDEX_HTML = """<!doctype html>
             throw new Error(`Kanał nie jest gotowy do commissioningu (tryb ${state.modeBefore})`);
           }
           state.roundNonce = newCommissioningNonce();
+          showCommissioningScanStage(
+            "Skanowanie kanału",
+            "Operacja jest wysyłana do hosta · 16 szczelin odpowiedzi · 0,0 s",
+            true,
+          );
           setCommissioningBusy(true, "Skanowanie nieprzypisanego node…");
+          scanStartedAt = Date.now();
           const response = await submitV2Operation(state.channelId, "scan_unassigned", {
             round_nonce: state.roundNonce,
             slot_count: 16,
+          }, (progress) => {
+            const elapsedSeconds = ((Date.now() - (scanStartedAt || Date.now())) / 1000).toFixed(1).replace(".", ",");
+            const phase = progress.phase === "running"
+              ? "Skan trwa"
+              : progress.phase === "accepted" || progress.phase === "queued"
+                ? "Skan oczekuje na wykonanie"
+                : progress.phase === "succeeded"
+                  ? "Skan zakończony"
+                  : `Stan: ${progress.phase || "nieznany"}`;
+            $("commission-scan-title").textContent = phase;
+            $("commission-scan-detail").textContent = `Host sprawdza 16 szczelin odpowiedzi · czas ${elapsedSeconds} s · operacja ${progress.operation_id || "-"}`;
           });
           const result = response.result;
           if (!result || result.kind !== "commissioning_scan") {
@@ -2114,8 +2184,14 @@ INDEX_HTML = """<!doctype html>
           state.identity = discovered[0];
           $("commission-hardware-id").value = state.identity.hardware_id || "";
           $("commission-identity").value = `board ${state.identity.board_revision} · fw ${state.identity.firmware}`;
+          showCommissioningDetailsStage();
           setCommissioningBusy(false, "Node wykryty. Podaj nazwę i sprawdź adres.");
         } catch (error) {
+          showCommissioningScanStage(
+            "Skan zakończony błędem",
+            error.message,
+            false,
+          );
           setCommissioningBusy(false, `Błąd: ${error.message}`);
           throw error;
         }
@@ -2124,14 +2200,21 @@ INDEX_HTML = """<!doctype html>
       async function openCommissioning(button) {
         const channelId = Number(button.dataset.channelId || 0);
         if (!channelId) return;
+        const channelName = button.dataset.channelName || `channel-${channelId}`;
+        const modeBefore = button.dataset.channelMode || "unknown";
+        const consequence = modeBefore === "recording"
+          ? `Dodanie node zatrzyma nagrywanie na ${channelName}, trwale zapisze dotychczasowe próbki, przejdzie do Maintenance i od razu rozpocznie skan 16 szczelin odpowiedzi. Zamknięcie kreatora bez dodania node wznowi nagrywanie.`
+          : `Dodanie node od razu rozpocznie skan 16 szczelin odpowiedzi na ${channelName}. Kanał pozostanie w Maintenance do zakończenia lub zamknięcia kreatora.`;
+        if (!window.confirm(`${consequence}\n\nRozpocząć skan teraz?`)) return;
         commissioningState = {
           channelId,
-          channelName: button.dataset.channelName || `channel-${channelId}`,
-          modeBefore: button.dataset.channelMode || "unknown",
+          channelName,
+          modeBefore,
           enteredMaintenance: false,
           completed: false,
           roundNonce: null,
           identity: null,
+          busy: false,
         };
         $("commission-channel-id").value = String(channelId);
         $("commission-title").textContent = `Dodaj node · ${commissioningState.channelName}`;
@@ -2139,6 +2222,7 @@ INDEX_HTML = """<!doctype html>
         $("commission-address").value = button.dataset.nextAddress || "1";
         $("commission-hardware-id").value = "";
         $("commission-identity").value = "";
+        showCommissioningScanStage("Przygotowanie skanu", "Łączenie z Operations API…", true);
         $("commission-dialog").showModal();
         try {
           await scanCommissioningChannel();
@@ -2153,6 +2237,7 @@ INDEX_HTML = """<!doctype html>
           $("commission-dialog").close();
           return;
         }
+        if (state.busy) return;
         setCommissioningBusy(true, "Przywracanie kanału…");
         try {
           if (state.enteredMaintenance && !state.completed) {
@@ -2170,6 +2255,9 @@ INDEX_HTML = """<!doctype html>
         const form = $("commission-form");
         if (!state || !state.identity || !form.reportValidity()) return;
         const nodeAddress = Number($("commission-address").value);
+        if (!window.confirm(
+          `Przypisać adres ${nodeAddress} i dodać node do ${state.channelName}? Po potwierdzeniu tożsamości host pomiarowy zostanie zrestartowany, co na chwilę przerwie nagrywanie na wszystkich aktywnych kanałach.`
+        )) return;
         try {
           setCommissioningBusy(true, "Nadawanie adresu, zapis profilu i restart hosta…");
           await fetchJson(`/api/v2/channels/${encodeURIComponent(state.channelId)}/commission`, {
@@ -2235,8 +2323,12 @@ INDEX_HTML = """<!doctype html>
         const channelId = Number(button.dataset.channelId || 0);
         const nodeAddress = Number(button.dataset.nodeId || 0);
         const channelName = button.dataset.channelName || `channel-${channelId}`;
+        const channelMode = button.dataset.channelMode || "unknown";
         const outputRateMask = Number(button.dataset.outputRateMask || 0);
         if (!channelId || !nodeAddress) return;
+        if (channelMode === "recording" && !window.confirm(
+          `Odczyt konfiguracji node ${nodeAddress} chwilowo zatrzyma nagrywanie na ${channelName}. Host trwale zapisze ogon danych, przejdzie do Maintenance, odczyta konfigurację i automatycznie wznowi Recording. Kontynuować?`
+        )) return;
         const previousLabel = button.textContent;
         button.disabled = true;
         button.textContent = "Odczytywanie...";
@@ -2247,6 +2339,8 @@ INDEX_HTML = """<!doctype html>
           }
           $("config-channel-id").value = channelId;
           $("config-node-id").value = nodeAddress;
+          $("node-config-form").dataset.channelName = channelName;
+          $("node-config-form").dataset.channelMode = response.mode || channelMode;
           $("node-config-title").textContent = `${channelName} · node ${nodeAddress}`;
           Array.from($("config-output-rate").options).forEach((option) => {
             const code = Number(option.value);
@@ -2275,6 +2369,15 @@ INDEX_HTML = """<!doctype html>
         if (operation === "apply_configuration" || operation === "reset_configuration") {
           fields.expected_revision = expectedRevision;
         }
+        const actionLabels = {
+          validate_configuration: "Sprawdzenie konfiguracji",
+          apply_configuration: "Zastosowanie konfiguracji",
+          reset_configuration: "Przywrócenie konfiguracji domyślnej",
+        };
+        const channelName = form.dataset.channelName || `channel-${channelId}`;
+        if ((form.dataset.channelMode || "unknown") === "recording" && !window.confirm(
+          `${actionLabels[operation] || "Ta operacja"} chwilowo zatrzyma nagrywanie na ${channelName}. Host zapisze ogon danych, wykona operację w Maintenance i automatycznie spróbuje wznowić Recording. Kontynuować?`
+        )) return;
         setConfigurationFormBusy(true, "Host wykonuje bezpieczną procedurę konfiguracji…");
         try {
           const response = await submitV2Operation(channelId, operation, fields);
@@ -2290,6 +2393,7 @@ INDEX_HTML = """<!doctype html>
           } else {
             $("node-config-status").textContent = "Operacja zakończona.";
           }
+          form.dataset.channelMode = response.mode || form.dataset.channelMode || "unknown";
           await loadDashboard();
         } finally {
           setConfigurationFormBusy(false, $("node-config-status").textContent);
@@ -2385,8 +2489,12 @@ INDEX_HTML = """<!doctype html>
       }
 
       async function performV2ServiceAction(action) {
-        const labels = { start: "uruchomić", stop: "zatrzymać", restart: "zrestartować" };
-        if (!window.confirm(`Czy ${labels[action]} cały host pomiarowy?`)) return;
+        const prompts = {
+          start: "Uruchomić host pomiarowy i aktywne kanały?",
+          stop: "Zatrzymać cały host pomiarowy? Nagrywanie na wszystkich aktywnych kanałach zostanie zakończone po trwałym zapisaniu ogona danych.",
+          restart: "Zrestartować cały host pomiarowy? Nagrywanie na wszystkich aktywnych kanałach zostanie przerwane, ogony danych zostaną trwale zapisane, a następnie rozpocznie się nowa sesja.",
+        };
+        if (!window.confirm(prompts[action] || "Wykonać operację na hoście pomiarowym?")) return;
         if (serviceControlBusy) return;
         serviceControlBusy = true;
         ["service-start-btn", "service-stop-btn", "service-restart-btn"].forEach((id) => { $(id).disabled = true; });
@@ -2544,11 +2652,9 @@ INDEX_HTML = """<!doctype html>
         });
       });
       $("config-reset-btn").addEventListener("click", () => {
-        if (window.confirm("Przywrócić domyślną konfigurację pomiarową node?")) {
-          runConfigurationOperation("reset_configuration").catch((error) => {
-            setConfigurationFormBusy(false, `Błąd: ${error.message}`);
-          });
-        }
+        runConfigurationOperation("reset_configuration").catch((error) => {
+          setConfigurationFormBusy(false, `Błąd: ${error.message}`);
+        });
       });
       $("config-close-btn").addEventListener("click", () => $("node-config-dialog").close());
       $("commission-scan-btn").addEventListener("click", () => {
@@ -2563,6 +2669,7 @@ INDEX_HTML = """<!doctype html>
       $("commission-form").addEventListener("submit", (event) => event.preventDefault());
       $("commission-dialog").addEventListener("cancel", (event) => {
         event.preventDefault();
+        if (commissioningState && commissioningState.busy) return;
         closeCommissioning().catch((error) => alert(error.message));
       });
 

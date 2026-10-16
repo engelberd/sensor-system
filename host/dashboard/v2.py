@@ -170,6 +170,8 @@ class V2DashboardRepository:
             "commissioning_workflow": {
                 "single_unassigned_node": True,
                 "automatic_maintenance": True,
+                "scan_slot_count": 16,
+                "scan_progress": "operation_phase_and_elapsed_time",
                 "persistent_system_profile": True,
                 "restart_after_commit": True,
             },

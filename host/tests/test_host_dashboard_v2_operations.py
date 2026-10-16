@@ -120,6 +120,9 @@ class V2OperatorApiTests(unittest.TestCase):
         self.assertIn("enter_maintenance", capabilities["channel_operations"])
         self.assertIn("apply_configuration", capabilities["node_operations"])
         self.assertFalse(capabilities["service_control"])
+        self.assertEqual(
+            capabilities["commissioning_workflow"]["scan_slot_count"], 16
+        )
 
         channel = self.repository.dashboard_payload()["channels"][0]
         self.assertTrue(channel["runtime_v2"])
@@ -143,6 +146,29 @@ class V2OperatorApiTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_dashboard_explains_and_exposes_commissioning_scan_state(self) -> None:
+        server = DashboardServer(("127.0.0.1", 0), self.repository)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_port, timeout=2
+            )
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            html = response.read().decode("utf-8")
+            self.assertEqual(response.status, 200)
+            self.assertIn('id="commission-scan-stage"', html)
+            self.assertIn('id="commission-details-stage" hidden', html)
+            self.assertIn("16 szczelin odpowiedzi", html)
+            self.assertIn("Rozpocząć skan teraz?", html)
+            self.assertIn("przerwie nagrywanie na wszystkich aktywnych kanałach", html)
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_unix_datagram_client_exchanges_bounded_json(self) -> None:
         socket_path = Path(self.temp.name) / "operations.sock"

@@ -95,6 +95,22 @@ restartuje hosta, który waliduje pełny profil przed startem. Konflikt adresu l
 hardware ID jest odrzucany przed mutacją node. Zamknięcie kreatora po samym
 skanie przywraca Recording, jeśli dashboard wcześniej sam wszedł w Maintenance.
 
+Przed rozpoczęciem dashboard jawnie potwierdza, że wybrany kanał przerwie
+nagrywanie i natychmiast rozpocznie skan. Podczas skanu pokazuje fazę Operations
+API, identyfikator operacji i czas od startu; formularz nazwy oraz adresu jest
+ukryty do uzyskania kompletnego wyniku. Skan nie iteruje po 256 adresach.
+Nieprzypisane urządzenia wybierają jedną z 16 deterministycznych szczelin
+odpowiedzi, a host odpytuje każdą szczelinę. Bieżący kontrakt Operations API nie
+publikuje indeksu przetwarzanej szczeliny, dlatego UI pokazuje wskaźnik trwania,
+a nie pozorny procent. Zatwierdzenie wykrytego node ma osobne potwierdzenie,
+ponieważ zapis profilu kończy się restartem hosta i krótką przerwą wszystkich
+aktywnych kanałów.
+
+Każda akcja dashboardu, która może przerwać Recording, wymaga potwierdzenia z
+opisem zakresu przerwy i automatycznego powrotu. Dotyczy to wejścia do
+Maintenance, odczytu/walidacji/zastosowania/resetu Configuration, rozpoczęcia
+commissioningu oraz zatrzymania lub restartu całej usługi.
+
 ## Osobna granica systemowa
 
 Start, stop i restart całego `sensor-host-v2.service` nie są operacjami
