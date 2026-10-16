@@ -50,6 +50,8 @@ recorder process logs rotate at 10 MiB with three backups. Runtime status and
 event-log failures are non-fatal to measurement recording. The supervisor also
 uses capped exponential restart backoff for repeatedly failing channels and
 publishes storage capacity so the dashboard can warn below 15% free space.
+The dashboard also reads lightweight host-wide CPU and RAM utilization from
+Linux procfs and exposes it in the host-state chips and `/api/dashboard`.
 
 The console reads those files by default.
 The dashboard reads the supervisor status/event files configured in `host/system_config.json`.
@@ -147,12 +149,12 @@ host/.venv/bin/python host/host_dashboard.py --config host/system_config.json --
 
 Then open `http://<host-ip>:8080/` on the local network. The dashboard detects
 the active configuration family. A host v2 profile selects a read-only adapter
-for `/run/sensor-system/host-v2-status.json` and bounded journald history. It
-shows process, storage, channels, nodes, cursors and data freshness without
-opening RS485 or active Capture WAL; POST control and live-sample endpoints are
-disabled. A legacy profile retains the previous supervisor/HDF5 adapter. Both
-modes expose JSON endpoints under `/api/dashboard`, `/api/channels`,
-`/api/events`, `/api/config`, and `/api/health`.
+for `/run/sensor-system/host-v2-status.json` and the read-only status action of
+Operations IPC. Its UI is limited to host health plus channels and nodes; file,
+Capture, Analysis CSV, event and log sections remain outside the dashboard.
+It does not open RS485 or active Capture WAL, and POST control remains disabled.
+A legacy profile retains the previous supervisor/HDF5 adapter. The primary
+read-only endpoints are `/api/dashboard`, `/api/channels` and `/api/health`.
 
 The dashboard and operator panel do not currently provide user authentication.
 Bind them to `127.0.0.1` unless remote access is required, and expose them only

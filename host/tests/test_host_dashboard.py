@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from host.common.host_metrics import HostMetrics
 from host.dashboard.app import DashboardRepository, DashboardServer
 
 
@@ -279,10 +280,17 @@ class DashboardRepositoryTests(unittest.TestCase):
             )
 
             repository = DashboardRepository(config_path)
-            payload = repository.dashboard_payload(limit=10)
+            with patch.object(
+                repository.host_metrics_sampler,
+                "sample",
+                return_value=HostMetrics(cpu_used_percent=12.5, memory_used_percent=37.5),
+            ):
+                payload = repository.dashboard_payload(limit=10)
 
             self.assertEqual(payload["config"]["system"]["site"], "hala-a")
             self.assertTrue(payload["supervisor"]["has_status"])
+            self.assertEqual(payload["supervisor"]["cpu_used_percent"], 12.5)
+            self.assertEqual(payload["supervisor"]["memory_used_percent"], 37.5)
             self.assertEqual(payload["overview"]["channels_running"], 1)
             self.assertEqual(payload["overview"]["nodes_online"], 1)
             self.assertEqual(payload["overview"]["samples_written_total"], 1200)

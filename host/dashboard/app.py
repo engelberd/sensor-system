@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from host.common.data_browser import DataRepository, FileDownload
+from host.common.host_metrics import HostMetricsSampler
 from host.common.runtime_status import JsonlEventWriter
 from host.common.system_config import HostSystemConfig
 from host.common.version import PROJECT_VERSION
@@ -71,6 +72,8 @@ INDEX_HTML = """<!doctype html>
       }
 
       * { box-sizing: border-box; }
+
+      [hidden] { display: none !important; }
 
       html { scroll-behavior: smooth; }
 
@@ -857,8 +860,8 @@ INDEX_HTML = """<!doctype html>
               <button class="btn" id="restart-all-btn" type="button">Restart all</button>
               <button class="btn secondary" id="purge-all-btn" type="button">Purge all</button>
               <a class="btn secondary" href="#channels">Przejdź do kanałów</a>
-              <a class="btn secondary" href="#data">Sekcja data</a>
-              <a class="btn secondary" href="#events">Ostatnie zdarzenia</a>
+              <a class="btn secondary" id="data-link" href="#data">Sekcja data</a>
+              <a class="btn secondary" id="events-link" href="#events">Ostatnie zdarzenia</a>
             </div>
           </div>
           <div class="hero-meta">
@@ -886,7 +889,7 @@ INDEX_HTML = """<!doctype html>
       <section class="section" id="channels">
         <div class="section-head">
           <h2 class="section-title">Kanały i węzły</h2>
-          <p class="section-note">Stan pracy, procesy, pliki wyjściowe i telemetria węzłów</p>
+          <p class="section-note">Stan pracy, transport, trwałość danych i świeżość węzłów</p>
         </div>
         <div class="channels" id="channels-grid"></div>
       </section>
@@ -1058,6 +1061,8 @@ INDEX_HTML = """<!doctype html>
       let dataSearchMode = false;
       let currentLogChannelFilter = "";
       let serviceControlBusy = false;
+      let dataAvailable = true;
+      let logsAvailable = true;
       const selectedDataPaths = new Set();
 
       function $(id) {
@@ -1129,6 +1134,15 @@ INDEX_HTML = """<!doctype html>
         return formatDate(value / 1000000);
       }
 
+      function formatDurationMs(value) {
+        if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+        const seconds = Math.max(0, Math.floor(value / 1000));
+        const days = Math.floor(seconds / 86400);
+        const hours = Math.floor((seconds % 86400) / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        return days > 0 ? `${days} d ${hours} h` : hours > 0 ? `${hours} h ${minutes} min` : `${minutes} min`;
+      }
+
       function basenamePath(value) {
         const text = String(value || "").trim();
         if (!text) {
@@ -1181,6 +1195,8 @@ INDEX_HTML = """<!doctype html>
         const overview = data.overview || {};
         const supervisor = data.supervisor || {};
         const systemLabel = [system.name, system.site].filter(Boolean).join(" / ");
+        dataAvailable = data.data_available !== false;
+        logsAvailable = data.logs_available !== false;
         $("hero-title").textContent = systemLabel || "Panel hosta";
 
         const heroCopy = [];
@@ -1193,7 +1209,9 @@ INDEX_HTML = """<!doctype html>
         if ((overview.nodes_without_samples || 0) > 0) {
           heroCopy.push(`Uwaga: ${formatNumber(overview.nodes_without_samples)} online bez próbek.`);
         }
-        if (supervisor.has_status) {
+        if (supervisor.has_status && data.dashboard_mode === "host-v2-read-only") {
+          heroCopy.push(`Host v2 raportuje stan ${supervisor.process_phase || "unknown"}.`);
+        } else if (supervisor.has_status) {
           heroCopy.push("Supervisor publikuje status runtime i zdarzenia.");
         } else {
           heroCopy.push("Konfiguracja jest dostępna, ale panel czeka jeszcze na pliki runtime z supervisora.");
@@ -1202,24 +1220,44 @@ INDEX_HTML = """<!doctype html>
 
         const chips = [];
         chips.push(chip(supervisor.has_status ? "status runtime obecny" : "brak statusu runtime", supervisor.has_status ? "good" : "warn"));
+        if (data.dashboard_mode === "host-v2-read-only") {
+          chips.push(chip(`host: ${supervisor.process_phase || "unknown"}`, supervisor.process_phase === "recording" ? "good" : "warn"));
+          chips.push(chip(`health: ${supervisor.health_level || "unknown"}`, supervisor.health_level === "healthy" ? "good" : "warn"));
+          if (supervisor.process_uptime_ms != null) chips.push(chip(`uptime: ${formatDurationMs(supervisor.process_uptime_ms)}`, "info"));
+          if (supervisor.supervisor_version) chips.push(chip(`host ${supervisor.supervisor_version}`, "muted"));
+        }
         if (supervisor.status_stale) {
           chips.push(chip(`dane nieaktualne (${formatNumber(supervisor.status_age_s || 0, 0)} s)`, "bad"));
         }
         if (supervisor.storage_free_bytes != null) {
           chips.push(chip(
-            `wolne miejsce: ${formatNumber(supervisor.storage_free_bytes / 1073741824, 1)} GB`,
+            `wolne miejsce: ${formatFloat(supervisor.storage_free_bytes / 1073741824, 1)} GB`,
             supervisor.storage_low ? "warn" : "good"
           ));
         }
+        if (supervisor.memory_used_percent != null) {
+          chips.push(chip(
+            `RAM: ${formatFloat(supervisor.memory_used_percent, 1)}%`,
+            supervisor.memory_used_percent >= 90 ? "warn" : "good"
+          ));
+        }
+        if (supervisor.cpu_used_percent != null) {
+          chips.push(chip(
+            `CPU: ${formatFloat(supervisor.cpu_used_percent, 1)}%`,
+            supervisor.cpu_used_percent >= 90 ? "warn" : "good"
+          ));
+        }
         chips.push(chip(`alerty: ${formatNumber(overview.attention_count || 0)}`, (overview.attention_count || 0) > 0 ? "warn" : "good"));
-        chips.push(chip(`błędy: ${formatNumber((overview.events_by_severity || {}).error || 0)}`, ((overview.events_by_severity || {}).error || 0) > 0 ? "bad" : "muted"));
-        chips.push(chip(`warn: ${formatNumber((overview.events_by_severity || {}).warning || 0)}`, ((overview.events_by_severity || {}).warning || 0) > 0 ? "warn" : "muted"));
+        if (data.events_available !== false) {
+          chips.push(chip(`błędy: ${formatNumber((overview.events_by_severity || {}).error || 0)}`, ((overview.events_by_severity || {}).error || 0) > 0 ? "bad" : "muted"));
+          chips.push(chip(`warn: ${formatNumber((overview.events_by_severity || {}).warning || 0)}`, ((overview.events_by_severity || {}).warning || 0) > 0 ? "warn" : "muted"));
+        }
         $("hero-chips").innerHTML = chips.join("");
 
         $("last-refresh").textContent = formatDate(data.generated_utc);
         $("last-runtime").textContent = supervisor.updated_utc
           ? `Ostatni update runtime: ${formatDate(supervisor.updated_utc)}`
-          : "Supervisor jeszcze nie zapisał statusu";
+          : "Host jeszcze nie opublikował statusu";
         if (data.read_only) {
           $("restart-all-btn").hidden = true;
           $("purge-all-btn").hidden = true;
@@ -1234,12 +1272,28 @@ INDEX_HTML = """<!doctype html>
         $("service-restart-btn").disabled = serviceControlBusy || serviceControl.active !== true;
         if (data.data_available === false) {
           $("data").hidden = true;
+          $("data-link").hidden = true;
+        }
+        if (data.logs_available === false) $("logs").hidden = true;
+        if (data.events_available === false && data.config_available === false) {
+          $("events").hidden = true;
+          $("events-link").hidden = true;
         }
       }
 
       function renderOverview(data) {
         const overview = data.overview || {};
+        const supervisor = data.supervisor || {};
         $("overview-note").textContent = overview.status_summary || "Brak danych";
+        if (data.dashboard_mode === "host-v2-read-only") {
+          $("metrics").innerHTML = [
+            metricCard("Host", String(overview.process_phase || "unknown").toUpperCase(), `health ${overview.health_level || "unknown"}`),
+            metricCard("Kanały", `${formatNumber(overview.channels_running || 0)} / ${formatNumber(overview.channels_enabled || 0)}`, `skonfigurowanych ${formatNumber(overview.channels_total || 0)}`),
+            metricCard("Przepływ próbek", `${formatNumber(overview.nodes_receiving_samples || 0)} / ${formatNumber(overview.nodes_enabled || 0)}`, `węzłów online ${formatNumber(overview.nodes_online || 0)}`),
+            metricCard("Storage", supervisor.storage_free_bytes == null ? "-" : `${formatFloat(supervisor.storage_free_bytes / 1073741824, 1)} GB`, supervisor.storage_minimum_available_bytes == null ? "wolne miejsce" : `rezerwa ${formatFloat(supervisor.storage_minimum_available_bytes / 1073741824, 1)} GB`),
+          ].join("");
+          return;
+        }
         $("metrics").innerHTML = [
           metricCard(
             "Kanały",
@@ -1264,7 +1318,105 @@ INDEX_HTML = """<!doctype html>
         ].join("");
       }
 
+      function renderV2NodeRow(node, channelEnabled = true) {
+        const hasAlerts = Array.isArray(node.alerts) && node.alerts.length > 0;
+        const stateKind = !channelEnabled ? "muted" : node.receiving_samples ? "good" : (node.online ? "warn" : "bad");
+        const stateLabel = !channelEnabled
+          ? "WYŁĄCZONY"
+          : node.sample_flow_state === "flowing"
+          ? "POMIAR"
+          : node.sample_flow_state === "idle"
+            ? "IDLE"
+            : node.sample_flow_state === "stalled"
+              ? "BRAK ŚWIEŻYCH PRÓBEK"
+              : "OFFLINE";
+        const identity = [
+          node.hardware_id ? `hw ${node.hardware_id}` : null,
+          node.board_revision != null ? `board ${node.board_revision}` : null,
+          node.firmware_version ? `fw ${node.firmware_version}` : null,
+        ].filter(Boolean).join(" · ");
+        const protocols = [
+          node.framing_protocol != null ? `framing ${node.framing_protocol}` : null,
+          node.application_protocol != null ? `app ${node.application_protocol}` : null,
+        ].filter(Boolean).join(" · ");
+        return `
+          <tr>
+            <td data-label="Węzeł">
+              <div class="node-name">${escapeHtml(node.name || `Node ${node.node_id}`)}</div>
+              <div class="node-meta mono">id=${escapeHtml(node.node_id)} · ${escapeHtml(identity || "brak identity")}</div>
+              <div class="node-meta mono">${escapeHtml(protocols || "protokoły -")}</div>
+            </td>
+            <td data-label="Stan">
+              ${statusDot(stateKind)} ${escapeHtml(stateLabel)}
+              <div class="node-meta">${escapeHtml(hasAlerts ? node.alerts.join(", ") : "bez aktywnych uwag")}</div>
+            </td>
+            <td data-label="Output ODR">
+              <span class="mono">${escapeHtml(formatFloat(node.output_odr_hz, 1))} Hz</span>
+              <div class="node-meta">profil ${escapeHtml(formatFloat(node.expected_odr_hz, 1))} Hz</div>
+            </td>
+            <td data-label="Cursory">
+              <span class="mono">rx ${escapeHtml(formatNumber(node.received_cursor))} · durable ${escapeHtml(formatNumber(node.durable_cursor))}</span>
+              <div class="node-meta">released ${escapeHtml(formatNumber(node.released_cursor))} · produced ${escapeHtml(formatNumber(node.produced_cursor))}</div>
+            </td>
+            <td data-label="Backlog">
+              <span class="mono">node ${escapeHtml(formatNumber(node.node_backlog))} · zapis ${escapeHtml(formatNumber(node.persistence_backlog))}</span>
+              <div class="node-meta">release ${escapeHtml(formatNumber(node.release_backlog))}</div>
+            </td>
+            <td data-label="Świeżość">
+              <span class="mono">measurement ${escapeHtml(node.last_measurement_age_ms == null ? "-" : `${formatNumber(node.last_measurement_age_ms)} ms`)}</span>
+              <div class="node-meta">time sync ${escapeHtml(node.last_time_sync_age_ms == null ? "-" : `${formatNumber(node.last_time_sync_age_ms)} ms`)}</div>
+            </td>
+          </tr>
+        `;
+      }
+
+      function renderV2Channel(channel) {
+        const metrics = channel.metrics || {};
+        const errorTotal = (metrics.decode_errors || 0) + (metrics.transaction_timeouts || 0) + (metrics.wire_attempt_failures || 0);
+        const runtimeCards = [
+          { label: "Transport", value: channel.port ? basenamePath(channel.port) : "-", sub: channel.baud ? `${formatNumber(channel.baud)} baud` : "baud -", title: channel.port || undefined },
+          { label: "Transakcje", value: formatNumber(metrics.transmissions || 0), sub: `błędy ${formatNumber(errorTotal)}` },
+          { label: "Measurement", value: formatNumber(metrics.measurement_persisted || 0), sub: `retry ${formatNumber(metrics.measurement_retries || 0)} · no data ${formatNumber(metrics.measurement_no_data || 0)}` },
+          { label: "Storage", value: formatNumber(metrics.storage_committed_records || 0), sub: `max zapis ${formatFloat((metrics.storage_maximum_persist_us || 0) / 1000, 1)} ms · błędy ${formatNumber(metrics.storage_failed_groups || 0)}` },
+          { label: "Time Sync", value: formatNumber(metrics.time_sync_submitted || 0), sub: `retry ${formatNumber(metrics.time_sync_retries || 0)} · backpressure ${formatNumber(metrics.time_sync_backpressure || 0)}` },
+          { label: "Pętla workera", value: formatNumber(channel.completed_steps || 0), sub: `max krok ${formatFloat((metrics.maximum_step_us || 0) / 1000, 1)} ms` },
+        ];
+        const displayedMode = channel.enabled ? (channel.operating_mode || channel.phase || "offline") : "disabled";
+        const phase = String(displayedMode).toUpperCase();
+        const phaseKind = displayedMode === "recording" || displayedMode === "running" ? "good" : displayedMode === "faulted" ? "bad" : displayedMode === "disabled" ? "muted" : "warn";
+        return `
+          <article class="channel-card panel">
+            <div class="channel-top">
+              <div>
+                <h3 class="channel-name">${escapeHtml(channel.label || channel.name)}</h3>
+                <div class="channel-subtitle">${escapeHtml(channel.name)} · channel ${escapeHtml(channel.channel_id)} · status ${escapeHtml(formatDate(channel.updated_utc))}</div>
+              </div>
+              <div class="chip-row">
+                ${chip(phase, phaseKind)}
+                ${chip(channel.health || "unknown", channel.health === "healthy" ? "good" : channel.health === "faulted" ? "bad" : "warn")}
+                ${channel.active_operation_id != null ? chip(`operacja ${formatNumber(channel.active_operation_id)}`, "info") : ""}
+                ${channel.attention_count ? chip(`uwagi ${formatNumber(channel.attention_count)}`, "warn") : ""}
+              </div>
+            </div>
+            <div class="runtime-grid">
+              ${runtimeCards.map((card) => `
+                <div class="runtime-card">
+                  <span class="label">${escapeHtml(card.label)}</span>
+                  <strong class="mono"${card.title ? ` title="${escapeHtml(card.title)}"` : ""}>${escapeHtml(card.value)}</strong>
+                  <div class="node-meta">${escapeHtml(card.sub)}</div>
+                </div>
+              `).join("")}
+            </div>
+            <table>
+              <thead><tr><th>Węzeł</th><th>Stan</th><th>Output ODR</th><th>Cursory</th><th>Backlog</th><th>Świeżość</th></tr></thead>
+              <tbody>${channel.nodes.length ? channel.nodes.map((node) => renderV2NodeRow(node, channel.enabled)).join("") : `<tr><td colspan="6"><div class="empty">Brak skonfigurowanych węzłów.</div></td></tr>`}</tbody>
+            </table>
+          </article>
+        `;
+      }
+
       function renderChannel(channel) {
+        if (channel.runtime_v2) return renderV2Channel(channel);
         const healthKind = chipClass(channel.health || "muted");
         let stateLabel = "STOPPED";
         if (!channel.enabled) {
@@ -1773,8 +1925,8 @@ INDEX_HTML = """<!doctype html>
           renderHero(data);
           renderOverview(data);
           renderChannels(data);
-          renderEvents(data);
-          renderConfig(data);
+          if (data.events_available !== false) renderEvents(data);
+          if (data.config_available !== false) renderConfig(data);
         } catch (error) {
           $("hero-copy").textContent = `Nie udało się pobrać danych panelu: ${error}`;
           $("overview-note").textContent = "Błąd odczytu";
@@ -1786,6 +1938,7 @@ INDEX_HTML = """<!doctype html>
       }
 
       async function loadLogs(force = false) {
+        if (!logsAvailable) return;
         const now = Date.now();
         if (!force && (now - lastLogsRefreshAt) < LOG_REFRESH_MS) {
           return;
@@ -2200,17 +2353,15 @@ INDEX_HTML = """<!doctype html>
       });
       $("config-close-btn").addEventListener("click", () => $("node-config-dialog").close());
 
-      refreshAll(true).catch((error) => {
-        $("hero-copy").textContent = `Nie udało się pobrać danych panelu: ${error}`;
-        $("logs-note").textContent = "Błąd odczytu logów";
+      async function startDashboard() {
+        await refreshAll(true);
+        if (dataAvailable) await browseData();
+        scheduleRefresh();
+      }
+
+      startDashboard().catch((error) => {
+        $("hero-copy").textContent = `Nie udało się uruchomić panelu: ${error}`;
       });
-      browseData().catch((error) => {
-        $("data-path").textContent = `Błąd ładowania data: ${error}`;
-        $("data-mode").textContent = "Tryb: błąd";
-        $("data-list").innerHTML = `<div class="empty">Nie udało się załadować sekcji data.</div>`;
-        $("data-summary").innerHTML = dataMetric("Status", "Błąd", "Sprawdź katalog danych i endpointy");
-      });
-      scheduleRefresh();
     </script>
   </body>
 </html>
@@ -3985,12 +4136,19 @@ class LivePreviewLeaseManager:
 
 
 class DashboardRepository:
-    def __init__(self, config_path: str | Path, default_event_limit: int = 40) -> None:
+    def __init__(
+        self,
+        config_path: str | Path,
+        default_event_limit: int = 40,
+        *,
+        host_metrics_sampler: HostMetricsSampler | None = None,
+    ) -> None:
         self.config_path = Path(config_path)
         self.default_event_limit = default_event_limit
         self.data_repository = DataRepository(self.config_path)
         self.channel_controls = ChannelControlRepository(self.config_path)
         self.live_preview_leases = LivePreviewLeaseManager()
+        self.host_metrics_sampler = host_metrics_sampler or HostMetricsSampler()
         self._live_file_cache: dict[str, tuple[float, list[Path]]] = {}
         self._live_file_bounds_cache: dict[str, tuple[float, tuple[datetime | None, datetime | None]]] = {}
 
@@ -4023,6 +4181,7 @@ class DashboardRepository:
         ]
         channels = self._build_channels(config, raw_status)
         overview = self._build_overview(channels, events, raw_status)
+        host_metrics = self.host_metrics_sampler.sample().to_dict()
         supervisor = {
             "has_status": raw_status is not None,
             "status_file": config.supervisor.status_file,
@@ -4037,6 +4196,7 @@ class DashboardRepository:
             "storage_free_bytes": raw_status.get("storage_free_bytes") if raw_status else None,
             "storage_used_percent": raw_status.get("storage_used_percent") if raw_status else None,
             "storage_low": overview["storage_low"],
+            **host_metrics,
         }
         return {
             "dashboard_version": DASHBOARD_VERSION,
@@ -5142,14 +5302,23 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     return
 
             if route in {"/api/data", "/api/runs"}:
+                if not getattr(self.repository, "supports_data_browser", True):
+                    self._write_json({"error": "data files are not exposed by the host v2 dashboard"}, status=HTTPStatus.NOT_FOUND)
+                    return
                 self._write_json(self.repository.data_payload(query.get("path", [None])[0]))
                 return
 
             if route == "/api/data/search":
+                if not getattr(self.repository, "supports_data_browser", True):
+                    self._write_json({"error": "data files are not exposed by the host v2 dashboard"}, status=HTTPStatus.NOT_FOUND)
+                    return
                 self._write_json(self.repository.data_search_payload(query.get("q", [None])[0]))
                 return
 
             if route in {"/api/data/download", "/api/runs/download"}:
+                if not getattr(self.repository, "supports_data_browser", True):
+                    self._write_json({"error": "data files are not exposed by the host v2 dashboard"}, status=HTTPStatus.NOT_FOUND)
+                    return
                 download = self.repository.data_download(query.get("path", [None])[0])
                 self._write_file_response(
                     download,
