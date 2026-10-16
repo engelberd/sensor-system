@@ -110,3 +110,16 @@ Capture WAL nadal zawiera pełny materiał źródłowy, więc katalog Analysis m
 bezpiecznie odbudować w v2 bez zmiany lub usuwania Capture. Po wdrożeniu v2 na
 Raspberry Pi stary katalog Analysis jest czyszczony i eksporter publikuje
 najnowsze zamknięte okno każdej aktywnej linii w nowym formacie.
+
+## Dowód wdrożenia
+
+Wdrożenie na Raspberry Pi 2026-10-16 opublikowało po jednym najnowszym oknie
+B/C/D/G/H, łącznie pięć produktów v2. Każde miało zero brakujących próbek.
+Przykładowe okno B ma nazwę `line_b-node_1-11:36-16.10.2026.csv`, 75273
+próbki, ustawione 125 Hz, wyznaczone 125.440668 Hz oraz czas pierwszej próbki
+`2026-10-16T11:36:53.332153+02:00` z oszacowaną niepewnością 2593 µs.
+Pierwsze wiersze miały fizycznie poprawny rząd wartości, w tym około
+`9.90 m/s²` na osi obciążonej grawitacją. Powtórny eksport nie utworzył
+duplikatów. Stary, odtwarzalny katalog v1 o rozmiarze 1,3 GB został usunięty;
+Capture WAL pozostał bez zmian. Po operacji recorder, timer i pięć kanałów
+pozostały aktywne, a Doctor zwrócił 34 OK, zero ostrzeżeń i błędów.
