@@ -81,3 +81,13 @@ rozwinięciu całej historycznej bazy Capture do wielokrotnie większego tekstu.
 Najwyższy opublikowany ordinal w nazwach CSV jest następnie kursorem: kolejne
 przebiegi eksportują wszystkie późniejsze okna po kolei. Capture z poprzednich
 epok pozostaje dostępny do jawnego eksportu offline.
+
+## Dowód wdrożenia
+
+Na Raspberry Pi timer opublikował pliki dla pięciu aktywnych linii B/C/D/G/H,
+a ponowne ręczne wykonanie zwróciło `created=0`, potwierdzając idempotency.
+Eksport zachował również negatywny przypadek z testu restartu: okno C nr 66 ma
+2083 próbki oraz 114181 brakujących numerów jako jawne zdarzenia
+`JournalOverflow`. Po poprawce takeover kolejne zamknięte okno C nr 67 ma
+141965 próbek, zero brakujących próbek i jeden `ProcessingReset`. CSV jest więc
+widokiem dowodów Capture, a nie mechanizmem ukrywającym luki.

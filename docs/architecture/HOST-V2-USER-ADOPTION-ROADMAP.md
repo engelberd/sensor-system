@@ -1,34 +1,39 @@
 # Roadmapa operacyjnego wdrożenia hosta v2
 
-Status: plan przyjęty do realizacji krok po kroku. Dokument opisuje drogę od
-działającego rdzenia rejestratora do systemu, który operator może bezpiecznie
-uruchomić na Raspberry Pi na test 24/7 i nadzorować zdalnie.
+Status: Etapy 1–3 i control plane MVP są wdrożone; bieżącą bramką jest
+kwalifikacja do testu 24/7. Dokument opisuje drogę od działającego rdzenia
+rejestratora do systemu, który operator może bezpiecznie uruchomić na
+Raspberry Pi i nadzorować zdalnie.
 
 ## 1. Punkt wyjścia
 
-Rdzeń akwizycji nie jest już głównym ryzykiem. Sześć fizycznych linii RS485
-przeszło 60-sekundowy przebieg oraz 30-sekundowy przebieg po restarcie procesu.
-W obu testach Capture i Time WAL zachowały ciągłość, nie wystąpiły gapy,
-timeouty, błędy dekodowania, retry ani backpressure. Node A, B, C, D, G i H
-otrzymały firmware `0.5.6`; E i F nie są jeszcze podłączone. Obecnie B, C, D,
-G i H pracują pod usługą systemd, a A jest odizolowana po
-`Faulted/InvalidSample` i czeka na kontrolowany reset oraz aktualizację do
-`0.5.7` opisaną w
-[RASPBERRY-PI-NEXT-SESSION.md](RASPBERRY-PI-NEXT-SESSION.md).
+Rdzeń akwizycji działa obecnie na pięciu fizycznych liniach B/C/D/G/H z
+firmware `0.5.8`; C pracuje z output ODR 250 Hz, a pozostałe z 125 Hz. A jest
+lokalnie wyłączona: pozostaje na 0.5.6 w stanie `Faulted` i wymaga jednorazowego
+restartu zasilania przed dalszą obsługą po RS485. E i F nie są podłączone.
+Recorder oraz automatyczny eksport CSV działają jako usługi systemd.
+
+Krótki baseline był czysty, lecz późniejszy restart procesu ujawnił prawdziwy
+błąd takeover pełnego journala C. Capture zachował 114181 brakujących numerów
+jako `JournalOverflow`, zamiast ukryć utratę. Od `277dc14` host przy przejęciu
+node zastanego w `Recording` wykonuje odtworzenie trwałych cursorów,
+`Stop → drain → Start` i dopiero potem uruchamia zwykły scheduler. Fizyczny test
+po wdrożeniu dał 34 Doctor OK, zero ostrzeżeń, świeży TimeSync na wszystkich
+pięciu node i następne zamknięte okno C bez gapów.
 
 Gotowe są:
 
 - `sensor-host validate`, `discover` i `run`;
 - wielokanałowy runtime z bounded queues i kontrolowanym shutdownem;
 - Capture WAL, Time WAL, recovery, walidacja i eksport offline;
+- automatyczny Analysis CSV z około dziesięciominutowych zamkniętych okien;
 - izolacja awarii kanału, ponowne dołączanie node i polityka TimeSync;
 - lokalny profil systemu Raspberry Pi ze stabilnymi nazwami portów;
-- przykład usługi systemd dla rejestratora.
+- wdrożone usługi systemd dla rejestratora i automatycznego eksportu CSV.
 
-Warstwa operatora nadal pochodzi w większości ze starego hosta. Natywny
-`hostctl doctor` czyta już profil i Runtime Status v1, a recorder v2 jest
-zainstalowany i uruchamiany automatycznie przez systemd. Dashboard nadal czyta
-stare pliki statusu i HDF5.
+Warstwa operatora korzysta już z natywnego `hostctl` v2, Runtime Status v1 i
+Operations API. Dashboard nadal czyta stare pliki statusu i HDF5, dlatego jest
+odłożony do czasu zbudowania go jako cienkiego klienta gotowego API.
 
 Aktualizacja 2026-10-13: główny `hostctl` został odcięty od runtime legacy.
 Udostępnia tylko recorder, dane, serwis node i systemd dla V2. Stare komendy
@@ -306,6 +311,12 @@ Kryterium ukończenia: zimny boot uruchamia system bez sesji SSH, restart proces
 i całego Raspberry Pi zachowuje ciągłość jawną w WAL, a `systemctl stop` zawsze
 kończy się kontrolowanym shutdownem w wyznaczonym czasie.
 
+Restart procesu z 2026-10-16 potwierdził poprawiony takeover na pięciu liniach:
+wszystkie wróciły do Recording, C odrobił ogon do bieżącego cursora i TimeSync
+został zapisany na każdym node. Zamknięte okno C nr 67 ma 141965 próbek, zero
+braków oraz jeden oczekiwany `ProcessingReset`. Do pełnego zamknięcia kryterium
+pozostaje zimny restart całego Raspberry Pi i test nagłego przerwania procesu.
+
 ### Etap 4 — dashboard v2 w trybie obserwacji — pierwszy przyrost wdrożony
 
 Na początek wykorzystamy istniejący interfejs strony, lecz dodamy osobny adapter
@@ -437,7 +448,7 @@ zdalnego rozwoju. Test 72-godzinny potwierdzi trend zasobów i politykę storage
 Te elementy są częścią planu produktu, ale nie blokują pierwszego nadzorowanego
 testu 24/7:
 
-- pozostałe Operations API per node, operacje grupowe i trwały audit;
+- operacje grupowe oraz dalsze Operations API dodawane według potrzeb;
 - dynamiczne dodawanie konfiguracji E/F i docelowy rejestr tożsamości;
 - bezpieczny podgląd wybranych próbek na żywo;
 - godzinny compactor Capture → Archive;
@@ -449,19 +460,18 @@ testu 24/7:
 
 ## 6. Decyzja o najbliższej pracy
 
-Status runtime, `doctor`, automatyczny recorder systemd i spójny interfejs
-`hostctl` V2 oraz pierwszy pion Operations IPC dla status/Maintenance/Resume
-są zamknięte lokalnie. Fizyczny gate nowego `hostctl update`
-pozostaje do wykonania przy najbliższej planowanej aktualizacji noda; nie
-wykonujemy zapisu flash wyłącznie w celu testu CLI.
+Status runtime, `doctor`, systemd, spójny `hostctl` V2, Operations IPC,
+Configuration, Commissioning, RestartNode i trwały audyt operacji są gotowe.
+HIL kanału B na firmware 0.5.8 potwierdził Get/Apply/Reset, pusty skan
+commissioning, zdalny restart, rollover po zmianie epoki i powrót do Recording.
+AssignAddress nadal wymaga rzeczywistego nieprzypisanego node, ale nie blokuje
+testu ciągłego obecnej topologii.
 
-Bieżąca ścieżka produktu domknęła Configuration per node oraz bounded
-Commissioning i RestartNode przez Operations API i `hostctl`. Mutacje
-konfiguracji przeliczają admission całego kanału, aktualizują scheduler oraz
-zapisują trwałą historię. HIL kanału B na firmware 0.5.8 potwierdził
-Get/Apply/Reset, pusty skan commissioning, zdalny restart, rollover po zmianie
-epoki i powrót do Recording. Najbliższą bramką jest Scan/Assign z rzeczywistym
-nieprzypisanym node, a następnie trwały audit operacji operatorskich.
-Następnie powstanie godzinny compactor Archive.
-Dashboard pozostaje ostatnim, cienkim klientem API. Nie
-tworzymy dla tych funkcji drugiego modelu stanu ani osobnej ścieżki RS485.
+Najbliższa praca to kwalifikacja Etapu 7: najpierw godzinny przebieg pięciu
+linii, walidacja wszystkich zamkniętych Capture i Time WAL, zgodność CSV,
+pomiar przyrostu storage, CPU, RSS, I/O wait oraz fsync latency. Po analizie
+wyniku test rośnie do 6 i 24 godzin. Osobnymi obowiązkowymi próbami pozostają
+kill procesu, restart całego Raspberry Pi, odłączenie i powrót jednego node
+oraz utrata całego konwertera. Dashboard i Archive pozostają poza MVP zgodnie
+z bieżącą decyzją produktu; nie tworzymy dla nich drugiego modelu stanu ani
+osobnej ścieżki RS485.

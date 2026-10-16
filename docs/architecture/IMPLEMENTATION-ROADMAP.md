@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-15
+- Ostatnia aktualizacja: 2026-10-16
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -613,6 +613,16 @@ exchange, stały `boot_epoch`, brak decode errors i timeoutów oraz path delay
 12,7–17,8 ms przy 115200 bit/s. Następna analiza ma odtworzyć czas i niepewność
 bez używania nazw plików ani przypadkowego czasu odbioru pakietu.
 
+Wielokanałowy restart procesu na Raspberry Pi ujawnił szczególny stan
+startowy: node C 250 Hz pozostawał w `Recording` z pełną retencją, więc
+Measurement miał stale priorytet ochrony przed overflow i TimeSync nie dostał
+slotu. Rozwiązanie znajduje się w kompozycji kanału, a nie w wyjątku
+schedulera. Takeover zastanego `Recording` wykonuje odtworzenie durable sesji,
+`Stop`, drain zatrzymanego ogona, `Start` i dopiero potem normalne planowanie.
+HIL po wdrożeniu potwierdził świeży TimeSync na wszystkich pięciu liniach,
+zerowy backlog C i brak nowych gapów. Scheduler zachowuje więc niezmiennik, że
+TimeSync nie wymusza transakcji kosztem próbki przy zerowej retencji.
+
 ### Etap 9 — `HostCoordinator` i skala 1–16 channels
 
 Zakres: konfiguracja topologii, globalny budżet CPU/RAM/storage, staggered start,
@@ -814,8 +824,9 @@ Bieżąca kolejność implementacji:
    prawdziwy codec w symulacji 1/4/8 channels;
 4. odczyt oraz mutacje Configuration per node;
 5. wyłączne okno Commissioning per channel i handshake przydzielonego node;
-6. **Pierwszy pion gotowy:** bounded lokalne IPC i adapter `hostctl` dla status,
-   Maintenance i Resume; pozostają rozszerzenie per node oraz trwały audit;
+6. **Gotowe:** bounded lokalne IPC, adapter `hostctl`, operacje per node oraz
+   trwały audit obejmują Status, Maintenance, Resume, Configuration,
+   Commissioning i RestartNode;
 7. operacje grupowe z wynikiem per target;
 8. dopiero potem dashboard jako cienki klient tego samego API.
 
@@ -1023,20 +1034,27 @@ Następne fragmenty mają stałą kolejność zależności:
    granicę Capture, koordynator rejestruje Time WAL, a dopiero po obu durable
    wynikach wymieniane są `NodeSession` i cursory schedulera. Maintenance i
    Resume są dostępne przez `hostctl channel` bez dostępu klienta do RS485.
-3. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
+3. **Gotowe dla procesu zastającego Recording:** takeover zatrzymuje node,
+   drenuje zatrzymany ogon do trwałego cursora, ponownie uruchamia akwizycję i
+   dopiero wtedy wznawia Measurement/TimeSync.
+4. Rozszerzyć gotowy szczęśliwy pion symulacyjny ośmiu niezależnych kanałów o
    awarię jednej linii, opóźniony storage oraz globalny storage fault.
-4. Uruchomić Raspberry Pi kolejno z 1, 4 i 8 kanałami. Zmierzyć RTT, turnaround,
+5. Częściowo gotowe: Raspberry Pi z pięcioma aktywnymi liniami potwierdził
+   czysty restart i automatyczny eksport. Dokończyć jawne gate 1/4/8 oraz
+   zmierzyć RTT, turnaround,
    decode errors, retry, RSS, CPU, I/O wait, fsync latency, backlog i TimeSync.
-5. Powtórzyć HIL z wieloma node na jednym kanale, długim przewodem,
+6. Powtórzyć HIL z wieloma node na jednym kanale, długim przewodem,
    kontrolowanymi zakłóceniami, restartem procesu hosta i utratą zasilania.
-6. Potwierdzić strumieniowy eksport Capture do CSV na rzeczywistych danych i
+7. **Gotowe na danych Raspberry Pi:** strumieniowy eksport Capture do CSV
+   zachowuje próbki, jawne luki, continuity breaks i ODR; potwierdzić jeszcze
    otwieranie wyniku w MATLAB/Python. Archive, kompresję i uploader wykonać
    dopiero po MVP, jeśli będą potrzebne.
-7. Na końcu dostroić wyłącznie profile pojemności na podstawie pomiarów; nie
+8. Na końcu dostroić wyłącznie profile pojemności na podstawie pomiarów; nie
    zmieniać przy tym domeny ani formatu Capture.
 
-Fizycznie zatwierdzony obraz protocol 5 ma wersję `0.5.6`, capabilities schema
-2 i reklamuje Time Service. Migracja `0.5.4` → `0.5.5` przeszła w całości po RS485: fail-closed identity,
+Pierwszy fizycznie zatwierdzony obraz protocol 5 miał wersję `0.5.6`,
+capabilities schema 2 i reklamował Time Service. Migracja `0.5.4` → `0.5.5`
+przeszła w całości po RS485: fail-closed identity,
 ograniczony do dokładnej wersji mostek schema 1, Idle → Maintenance, wejście do
 bootloadera, zapis i CRC 153088 B, start trial oraz confirm po pełnym handshake.
 Następnie cykl Measurement zebrał 256 kolejnych próbek bez gap i zakończył się
@@ -1069,6 +1087,17 @@ retry, storage failures oraz backpressure. Dłuższy przebieg zużył maksymalni
 Artefakty pozostają lokalnie poza Git. To jest baseline dla sześciu fizycznych
 linii, nie końcowa kwalifikacja 1/4/8 ani test długotrwały.
 
+Późniejszy rollout firmware 0.5.8 i automatycznego eksportu CSV pracuje na
+liniach B/C/D/G/H; A jest lokalnie wyłączony do jednorazowego restartu
+zasilania, a E/F nie są podłączone. Restart procesu 2026-10-16 ujawnił, że
+bezpośrednie przejęcie node C nagrywającego przy 250 Hz i pełnym journalu może
+utrzymywać Measurement w recovery priority bez slotu TimeSync. Okno 66
+zachowało 114181 jawnych braków `JournalOverflow`, więc wynik nie został
+uznany za stabilny. Po dodaniu automatycznego `Stop → drain → Start` dla
+zastanego `Recording` powtórny restart dał 34 Doctor OK, zero ostrzeżeń i
+świeży TimeSync na wszystkich pięciu node. Okno 67 zamknięte przy tym restarcie
+ma 141965 próbek, zero braków i jeden oczekiwany `ProcessingReset`.
+
 Ostateczny profil pojemności wymaga pomiarów HIL przy docelowym ODR, obciążeniu
 core 1, retransmisjach i najdłuższej przerwie w odpytywaniu node. Wartości
 startowe pozostaną stałymi kompozycji, aby strojenie nie przebudowywało domeny.
@@ -1089,6 +1118,9 @@ trwałą zmianą node i odpowiedzią hosta. Commissioning i RestartNode są
 podłączone przez ten sam bounded control plane. Fizyczny HIL firmware 0.5.8 na
 kanale B potwierdził Get/Apply/Reset, pusty ScanUnassigned, RestartNode, zmianę
 epoki, rollover i ResumeRecording. Trwały per-channel audit zapisuje każde
-przejście operacji przed wykonaniem i po wyniku. Bieżącą bramką jest Scan/Assign
-z rzeczywistym nieprzypisanym node oraz pełny wielokanałowy rollout firmware.
-Dashboard pozostaje poza MVP do czasu ustabilizowania API.
+przejście operacji przed wykonaniem i po wyniku. Bieżącą bramką MVP jest
+kwalifikacja pięciu linii: przebieg 1 h, następnie 6 h i 24 h, wraz z testami
+kill procesu, restartu Raspberry Pi, odłączenia node i utraty konwertera.
+Scan/Assign z rzeczywistym nieprzypisanym node pozostaje osobnym gate
+commissioning i nie blokuje testu obecnej topologii. Dashboard pozostaje poza
+MVP do czasu zakończenia kwalifikacji recorderowej.

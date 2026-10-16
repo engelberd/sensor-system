@@ -1,7 +1,7 @@
 # Audyt gotowości rdzenia host v2 i node v2
 
 - Status: obowiązujący przegląd ryzyk i parametrów
-- Ostatnia aktualizacja: 2026-10-15
+- Ostatnia aktualizacja: 2026-10-16
 - Zakres: firmware node protocol 5, host v2 1–16 kanałów i RS485 115200 bit/s
 
 ## Ocena
@@ -12,8 +12,8 @@ potwierdził update A/B, rollback, trial confirm i dziesięciominutowy cykl
 Measurement bez gap. `sensor-host` składa produkcyjny proces 1–16 kanałów:
 waliduje profil, wykonuje fail-closed discovery i admission, odzyskuje Capture
 oraz Time WAL, uruchamia niezależne workery i zamyka je kontrolowanie po
-`SIGINT`/`SIGTERM`. Symulacja 1/4/8 przechodzi; następną bramką jest fizyczna
-macierz na Raspberry Pi. Capabilities schema 2 odpowiada faktycznym output
+`SIGINT`/`SIGTERM`. Symulacja 1/4/8 oraz fizyczna macierz pięciu aktywnych linii
+na Raspberry Pi przechodzą. Capabilities schema 2 odpowiada faktycznym output
 rates i rodzajowi obrazu. Configuration, Commissioning i RestartNode mają już
 zgodne codeki, bounded wykonanie oraz publiczną ścieżkę Operations API przez
 jedynego właściciela RS485. HIL na Raspberry Pi z firmware 0.5.8 potwierdził
@@ -43,9 +43,11 @@ wymaga rzeczywistego nieprzypisanego node.
 3. Production/Diagnostic zmienia dziś stan lifecycle, lecz nie steruje jeszcze
    kompletną, budżetowaną telemetrią po RS485. Diagnostics jest read-only;
    osobna polityka kompaktowego Health nadal wymaga implementacji.
-4. Fizycznie potwierdzono jeden node na jednym kanale. Nadal trzeba zmierzyć
-   wiele node na kanale, macierz 1/4/8 portów, długi przewód, zakłócenia,
-   restart procesu i utratę zasilania.
+4. Fizycznie potwierdzono pięć równoległych linii z jednym node na linii.
+   Kontrolowany restart procesu ma już bezpieczny takeover zastanego
+   `Recording`, ale wymaga jeszcze powtarzalnej kwalifikacji i testu utraty
+   zasilania. Nadal trzeba zmierzyć wiele node na kanale, pełną macierz 1/4/8
+   portów, długi przewód i kontrolowane zakłócenia.
 5. MVP używa kompaktowego Capture WAL i gotowego strumieniowego eksportu CSV.
    Trzeba potwierdzić eksport na długim nagraniu oraz wykonać benchmark na
    docelowym SSD. Archive, kompresja i uploader nie blokują MVP.
@@ -56,6 +58,25 @@ zero timeoutów, decode errors, retry i storage failures. A pozostaje na 0.5.6
 w `Faulted`; ta wersja powstała przed ratunkowym PrepareUpdate/Restart z tego
 stanu i wymaga jednorazowego restartu zasilania przed aktualizacją po RS485.
 Lokalny override wyłącza wyłącznie A. E i F nie są fizycznie podłączone.
+
+Rollout automatycznego Analysis CSV 2026-10-16 ujawnił błąd takeover po
+restarcie procesu. Linia C przy 250 Hz startowała z pełną retencją 2048 próbek;
+priorytet ochrony Measurement słusznie nie oddawał wtedy slotu TimeSync, ale
+ciągła akwizycja nie pozwalała odrobić ogona. Okno 66 zachowało dokładny skutek:
+2083 próbki i 114181 brakujących numerów oznaczonych `JournalOverflow`.
+Ręczne Maintenance → Resume zatrzymało produkcję, wydrenowało ogon i
+natychmiast przywróciło TimeSync, co rozdzieliło błąd startu od wydajności
+stałej kanału.
+
+Host od commitu `277dc14` stosuje tę samą regułę automatycznie. Jeżeli bootstrap
+zastaje node w `Recording`, najpierw odtwarza trwałe sesje Capture, następnie
+wykonuje `Stop`, drenuje zatrzymany ogon do durable cursor, wykonuje `Start` i
+dopiero wtedy wznawia scheduler. Fizyczny restart pięciu linii po wdrożeniu
+dał 34 wyniki Doctor OK, zero ostrzeżeń, świeży TimeSync na każdym node i brak
+timeoutów, decode errors, retry oraz storage failures. Zamknięte przy restarcie
+okno C nr 67 ma 141965 próbek, zero brakujących próbek i jeden jawny
+`ProcessingReset`. To zamyka znalezioną usterkę, lecz nie zastępuje soak ani
+testu nagłej utraty zasilania.
 
 ## Przepustowość nowego Measurement Service
 
@@ -174,8 +195,10 @@ a nie strojenia instalacji.
 
 ## Kolejność dalszej pracy
 
-1. Wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node.
-2. Usunąć flash write z pozostałych hot path.
-3. Wykonać powtarzalny HIL restartu, restart po zatrzymaniu heartbeat core 1,
-   wielu node, długiego przewodu, zakłóceń, wolnego storage i soak.
-4. Dodać kompaktową politykę Health z osobnym budżetem Production.
+1. Wykonać powtarzalny HIL takeover po restarcie procesu, kill/power-loss oraz
+   wielogodzinny soak z kontrolą gapów, TimeSync i cursorów.
+2. Wykonać HIL Scan/Assign z rzeczywistym nieprzypisanym node.
+3. Usunąć flash write z pozostałych hot path.
+4. Wykonać HIL restart po zatrzymaniu heartbeat core 1, wielu node na kanale,
+   długiego przewodu, zakłóceń i wolnego storage.
+5. Dodać kompaktową politykę Health z osobnym budżetem Production.
