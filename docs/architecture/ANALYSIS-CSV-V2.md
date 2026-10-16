@@ -99,15 +99,19 @@ interwał. Ręczne wykonanie tej samej operacji:
 ./hostctl analysis export-new
 ```
 
-Najprostszy loader Python znajduje trzy pliki na podstawie ścieżki głównego
-CSV, sprawdza ich zgodność oraz tworzy wektor czasu z wyznaczonego ODR:
+Moduł `host_v2/analysis/load_analysis_window.py` jest małym elementem używanym
+przez notebooki analityczne. Znajduje trzy pliki na podstawie ścieżki głównego
+CSV, sprawdza ich zgodność oraz tworzy wektor czasu z wyznaczonego ODR. Można
+go również uruchomić bezpośrednio do szybkiej kontroli okna:
 
 ```bash
 python host_v2/analysis/load_analysis_window.py \
   'var/analysis/line-b/line_b-node_1-11:36-16.10.2026.csv'
 ```
 
-W notebooku:
+Minimalny notebook startowy znajduje się w
+`host_v2/analysis/analysis_window.ipynb`. Własny notebook może użyć loadera
+bez kopiowania logiki formatu plików:
 
 ```python
 from host_v2.analysis.load_analysis_window import load_window
