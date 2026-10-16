@@ -11,10 +11,51 @@ from unittest.mock import patch
 
 from host.common.host_metrics import HostMetrics
 from host.dashboard.app import DashboardServer
-from host.dashboard.v2 import V2DashboardRepository, is_v2_profile
+from host.dashboard.v2 import V2DashboardRepository, is_v2_profile, load_v2_profile
 
 
 class V2DashboardRepositoryTests(unittest.TestCase):
+    def test_profile_overlay_preserves_stable_channel_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "base.json"
+            active = root / "active.json"
+            base.write_text(
+                json.dumps(
+                    {
+                        "channels": [
+                            {
+                                "name": "line-b",
+                                "channel_id": 2,
+                                "enabled": True,
+                                "nodes": [
+                                    {"id": 1, "hardware_id": "0102030405060708"}
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            active.write_text(
+                json.dumps(
+                    {
+                        "extends": "base.json",
+                        "channels": [{"name": "line-b", "enabled": False}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merged = load_v2_profile(active)
+
+            self.assertFalse(merged["channels"][0]["enabled"])
+            self.assertEqual(merged["channels"][0]["channel_id"], 2)
+            self.assertEqual(
+                merged["channels"][0]["nodes"][0]["hardware_id"],
+                "0102030405060708",
+            )
+
     def _fixture(self, temp_dir: Path, *, updated_unix_ms: int | None = None) -> tuple[Path, Path]:
         common = temp_dir / "common.json"
         config = temp_dir / "system.json"

@@ -31,16 +31,34 @@ STATUS_STALE_AFTER_S = 30.0
 JOURNAL_CACHE_SECONDS = 5.0
 
 
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in overlay.items():
-        if key == "extends":
-            continue
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
+def _deep_merge(base: Any, overlay: Any, section: str | None = None) -> Any:
+    if isinstance(base, dict) and isinstance(overlay, dict):
+        merged = dict(base)
+        for key, value in overlay.items():
+            if key == "extends":
+                continue
+            merged[key] = (
+                _deep_merge(merged[key], value, key) if key in merged else value
+            )
+        return merged
+    if isinstance(base, list) and isinstance(overlay, list) and section in {"channels", "nodes"}:
+        merged = list(base)
+        identity_key = "name" if section == "channels" else "id"
+        positions = {
+            item.get(identity_key): index
+            for index, item in enumerate(merged)
+            if isinstance(item, dict) and identity_key in item
+        }
+        for item in overlay:
+            identity = item.get(identity_key) if isinstance(item, dict) else None
+            if identity in positions:
+                index = positions[identity]
+                merged[index] = _deep_merge(merged[index], item, section)
+            else:
+                positions[identity] = len(merged)
+                merged.append(item)
+        return merged
+    return overlay
 
 
 def load_v2_profile(path: Path, seen: set[Path] | None = None) -> dict[str, Any]:
