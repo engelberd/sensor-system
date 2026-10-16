@@ -17,17 +17,19 @@ podana niżej.
    operatora, aktualizacja node i jawnie wycofane komendy legacy.
 5. [Operations API v1](architecture/OPERATIONS-API-V1.md) — targety, tryby,
    idempotency i bounded command path dla sterowania per channel/per node.
-6. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
+6. [Operator HTTP API v1](architecture/OPERATOR-HTTP-API-V1.md) — cienki,
+   asynchroniczny adapter dashboardu do tego samego Operations API.
+7. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
    ryzyka, realne granice wydajności i mapa parametrów.
-7. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
+8. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
    implementacja nie może naruszyć.
-8. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
+9. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
    znaczenie próbek, sekwencji, luk, czasu i okien danych.
-9. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
+10. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
    — godzinne produkty, watermark, wysyłka i retencja.
-10. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
+11. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
    zasady jednej magistrali z wieloma node.
-11. [Host v2 README](../host_v2/README.md) — realne drzewo kodu i polecenia
+12. [Host v2 README](../host_v2/README.md) — realne drzewo kodu i polecenia
    weryfikacji.
 
 Logiczny strumień node łączący zwarty ring próbek z dokładnymi lukami

@@ -317,7 +317,7 @@ został zapisany na każdym node. Zamknięte okno C nr 67 ma 141965 próbek, zer
 braków oraz jeden oczekiwany `ProcessingReset`. Do pełnego zamknięcia kryterium
 pozostaje zimny restart całego Raspberry Pi i test nagłego przerwania procesu.
 
-### Etap 4 — dashboard v2 w trybie obserwacji — pierwszy przyrost wdrożony
+### Etap 4 — dashboard v2 i sterowanie kanałem — drugi przyrost gotowy lokalnie
 
 Na początek wykorzystamy istniejący interfejs strony, lecz dodamy osobny adapter
 danych v2. Adapter czyta wyłącznie wersjonowany snapshot i bezpiecznie
@@ -348,9 +348,8 @@ wyłącznie ograniczony Runtime Status v1 oraz bounded ogon
 `sensor-host-v2.service` z journald. Pokazuje fazę procesu, storage, stan
 kanałów, identity, firmware, ODR, świeżość pomiaru i TimeSync oraz cztery
 cursory każdego dostępnego node. Status starszy niż 30 sekund przechodzi do
-stale/offline. Wszystkie endpointy POST i podgląd aktywnego Capture są w tym
-trybie odrzucone, więc dashboard nie otwiera RS485, nie czyta aktywnego WAL i
-nie steruje lifecycle.
+stale/offline. Podgląd aktywnego Capture i legacy POST pozostają odrzucone.
+Dashboard nie otwiera RS485 ani aktywnego WAL.
 
 Na Raspberry Pi adapter odczytał działający proces degraded, pięć kanałów i
 pięć node online oraz odizolowaną `line-a`; żądanie sterujące otrzymało HTTP
@@ -363,6 +362,14 @@ publikuje jeszcze bezpośrednio: dokładne samples/s i liczniki gap/reconnect,
 ostatni zapisany wynik `doctor`, zweryfikowana lista zakończonych okien Capture
 oraz wyliczony horyzont storage. Podgląd surowych próbek pozostaje odłożony
 zgodnie z granicą etapu.
+
+Drugi przyrost dodaje bounded Operator HTTP API jako cienki adapter do
+istniejącego Operations IPC. Endpointy obsługują pełny katalog pojedynczych
+operacji kanału i node, zwracają `operation_id` i pozwalają odpytąć terminalny
+wynik bez blokowania requestu HTTP. Dashboard pokazuje obecnie bezpieczne
+przejścia Recording → Maintenance → Recording oraz restart node w dozwolonym
+trybie. Formularz Configuration, panel Commissioning i osobny helper systemd
+dla start/stop/restart/doctor pozostają następnymi przyrostami UI.
 
 ### Etap 5 — minimalne bezpieczne sterowanie
 

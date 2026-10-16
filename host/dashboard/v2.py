@@ -9,6 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from host.dashboard.v2_operations import (
+    DEFAULT_OPERATIONS_SOCKET,
+    OperationsIpcClient,
+    OperationsIpcClientError,
+    fresh_operation_id,
+)
+
 
 DEFAULT_STATUS_PATH = Path("/run/sensor-system/host-v2-status.json")
 DEFAULT_SERVICE_UNIT = "sensor-host-v2.service"
@@ -90,6 +97,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 class V2DashboardRepository:
     read_only = True
+    supports_v2_operations = True
     supports_live_preview = False
     supports_data_browser = False
 
@@ -100,13 +108,113 @@ class V2DashboardRepository:
         *,
         status_path: str | Path = DEFAULT_STATUS_PATH,
         service_unit: str = DEFAULT_SERVICE_UNIT,
+        operations_socket: str | Path = DEFAULT_OPERATIONS_SOCKET,
+        operations_client: OperationsIpcClient | None = None,
     ) -> None:
         self.config_path = Path(config_path)
         self.default_event_limit = default_event_limit
         self.status_path = Path(status_path)
         self.service_unit = service_unit
+        self.operations = operations_client or OperationsIpcClient(operations_socket)
         self._journal_lock = threading.Lock()
         self._journal_cache: tuple[float, int, list[dict[str, Any]]] | None = None
+
+    def operator_capabilities_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "operations_transport": "host-v2-unix-datagram",
+            "submission": "asynchronous",
+            "service_control": False,
+            "channel_operations": [
+                "enter_maintenance",
+                "resume_recording",
+                "scan_unassigned",
+                "assign_address",
+            ],
+            "node_operations": [
+                "get_configuration",
+                "validate_configuration",
+                "apply_configuration",
+                "reset_configuration",
+                "restart_node",
+            ],
+        }
+
+    def operation_status_payload(self, channel_id: int) -> dict[str, Any]:
+        self._validate_channel_id(channel_id)
+        return self.operations.status(channel_id)
+
+    def operation_result_payload(self, channel_id: int, operation_id: int) -> dict[str, Any]:
+        self._validate_channel_id(channel_id)
+        if operation_id <= 0 or operation_id >= 1 << 64:
+            raise ValueError("operation_id must be in 1..2^64-1")
+        return self.operations.get(channel_id, operation_id)
+
+    def submit_operation_payload(
+        self,
+        channel_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._validate_channel_id(channel_id)
+        operation = payload.get("operation")
+        allowed = {
+            "enter_maintenance",
+            "resume_recording",
+            "get_configuration",
+            "validate_configuration",
+            "apply_configuration",
+            "reset_configuration",
+            "restart_node",
+            "scan_unassigned",
+            "assign_address",
+        }
+        if operation not in allowed:
+            raise ValueError("unsupported host-v2 operation")
+
+        operation_id = payload.get("operation_id", fresh_operation_id())
+        if isinstance(operation_id, bool) or not isinstance(operation_id, int):
+            raise ValueError("operation_id must be an integer")
+        if operation_id <= 0 or operation_id >= 1 << 64:
+            raise ValueError("operation_id must be in 1..2^64-1")
+
+        request: dict[str, Any] = {
+            "channel_id": channel_id,
+            "operation_id": operation_id,
+            "operation": operation,
+        }
+        fields_by_operation = {
+            "get_configuration": ("node_address",),
+            "validate_configuration": ("node_address", "configuration"),
+            "apply_configuration": (
+                "node_address",
+                "expected_revision",
+                "configuration",
+            ),
+            "reset_configuration": ("node_address", "expected_revision"),
+            "restart_node": ("node_address",),
+            "scan_unassigned": ("round_nonce", "slot_count"),
+            "assign_address": (
+                "round_nonce",
+                "hardware_id",
+                "new_node_address",
+            ),
+        }
+        for field in fields_by_operation.get(operation, ()):
+            if field not in payload:
+                raise ValueError(f"{field} is required for {operation}")
+            request[field] = payload[field]
+        return self.operations.submit(request)
+
+    def _validate_channel_id(self, channel_id: int) -> None:
+        if isinstance(channel_id, bool) or not 1 <= channel_id <= 16:
+            raise ValueError("channel_id must be in 1..16")
+        channel_ids = {
+            _safe_int(channel.get("channel_id"))
+            for channel in self._profile().get("channels", [])
+            if isinstance(channel, dict) and bool(channel.get("enabled", True))
+        }
+        if channel_id not in channel_ids:
+            raise ValueError("channel is not enabled in the installation profile")
 
     def _profile(self) -> dict[str, Any]:
         return load_v2_profile(self.config_path)
@@ -228,6 +336,25 @@ class V2DashboardRepository:
             metrics = runtime.get("metrics", {}) if isinstance(runtime.get("metrics"), dict) else {}
             enabled = bool(raw_channel.get("enabled", True))
             running = phase == "running" and not status_stale
+            operations_mode = None
+            active_operation_id = None
+            operations_available = False
+            if enabled:
+                try:
+                    operations_status = self.operations.status(channel_id)
+                except OperationsIpcClientError:
+                    operations_status = None
+                if operations_status is not None and operations_status.get("ok") is True:
+                    operations_mode = operations_status.get("mode")
+                    active_operation_id = operations_status.get("active_operation_id")
+                    operations_available = operations_mode in {
+                        "recording",
+                        "entering_maintenance",
+                        "maintenance",
+                        "resuming_recording",
+                        "faulted",
+                        "offline",
+                    }
             channel_alerts: list[str] = []
             if phase == "faulted":
                 channel_alerts.append("kanał faulted")
@@ -304,10 +431,13 @@ class V2DashboardRepository:
                     "name": str(raw_channel.get("name", f"channel-{channel_id}")),
                     "label": raw_channel.get("label"),
                     "channel_id": channel_id,
+                    "runtime_v2": True,
                     "enabled": enabled,
                     "desired_running": enabled,
-                    "controls_enabled": False,
-                    "control_state": "read-only",
+                    "controls_enabled": operations_available,
+                    "control_state": operations_mode or "unavailable",
+                    "operation_mode": operations_mode,
+                    "active_operation_id": active_operation_id,
                     "running": running,
                     "health": health,
                     "phase": phase,
@@ -395,8 +525,11 @@ class V2DashboardRepository:
         }
         return {
             "dashboard_version": "v2-observer-1",
-            "dashboard_mode": "host-v2-read-only",
+            "dashboard_mode": "host-v2-operations",
             "read_only": True,
+            "operator_api_available": any(
+                channel.get("controls_enabled", False) for channel in channels
+            ),
             "data_available": False,
             "live_preview_available": False,
             "generated_utc": datetime.now(timezone.utc).isoformat(),

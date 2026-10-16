@@ -20,12 +20,14 @@ from host.common.data_browser import DataRepository, FileDownload
 from host.common.runtime_status import JsonlEventWriter
 from host.common.system_config import HostSystemConfig
 from host.common.version import PROJECT_VERSION
+from host.dashboard.v2_operations import OperationsIpcClientError
 
 
 DASHBOARD_VERSION = PROJECT_VERSION
 MAX_EVENT_LIMIT = 500
 DEFAULT_LIVE_PREVIEW_LIMIT = 512
 MAX_LIVE_PREVIEW_LIMIT = 2048
+MAX_OPERATOR_REQUEST_BYTES = 4 * 1024
 LIVE_PREVIEW_LEASE_TIMEOUT_S = 20.0
 STANDARD_GRAVITY_M_S2 = 9.80665
 LIVE_PREVIEW_CHART_MAX_POINTS = 2400
@@ -935,8 +937,8 @@ INDEX_HTML = """<!doctype html>
             <a class="chip muted" href="/api/health" target="_blank" rel="noreferrer">/api/health</a>
           </div>
           <p class="footer-note">
-            Ta wersja panelu jest celowo read-only. Warstwa API i układ sekcji są gotowe pod kolejne kroki:
-            commissioning, start/stop recordera, aktualizacje firmware i bardziej szczegółowy live-view.
+            Sterowanie kanałem i node przechodzi przez Operations API hosta v2.
+            Start, stop i restart całej usługi pozostają osobną granicą systemd.
           </p>
         </div>
       </section>
@@ -968,7 +970,10 @@ INDEX_HTML = """<!doctype html>
           throw new Error(text || "Niepoprawna odpowiedź serwera");
         }
         if (!response.ok) {
-          throw new Error(payload.error || (`HTTP ${response.status}`));
+          const message = payload.error && typeof payload.error === "object"
+            ? payload.error.message
+            : payload.error;
+          throw new Error(message || (`HTTP ${response.status}`));
         }
         return payload;
       }
@@ -1230,12 +1235,7 @@ INDEX_HTML = """<!doctype html>
                 ${chip(`alerty ${formatNumber(channel.attention_count || 0)}`, (channel.attention_count || 0) > 0 ? "warn" : "muted")}
               </div>
             </div>
-            <div class="channel-actions" ${channel.controls_enabled === false ? "hidden" : ""}>
-              <button class="btn channel-action-btn" data-action="start" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Start</button>
-              <button class="btn channel-action-btn" data-action="restart" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Restart</button>
-              <button class="btn secondary channel-action-btn" data-action="stop" data-channel-name="${escapeHtml(channel.name)}" type="button">Stop</button>
-              <button class="btn channel-action-btn" data-action="purge" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Purge line</button>
-            </div>
+            ${renderChannelActions(channel)}
             <div class="runtime-grid">
               ${runtimeCards.map((card) => `
                 <div class="runtime-card runtime-card-${escapeHtml(card.key || "default")}">
@@ -1248,6 +1248,32 @@ INDEX_HTML = """<!doctype html>
             ${nodesHtml}
           </article>
         `;
+      }
+
+      function renderChannelActions(channel) {
+        if (channel.runtime_v2 !== true) {
+          return `<div class="channel-actions" ${channel.controls_enabled === false ? "hidden" : ""}>
+            <button class="btn channel-action-btn" data-action="start" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Start</button>
+            <button class="btn channel-action-btn" data-action="restart" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Restart</button>
+            <button class="btn secondary channel-action-btn" data-action="stop" data-channel-name="${escapeHtml(channel.name)}" type="button">Stop</button>
+            <button class="btn channel-action-btn" data-action="purge" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Purge line</button>
+          </div>`;
+        }
+        if (channel.controls_enabled === false) {
+          return `<div class="channel-actions"><span class="node-meta">Operations API niedostępne</span></div>`;
+        }
+        const mode = channel.operation_mode || "unknown";
+        if (mode === "recording") {
+          return `<div class="channel-actions">
+            <button class="btn secondary v2-channel-operation-btn" data-operation="enter_maintenance" data-channel-id="${escapeHtml(channel.channel_id)}" data-channel-name="${escapeHtml(channel.name)}" type="button">Przejdź do Maintenance</button>
+          </div>`;
+        }
+        if (mode === "maintenance") {
+          return `<div class="channel-actions">
+            <button class="btn v2-channel-operation-btn" data-operation="resume_recording" data-channel-id="${escapeHtml(channel.channel_id)}" data-channel-name="${escapeHtml(channel.name)}" type="button">Wznów Recording</button>
+          </div>`;
+        }
+        return `<div class="channel-actions"><span class="node-meta">Tryb: ${escapeHtml(mode)}${channel.active_operation_id ? ` · operacja ${escapeHtml(channel.active_operation_id)}` : ""}</span></div>`;
       }
 
       function renderNodeRow(channel, node) {
@@ -1270,13 +1296,22 @@ INDEX_HTML = """<!doctype html>
               ${statusDot(onlineKind)}
               ${escapeHtml(node.online ? (node.sample_flow_state === "stalled" ? "ONLINE / BRAK PRÓBEK" : "ONLINE") : (node.has_runtime ? "OFFLINE" : "NO-RUNTIME"))}
               <div class="node-meta">${escapeHtml(alerts)}</div>
-              ${channel.controls_enabled === false ? "" : `<button
-                class="btn secondary small node-firmware-restart-btn"
-                data-channel-name="${escapeHtml(channel.name)}"
-                data-node-id="${escapeHtml(node.node_id)}"
-                type="button"
-                ${channel.enabled && node.enabled ? "" : "disabled"}
-              >Restart firmware</button>`}
+              ${channel.runtime_v2
+                ? (["maintenance", "faulted"].includes(channel.operation_mode) ? `<button
+                    class="btn secondary small v2-node-restart-btn"
+                    data-channel-id="${escapeHtml(channel.channel_id)}"
+                    data-channel-name="${escapeHtml(channel.name)}"
+                    data-node-id="${escapeHtml(node.node_id)}"
+                    type="button"
+                    ${channel.enabled && node.enabled ? "" : "disabled"}
+                  >Restart node</button>` : "")
+                : (channel.controls_enabled === false ? "" : `<button
+                    class="btn secondary small node-firmware-restart-btn"
+                    data-channel-name="${escapeHtml(channel.name)}"
+                    data-node-id="${escapeHtml(node.node_id)}"
+                    type="button"
+                    ${channel.enabled && node.enabled ? "" : "disabled"}
+                  >Restart firmware</button>`)}
             </td>
             <td data-label="ODR">
               <span class="mono">${escapeHtml(formatNumber(node.sensor_odr_hz || 0))} / ${escapeHtml(formatFloat(node.output_odr_hz || 0, 1))}</span>
@@ -1661,6 +1696,77 @@ INDEX_HTML = """<!doctype html>
         }, 900);
       }
 
+      async function waitForV2Operation(channelId, operationId, timeoutMs = 120000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const result = await fetchJson(`/api/v2/channels/${encodeURIComponent(channelId)}/operations/${encodeURIComponent(operationId)}`);
+          if (result.phase === "succeeded") {
+            return result;
+          }
+          if (result.phase === "failed" || result.phase === "rejected") {
+            throw new Error(result.error || `Operacja ${result.phase}`);
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+        }
+        throw new Error(`Operacja ${operationId} nie zakończyła się w wyznaczonym czasie`);
+      }
+
+      async function submitV2Operation(channelId, operation, fields = {}) {
+        const submitted = await fetchJson(`/api/v2/channels/${encodeURIComponent(channelId)}/operations`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Sensor-System-Request": "dashboard-v2",
+          },
+          body: JSON.stringify({ operation, ...fields }),
+        });
+        if (submitted.phase === "succeeded") {
+          return submitted;
+        }
+        return waitForV2Operation(channelId, submitted.operation_id);
+      }
+
+      async function performV2ChannelOperation(button) {
+        const channelId = Number(button.dataset.channelId || 0);
+        const channelName = button.dataset.channelName || `channel-${channelId}`;
+        const operation = button.dataset.operation || "";
+        if (!channelId || !operation) return;
+        const prompt = operation === "enter_maintenance"
+          ? `Zatrzymać akwizycję ${channelName}, trwale zapisać ogon i przejść do Maintenance?`
+          : `Zweryfikować ${channelName} i wznowić Recording?`;
+        if (!window.confirm(prompt)) return;
+        const previousLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = operation === "enter_maintenance" ? "Zatrzymywanie..." : "Wznawianie...";
+        try {
+          const result = await submitV2Operation(channelId, operation);
+          $("overview-note").textContent = `Operacja ${result.operation_id} zakończona dla ${channelName}`;
+          await loadDashboard();
+        } finally {
+          button.disabled = false;
+          button.textContent = previousLabel;
+        }
+      }
+
+      async function restartV2Node(button) {
+        const channelId = Number(button.dataset.channelId || 0);
+        const nodeAddress = Number(button.dataset.nodeId || 0);
+        const channelName = button.dataset.channelName || `channel-${channelId}`;
+        if (!channelId || !nodeAddress) return;
+        if (!window.confirm(`Zrestartować node ${nodeAddress} na ${channelName}? Po restarcie użyj Resume, aby wykonać handshake i rollover.`)) return;
+        const previousLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "Restartowanie...";
+        try {
+          const result = await submitV2Operation(channelId, "restart_node", { node_address: nodeAddress });
+          $("overview-note").textContent = `Restart node przyjęty jako operacja ${result.operation_id}`;
+          await loadDashboard();
+        } finally {
+          button.disabled = false;
+          button.textContent = previousLabel;
+        }
+      }
+
       async function restartNodeFirmware(channelName, nodeId, button) {
         const confirmed = window.confirm(
           `Zrestartować firmware node ${nodeId} na ${channelName}? Recorder tej linii zostanie na chwilę zatrzymany i uruchomiony ponownie.`
@@ -1799,6 +1905,14 @@ INDEX_HTML = """<!doctype html>
 
       $("channels-grid").addEventListener("click", (event) => {
         const target = event.target;
+        if (target.classList.contains("v2-channel-operation-btn")) {
+          performV2ChannelOperation(target).catch((error) => alert(error.message));
+          return;
+        }
+        if (target.classList.contains("v2-node-restart-btn")) {
+          restartV2Node(target).catch((error) => alert(error.message));
+          return;
+        }
         if (target.classList.contains("node-firmware-restart-btn")) {
           const channelName = target.dataset.channelName || "";
           const nodeId = target.dataset.nodeId || "";
@@ -4730,6 +4844,30 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._write_json(self.repository.health_payload())
                 return
 
+            if route == "/api/v2/operator/capabilities" and getattr(
+                self.repository, "supports_v2_operations", False
+            ):
+                self._write_json(self.repository.operator_capabilities_payload())
+                return
+
+            operation_route = self._parse_v2_operation_route(route)
+            if operation_route is not None and getattr(
+                self.repository, "supports_v2_operations", False
+            ):
+                channel_id, tail = operation_route
+                if tail == ["status"]:
+                    self._write_json(self.repository.operation_status_payload(channel_id))
+                    return
+                if len(tail) == 1:
+                    try:
+                        operation_id = int(tail[0])
+                    except ValueError:
+                        raise ValueError("operation_id must be an integer")
+                    self._write_json(
+                        self.repository.operation_result_payload(channel_id, operation_id)
+                    )
+                    return
+
             if route in {"/api/data", "/api/runs"}:
                 self._write_json(self.repository.data_payload(query.get("path", [None])[0]))
                 return
@@ -4785,11 +4923,31 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
         except NotADirectoryError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except OperationsIpcClientError as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def do_POST(self) -> None:
         try:
             parsed = urlparse(self.path)
             route = parsed.path
+            operation_route = self._parse_v2_operation_route(route)
+            if (
+                operation_route is not None
+                and operation_route[1] == []
+                and getattr(self.repository, "supports_v2_operations", False)
+            ):
+                if self.headers.get("X-Sensor-System-Request") != "dashboard-v2":
+                    self._write_json(
+                        {"error": "missing dashboard-v2 request marker"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                payload = self._read_json_body(max_bytes=MAX_OPERATOR_REQUEST_BYTES)
+                result = self.repository.submit_operation_payload(
+                    operation_route[0], payload
+                )
+                self._write_json(result, status=self._operation_http_status(result))
+                return
             if getattr(self.repository, "read_only", False):
                 self._write_json(
                     {"error": "host v2 dashboard is read-only"},
@@ -4884,18 +5042,52 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
         except NotADirectoryError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except OperationsIpcClientError as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _write_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
         self._write_response(encoded, "application/json; charset=utf-8", status=status)
 
-    def _read_json_body(self) -> dict[str, Any]:
+    def _read_json_body(self, *, max_bytes: int | None = None) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length < 0 or (max_bytes is not None and content_length > max_bytes):
+            raise ValueError("request body is too large")
         raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
         return payload
+
+    @staticmethod
+    def _parse_v2_operation_route(route: str) -> tuple[int, list[str]] | None:
+        parts = [unquote(part) for part in route.split("/") if part]
+        if len(parts) < 5 or parts[:3] != ["api", "v2", "channels"]:
+            return None
+        if parts[4] != "operations":
+            return None
+        try:
+            channel_id = int(parts[3])
+        except ValueError:
+            raise ValueError("channel_id must be an integer")
+        return channel_id, parts[5:]
+
+    @staticmethod
+    def _operation_http_status(payload: dict[str, Any]) -> HTTPStatus:
+        if payload.get("ok") is True:
+            phase = payload.get("phase")
+            if phase in {"queued", "accepted", "running"}:
+                return HTTPStatus.ACCEPTED
+            return HTTPStatus.OK
+        error = payload.get("error")
+        code = error.get("code") if isinstance(error, dict) else None
+        if code == "unknown_channel":
+            return HTTPStatus.NOT_FOUND
+        if code in {"operation_rejected", "operation_id_conflict"}:
+            return HTTPStatus.CONFLICT
+        if code in {"queue_full", "channel_disconnected"}:
+            return HTTPStatus.SERVICE_UNAVAILABLE
+        return HTTPStatus.BAD_REQUEST
 
     def _write_response(
         self,
