@@ -99,6 +99,30 @@ interwał. Ręczne wykonanie tej samej operacji:
 ./hostctl analysis export-new
 ```
 
+Najprostszy loader Python znajduje trzy pliki na podstawie ścieżki głównego
+CSV, sprawdza ich zgodność oraz tworzy wektor czasu z wyznaczonego ODR:
+
+```bash
+python host_v2/analysis/load_analysis_window.py \
+  'var/analysis/line-b/line_b-node_1-11:36-16.10.2026.csv'
+```
+
+W notebooku:
+
+```python
+from host_v2.analysis.load_analysis_window import load_window
+
+window = load_window("line_b-node_1-11:36-16.10.2026.csv")
+acceleration = window["samples"]  # NumPy array: columns x, y, z [m/s²]
+time_s = window["time_s"]
+metadata = window["metadata"]
+assert window["is_continuous"]
+```
+
+Skrypt wymaga tylko `numpy`. Kończy się kodem `0` dla ciągłego okna, `2` dla
+jawnej luki lub continuity break oraz `1` dla niespójnych plików. Wektor czasu
+uwzględnia brakujące próbki opisane przez zdarzenia `gap`.
+
 Przy pierwszym uruchomieniu eksporter bierze tylko skonfigurowaną liczbę
 najnowszych zamkniętych okien bieżącego `boot_epoch`. Capture z poprzednich
 epok pozostaje dostępny do jawnego eksportu offline.
