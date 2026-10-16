@@ -1050,6 +1050,37 @@ INDEX_HTML = """<!doctype html>
       </form>
     </dialog>
 
+    <dialog class="config-dialog" id="commission-dialog">
+      <form class="config-form" id="commission-form" method="dialog">
+        <p class="eyebrow">Nowy node · protocol 5</p>
+        <h2 class="section-title" id="commission-title">Dodaj node</h2>
+        <p class="section-note">
+          Podłącz jeden nieprzypisany node do wybranego kanału. Dashboard wykryje go, nada adres i zapisze w profilu instalacji.
+        </p>
+        <input id="commission-channel-id" type="hidden" />
+        <div class="config-form-grid">
+          <label class="field">Nazwa node
+            <input id="commission-name" type="text" maxlength="64" required placeholder="np. Łożysko północ" />
+          </label>
+          <label class="field">Adres RS485
+            <input id="commission-address" type="number" min="1" max="253" step="1" required />
+          </label>
+          <label class="field">Hardware ID
+            <input id="commission-hardware-id" class="mono" type="text" readonly />
+          </label>
+          <label class="field">Wykryty node
+            <input id="commission-identity" type="text" readonly />
+          </label>
+        </div>
+        <p class="config-form-status" id="commission-status"></p>
+        <div class="actions">
+          <button class="btn" id="commission-apply-btn" type="button" disabled>Przypisz i dodaj</button>
+          <button class="btn secondary" id="commission-scan-btn" type="button">Skanuj ponownie</button>
+          <button class="btn secondary" id="commission-close-btn" type="button">Zamknij</button>
+        </div>
+      </form>
+    </dialog>
+
     <script>
       const REFRESH_MS = 2000;
       const LOG_REFRESH_MS = 6000;
@@ -1063,6 +1094,7 @@ INDEX_HTML = """<!doctype html>
       let serviceControlBusy = false;
       let dataAvailable = true;
       let logsAvailable = true;
+      let commissioningState = null;
       const selectedDataPaths = new Set();
 
       function $(id) {
@@ -1339,12 +1371,31 @@ INDEX_HTML = """<!doctype html>
           node.framing_protocol != null ? `framing ${node.framing_protocol}` : null,
           node.application_protocol != null ? `app ${node.application_protocol}` : null,
         ].filter(Boolean).join(" · ");
+        const canConfigure = channelEnabled && node.enabled
+          && ["recording", "maintenance", "faulted"].includes(node.channel_mode)
+          && !node.channel_active_operation;
+        const canRestart = channelEnabled && node.enabled
+          && ["maintenance", "faulted"].includes(node.channel_mode)
+          && !node.channel_active_operation;
         return `
           <tr>
             <td data-label="Węzeł">
               <div class="node-name">${escapeHtml(node.name || `Node ${node.node_id}`)}</div>
               <div class="node-meta mono">id=${escapeHtml(node.node_id)} · ${escapeHtml(identity || "brak identity")}</div>
               <div class="node-meta mono">${escapeHtml(protocols || "protokoły -")}</div>
+              <div class="node-action-row">
+                <button class="btn small v2-node-config-btn"
+                  data-channel-id="${escapeHtml(node.channel_id)}"
+                  data-channel-name="${escapeHtml(node.channel_name)}"
+                  data-node-id="${escapeHtml(node.node_id)}"
+                  data-output-rate-mask="${escapeHtml(node.output_rate_mask || 0)}"
+                  type="button" ${canConfigure ? "" : "disabled"}>Konfiguruj</button>
+                ${canRestart ? `<button class="btn secondary small v2-node-restart-btn"
+                  data-channel-id="${escapeHtml(node.channel_id)}"
+                  data-channel-name="${escapeHtml(node.channel_name)}"
+                  data-node-id="${escapeHtml(node.node_id)}"
+                  type="button">Restart node</button>` : ""}
+              </div>
             </td>
             <td data-label="Stan">
               ${statusDot(stateKind)} ${escapeHtml(stateLabel)}
@@ -1384,6 +1435,16 @@ INDEX_HTML = """<!doctype html>
         const displayedMode = channel.enabled ? (channel.operating_mode || channel.phase || "offline") : "disabled";
         const phase = String(displayedMode).toUpperCase();
         const phaseKind = displayedMode === "recording" || displayedMode === "running" ? "good" : displayedMode === "faulted" ? "bad" : displayedMode === "disabled" ? "muted" : "warn";
+        const usedAddresses = new Set((channel.nodes || []).map((node) => Number(node.node_id)));
+        let nextAddress = 1;
+        while (usedAddresses.has(nextAddress) && nextAddress <= 253) nextAddress += 1;
+        const nodes = (channel.nodes || []).map((node) => ({
+          ...node,
+          channel_id: channel.channel_id,
+          channel_name: channel.name,
+          channel_mode: channel.operation_mode,
+          channel_active_operation: channel.active_operation_id,
+        }));
         return `
           <article class="channel-card panel">
             <div class="channel-top">
@@ -1398,6 +1459,7 @@ INDEX_HTML = """<!doctype html>
                 ${channel.attention_count ? chip(`uwagi ${formatNumber(channel.attention_count)}`, "warn") : ""}
               </div>
             </div>
+            ${renderChannelActions(channel, nextAddress)}
             <div class="runtime-grid">
               ${runtimeCards.map((card) => `
                 <div class="runtime-card">
@@ -1409,7 +1471,7 @@ INDEX_HTML = """<!doctype html>
             </div>
             <table>
               <thead><tr><th>Węzeł</th><th>Stan</th><th>Output ODR</th><th>Cursory</th><th>Backlog</th><th>Świeżość</th></tr></thead>
-              <tbody>${channel.nodes.length ? channel.nodes.map((node) => renderV2NodeRow(node, channel.enabled)).join("") : `<tr><td colspan="6"><div class="empty">Brak skonfigurowanych węzłów.</div></td></tr>`}</tbody>
+              <tbody>${nodes.length ? nodes.map((node) => renderV2NodeRow(node, channel.enabled)).join("") : `<tr><td colspan="6"><div class="empty">Brak skonfigurowanych węzłów.</div></td></tr>`}</tbody>
             </table>
           </article>
         `;
@@ -1514,7 +1576,7 @@ INDEX_HTML = """<!doctype html>
         `;
       }
 
-      function renderChannelActions(channel) {
+      function renderChannelActions(channel, nextAddress = 1) {
         if (channel.runtime_v2 !== true) {
           return `<div class="channel-actions" ${channel.controls_enabled === false ? "hidden" : ""}>
             <button class="btn channel-action-btn" data-action="start" data-channel-name="${escapeHtml(channel.name)}" type="button" ${channel.enabled ? "" : "disabled"}>Start</button>
@@ -1530,11 +1592,13 @@ INDEX_HTML = """<!doctype html>
         if (mode === "recording") {
           return `<div class="channel-actions">
             <button class="btn secondary v2-channel-operation-btn" data-operation="enter_maintenance" data-channel-id="${escapeHtml(channel.channel_id)}" data-channel-name="${escapeHtml(channel.name)}" type="button">Przejdź do Maintenance</button>
+            <button class="btn v2-commission-btn" data-channel-id="${escapeHtml(channel.channel_id)}" data-channel-name="${escapeHtml(channel.name)}" data-channel-mode="${escapeHtml(mode)}" data-next-address="${escapeHtml(nextAddress)}" type="button">Dodaj node</button>
           </div>`;
         }
         if (mode === "maintenance") {
           return `<div class="channel-actions">
             <button class="btn v2-channel-operation-btn" data-operation="resume_recording" data-channel-id="${escapeHtml(channel.channel_id)}" data-channel-name="${escapeHtml(channel.name)}" type="button">Wznów Recording</button>
+            <button class="btn v2-commission-btn" data-channel-id="${escapeHtml(channel.channel_id)}" data-channel-name="${escapeHtml(channel.name)}" data-channel-mode="${escapeHtml(mode)}" data-next-address="${escapeHtml(nextAddress)}" type="button">Dodaj node</button>
           </div>`;
         }
         return `<div class="channel-actions"><span class="node-meta">Tryb: ${escapeHtml(mode)}${channel.active_operation_id ? ` · operacja ${escapeHtml(channel.active_operation_id)}` : ""}</span></div>`;
@@ -2002,6 +2066,137 @@ INDEX_HTML = """<!doctype html>
         return waitForV2Operation(channelId, submitted.operation_id);
       }
 
+      function setCommissioningBusy(busy, message = "") {
+        ["commission-name", "commission-address", "commission-scan-btn", "commission-close-btn"].forEach((id) => {
+          $(id).disabled = busy;
+        });
+        $("commission-apply-btn").disabled = busy || !commissioningState || !commissioningState.identity;
+        $("commission-status").textContent = message;
+      }
+
+      function newCommissioningNonce() {
+        const values = new Uint32Array(2);
+        window.crypto.getRandomValues(values);
+        return (values[0] * 0x100000 + (values[1] & 0xfffff)) || 1;
+      }
+
+      async function scanCommissioningChannel() {
+        if (!commissioningState) return;
+        const state = commissioningState;
+        state.identity = null;
+        $("commission-hardware-id").value = "";
+        $("commission-identity").value = "";
+        setCommissioningBusy(true, "Przygotowanie kanału do skanowania…");
+        try {
+          if (state.modeBefore === "recording" && !state.enteredMaintenance) {
+            await submitV2Operation(state.channelId, "enter_maintenance");
+            state.enteredMaintenance = true;
+          } else if (state.modeBefore !== "maintenance" && !state.enteredMaintenance) {
+            throw new Error(`Kanał nie jest gotowy do commissioningu (tryb ${state.modeBefore})`);
+          }
+          state.roundNonce = newCommissioningNonce();
+          setCommissioningBusy(true, "Skanowanie nieprzypisanego node…");
+          const response = await submitV2Operation(state.channelId, "scan_unassigned", {
+            round_nonce: state.roundNonce,
+            slot_count: 16,
+          });
+          const result = response.result;
+          if (!result || result.kind !== "commissioning_scan") {
+            throw new Error("Host zwrócił nieoczekiwany wynik skanowania");
+          }
+          const discovered = Array.isArray(result.discovered) ? result.discovered : [];
+          if (discovered.length === 0) {
+            throw new Error("Nie znaleziono nieprzypisanego node na tym kanale");
+          }
+          if (discovered.length !== 1) {
+            throw new Error(`Wykryto ${discovered.length} nieprzypisane node. Pozostaw podłączony jeden i zeskanuj ponownie.`);
+          }
+          state.identity = discovered[0];
+          $("commission-hardware-id").value = state.identity.hardware_id || "";
+          $("commission-identity").value = `board ${state.identity.board_revision} · fw ${state.identity.firmware}`;
+          setCommissioningBusy(false, "Node wykryty. Podaj nazwę i sprawdź adres.");
+        } catch (error) {
+          setCommissioningBusy(false, `Błąd: ${error.message}`);
+          throw error;
+        }
+      }
+
+      async function openCommissioning(button) {
+        const channelId = Number(button.dataset.channelId || 0);
+        if (!channelId) return;
+        commissioningState = {
+          channelId,
+          channelName: button.dataset.channelName || `channel-${channelId}`,
+          modeBefore: button.dataset.channelMode || "unknown",
+          enteredMaintenance: false,
+          completed: false,
+          roundNonce: null,
+          identity: null,
+        };
+        $("commission-channel-id").value = String(channelId);
+        $("commission-title").textContent = `Dodaj node · ${commissioningState.channelName}`;
+        $("commission-name").value = "";
+        $("commission-address").value = button.dataset.nextAddress || "1";
+        $("commission-hardware-id").value = "";
+        $("commission-identity").value = "";
+        $("commission-dialog").showModal();
+        try {
+          await scanCommissioningChannel();
+        } catch (_error) {
+          // Status in the dialog contains the actionable error and retry remains available.
+        }
+      }
+
+      async function closeCommissioning() {
+        const state = commissioningState;
+        if (!state) {
+          $("commission-dialog").close();
+          return;
+        }
+        setCommissioningBusy(true, "Przywracanie kanału…");
+        try {
+          if (state.enteredMaintenance && !state.completed) {
+            await submitV2Operation(state.channelId, "resume_recording");
+          }
+        } finally {
+          commissioningState = null;
+          $("commission-dialog").close();
+          await loadDashboard();
+        }
+      }
+
+      async function applyCommissioning() {
+        const state = commissioningState;
+        const form = $("commission-form");
+        if (!state || !state.identity || !form.reportValidity()) return;
+        const nodeAddress = Number($("commission-address").value);
+        try {
+          setCommissioningBusy(true, "Nadawanie adresu, zapis profilu i restart hosta…");
+          await fetchJson(`/api/v2/channels/${encodeURIComponent(state.channelId)}/commission`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Sensor-System-Request": "dashboard-v2",
+            },
+            body: JSON.stringify({
+              name: $("commission-name").value,
+              node_address: nodeAddress,
+              hardware_id: state.identity.hardware_id,
+              board_revision: state.identity.board_revision,
+              round_nonce: state.roundNonce,
+            }),
+          });
+          state.completed = true;
+          $("commission-status").textContent = "Node dodany. Host uruchamia profil ponownie.";
+          window.setTimeout(() => loadDashboard(), 2000);
+          commissioningState = null;
+          $("commission-dialog").close();
+        } catch (error) {
+          setCommissioningBusy(false, `Błąd: ${error.message}`);
+          throw error;
+        }
+      }
+
       function setConfigurationFormBusy(busy, message = "") {
         ["config-apply-btn", "config-validate-btn", "config-reset-btn", "config-close-btn"].forEach((id) => {
           $(id).disabled = busy;
@@ -2306,6 +2501,10 @@ INDEX_HTML = """<!doctype html>
           performV2ChannelOperation(target).catch((error) => alert(error.message));
           return;
         }
+        if (target.classList.contains("v2-commission-btn")) {
+          openCommissioning(target).catch((error) => alert(error.message));
+          return;
+        }
         if (target.classList.contains("v2-node-restart-btn")) {
           restartV2Node(target).catch((error) => alert(error.message));
           return;
@@ -2352,6 +2551,20 @@ INDEX_HTML = """<!doctype html>
         }
       });
       $("config-close-btn").addEventListener("click", () => $("node-config-dialog").close());
+      $("commission-scan-btn").addEventListener("click", () => {
+        scanCommissioningChannel().catch(() => {});
+      });
+      $("commission-apply-btn").addEventListener("click", () => {
+        applyCommissioning().catch((error) => alert(error.message));
+      });
+      $("commission-close-btn").addEventListener("click", () => {
+        closeCommissioning().catch((error) => alert(error.message));
+      });
+      $("commission-form").addEventListener("submit", (event) => event.preventDefault());
+      $("commission-dialog").addEventListener("cancel", (event) => {
+        event.preventDefault();
+        closeCommissioning().catch((error) => alert(error.message));
+      });
 
       async function startDashboard() {
         await refreshAll(true);
@@ -5386,6 +5599,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 action = route.removeprefix("/api/v2/service/")
                 self._write_json(self.repository.perform_service_action(action))
                 return
+            commissioning_route = self._parse_v2_commissioning_route(route)
+            if commissioning_route is not None and getattr(
+                self.repository, "supports_v2_operations", False
+            ):
+                if self.headers.get("X-Sensor-System-Request") != "dashboard-v2":
+                    self._write_json(
+                        {"error": "missing dashboard-v2 request marker"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                payload = self._read_json_body(max_bytes=MAX_OPERATOR_REQUEST_BYTES)
+                result = self.repository.register_commissioned_node_payload(
+                    commissioning_route, payload
+                )
+                self._write_json(result)
+                return
             operation_route = self._parse_v2_operation_route(route)
             if (
                 operation_route is not None
@@ -5516,6 +5745,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
         return payload
+
+    @staticmethod
+    def _parse_v2_commissioning_route(route: str) -> int | None:
+        parts = [unquote(part) for part in route.split("/") if part]
+        if len(parts) != 5 or parts[:3] != ["api", "v2", "channels"] or parts[4] != "commission":
+            return None
+        try:
+            return int(parts[3])
+        except ValueError:
+            raise ValueError("channel_id must be an integer")
 
     @staticmethod
     def _parse_v2_operation_route(route: str) -> tuple[int, list[str]] | None:

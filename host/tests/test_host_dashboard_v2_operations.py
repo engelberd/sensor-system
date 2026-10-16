@@ -28,6 +28,17 @@ class FakeOperationsClient:
         }
 
     def get(self, channel_id: int, operation_id: int) -> dict[str, Any]:
+        request = next(
+            (value for value in self.submitted if value["operation_id"] == operation_id),
+            None,
+        )
+        result = None
+        if request is not None and request.get("operation") == "assign_address":
+            result = {
+                "kind": "address_assigned",
+                "hardware_id": request["hardware_id"],
+                "node_address": request["new_node_address"],
+            }
         return {
             "schema_version": 1,
             "ok": True,
@@ -35,7 +46,7 @@ class FakeOperationsClient:
             "operation_id": operation_id,
             "phase": "succeeded",
             "mode": "maintenance",
-            "result": None,
+            "result": result,
             "error": None,
         }
 
@@ -250,6 +261,46 @@ class V2OperatorApiTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertTrue(payload["state"]["active"])
             self.assertEqual(service.actions, ["restart"])
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_http_registers_commissioned_node_and_restarts_host(self) -> None:
+        service = FakeServiceControlClient(available=True)
+        self.repository.service_control = service
+        server = DashboardServer(("127.0.0.1", 0), self.repository)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_port, timeout=2
+            )
+            connection.request(
+                "POST",
+                "/api/v2/channels/2/commission",
+                body=json.dumps(
+                    {
+                        "name": "North bearing",
+                        "node_address": 2,
+                        "hardware_id": "aabbccddeeff0011",
+                        "board_revision": 2,
+                        "round_nonce": 123,
+                    }
+                ),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Sensor-System-Request": "dashboard-v2",
+                },
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(service.actions, ["restart"])
+            saved = json.loads(self.config.read_text(encoding="utf-8"))
+            self.assertEqual(saved["channels"][0]["nodes"][1]["name"], "North bearing")
             connection.close()
         finally:
             server.shutdown()

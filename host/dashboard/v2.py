@@ -16,6 +16,7 @@ from host.dashboard.v2_operations import (
     OperationsIpcClientError,
     fresh_operation_id,
 )
+from host.dashboard.v2_commissioning import CommissioningProfileStore
 from host.dashboard.v2_service_control import (
     DEFAULT_SERVICE_CONTROL_SOCKET,
     ServiceControlClient,
@@ -126,6 +127,7 @@ class V2DashboardRepository:
         self.service_unit = service_unit
         self.operations = operations_client or OperationsIpcClient(operations_socket)
         self.service_control = service_control_client or ServiceControlClient(service_control_socket)
+        self.commissioning_profiles = CommissioningProfileStore(self.config_path)
         self.host_metrics_sampler = host_metrics_sampler or HostMetricsSampler()
         self._journal_lock = threading.Lock()
         self._journal_cache: tuple[float, int, list[dict[str, Any]]] | None = None
@@ -146,6 +148,12 @@ class V2DashboardRepository:
                 "automatic_mode_transition": True,
                 "restore_recording_on_success": True,
                 "failure_mode": "maintenance_or_faulted",
+            },
+            "commissioning_workflow": {
+                "single_unassigned_node": True,
+                "automatic_maintenance": True,
+                "persistent_system_profile": True,
+                "restart_after_commit": True,
             },
             "measurement_configuration": {
                 "output_rates": [
@@ -200,6 +208,96 @@ class V2DashboardRepository:
         if action not in {"start", "stop", "restart"}:
             raise ValueError("unsupported service action")
         return self.service_control.perform(action)
+
+    def register_commissioned_node_payload(
+        self,
+        channel_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._validate_channel_id(channel_id)
+        required = ("name", "node_address", "hardware_id", "board_revision", "round_nonce")
+        for field in required:
+            if field not in payload:
+                raise ValueError(f"{field} is required for commissioned node")
+        node_address = payload["node_address"]
+        board_revision = payload["board_revision"]
+        round_nonce = payload["round_nonce"]
+        if isinstance(node_address, bool) or not isinstance(node_address, int):
+            raise ValueError("node_address must be an integer")
+        if isinstance(board_revision, bool) or not isinstance(board_revision, int):
+            raise ValueError("board_revision must be an integer")
+        if isinstance(round_nonce, bool) or not isinstance(round_nonce, int) or round_nonce <= 0:
+            raise ValueError("round_nonce must be a positive integer")
+        self.commissioning_profiles.validate_node(
+            channel_id=channel_id,
+            node_name=str(payload["name"]),
+            node_address=node_address,
+            hardware_id=str(payload["hardware_id"]),
+            board_revision=board_revision,
+        )
+        self.commissioning_profiles.verify_writable()
+        service_state = self.service_control_status_payload()
+        if service_state.get("available") is not True:
+            raise ServiceControlError("host service control is unavailable")
+        assignment = self.submit_operation_payload(
+            channel_id,
+            {
+                "operation": "assign_address",
+                "round_nonce": round_nonce,
+                "hardware_id": str(payload["hardware_id"]),
+                "new_node_address": node_address,
+            },
+        )
+        assignment = self._wait_for_operation(channel_id, assignment, timeout_seconds=120.0)
+        result = assignment.get("result")
+        if not isinstance(result, dict) or result.get("kind") != "address_assigned":
+            raise OperationsIpcClientError("host did not confirm the commissioned node address")
+        if (
+            str(result.get("hardware_id", "")).lower() != str(payload["hardware_id"]).lower()
+            or result.get("node_address") != node_address
+        ):
+            raise OperationsIpcClientError("commissioning confirmation does not match the requested node")
+        saved = self.commissioning_profiles.add_node(
+            channel_id=channel_id,
+            node_name=str(payload["name"]),
+            node_address=node_address,
+            hardware_id=str(payload["hardware_id"]),
+            board_revision=board_revision,
+        )
+        restart = self.service_control.perform("restart")
+        return {
+            "ok": True,
+            "channel_id": channel_id,
+            "assignment": assignment,
+            "profile": saved,
+            "service": restart.get("state", restart),
+        }
+
+    def _wait_for_operation(
+        self,
+        channel_id: int,
+        submitted: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        phase = submitted.get("phase")
+        if phase == "succeeded":
+            return submitted
+        operation_id = submitted.get("operation_id")
+        if isinstance(operation_id, bool) or not isinstance(operation_id, int):
+            raise OperationsIpcClientError("Operations API did not return an operation_id")
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            response = self.operations.get(channel_id, operation_id)
+            phase = response.get("phase")
+            if phase == "succeeded":
+                return response
+            if phase in {"failed", "rejected"}:
+                raise OperationsIpcClientError(
+                    str(response.get("error") or f"commissioning operation {phase}")
+                )
+            time.sleep(0.25)
+        raise OperationsIpcClientError("commissioning operation did not finish before its deadline")
 
     def operation_status_payload(self, channel_id: int) -> dict[str, Any]:
         self._validate_channel_id(channel_id)

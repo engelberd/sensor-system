@@ -26,6 +26,7 @@ samym ID zachowuje idempotency Operations API.
 | GET | `/api/v2/channels/{channel_id}/operations/status` | tryb kanału i aktywna operacja |
 | POST | `/api/v2/channels/{channel_id}/operations` | złożenie jednej operacji |
 | GET | `/api/v2/channels/{channel_id}/operations/{operation_id}` | odczyt fazy i wyniku |
+| POST | `/api/v2/channels/{channel_id}/commission` | zatwierdzenie wykrytego node, zapis profilu i restart hosta |
 
 Mutujący POST wymaga `Content-Type: application/json` oraz nagłówka
 `X-Sensor-System-Request: dashboard-v2`. Własny nagłówek blokuje prosty
@@ -80,8 +81,19 @@ wyłączone w UI.
 Commissioning oznacza całą procedurę przyjęcia nowego urządzenia: wyłączne okno
 Maintenance, slotowany `ScanUnassigned`, wybór po `hardware_id`,
 `AssignAddress`, handshake pod nowym adresem i zatwierdzenie tożsamości w
-profilu instalacji. Sam skan jest tylko discovery. Wire Scan/Assign jest gotowy;
-trwała aktualizacja profilu oraz panel zatwierdzania pozostają otwartą bramką.
+profilu instalacji. Sam skan jest tylko discovery. Pierwszy panel obsługuje
+świadomie prosty przypadek jednego nieprzypisanego node na wybranym kanale.
+Operator podaje tylko nazwę i wolny adres; ustawienia pomiarowe pozostają w
+formularzu Configuration.
+
+Przycisk `Dodaj node` znajduje się w karcie kanału. Dashboard przechodzi z
+Recording do Maintenance, wykonuje skan, a po zatwierdzeniu przekazuje
+AssignAddress do tego samego worker-owned Operations API. Dopiero potwierdzony
+handshake pozwala atomowo dopisać `name`, adres, `hardware_id` i board revision
+do śledzonego profilu `host/configs/systems/`. Następnie allowlisted helper
+restartuje hosta, który waliduje pełny profil przed startem. Konflikt adresu lub
+hardware ID jest odrzucany przed mutacją node. Zamknięcie kreatora po samym
+skanie przywraca Recording, jeśli dashboard wcześniej sam wszedł w Maintenance.
 
 ## Osobna granica systemowa
 
@@ -111,6 +123,7 @@ Przeglądarka po submit odpytuje wynik co 250 ms przez maksymalnie 120 s.
 Odświeżenie lub zamknięcie strony nie anuluje operacji; wynik nadal pozostaje w
 bounded ledgerze hosta i trwałym audycie.
 
-Następny przyrost UI obejmuje pełny commissioning wraz z zatwierdzeniem zmiany
-profilu. Osobno pozostają `doctor`, operacje grupowe i uwierzytelnienie aplikacji
+Commissioning UI i trwałe zatwierdzenie profilu są gotowe lokalnie; bramką
+sprzętową pozostaje HIL z fabrycznie nieprzypisanym node. Osobno pozostają
+`doctor`, operacje grupowe i uwierzytelnienie aplikacji
 ponad obecną granicę prywatnej sieci Tailscale.

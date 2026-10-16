@@ -230,6 +230,7 @@ impl SerialRs485Binding {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeInstallationProfile {
     node_address: u8,
+    display_name: Option<String>,
     hardware_id: HardwareId,
     board_revision: u8,
     enabled: bool,
@@ -239,6 +240,10 @@ pub struct NodeInstallationProfile {
 impl NodeInstallationProfile {
     pub const fn node_address(&self) -> u8 {
         self.node_address
+    }
+
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name.as_deref()
     }
 
     pub const fn hardware_id(&self) -> HardwareId {
@@ -352,6 +357,7 @@ fn parse_node(value: &Value, path: &str) -> Result<NodeInstallationProfile, Topo
     if node_address == 0 || node_address == u8::MAX {
         return Err(TopologyConfigError::NodeAddressOutOfRange(node_address));
     }
+    let display_name = optional_nonempty_string(object, "name", path)?.map(str::to_owned);
     let hardware_text = required_string(object, "hardware_id", path)?;
     let hardware_id = parse_hardware_id(hardware_text)
         .ok_or_else(|| TopologyConfigError::InvalidHardwareId(hardware_text.to_owned()))?;
@@ -369,6 +375,7 @@ fn parse_node(value: &Value, path: &str) -> Result<NodeInstallationProfile, Topo
 
     Ok(NodeInstallationProfile {
         node_address,
+        display_name,
         hardware_id,
         board_revision,
         enabled,
@@ -687,7 +694,7 @@ mod tests {
                 {
                     "name": "line-a", "channel_id": 1, "label": "Linia A", "enabled": true,
                     "transport": {"kind": "serial-rs485", "device_id": "usb-rs485-1", "endpoint": "/dev/line-a", "baud_rate": 115200},
-                    "nodes": [{"id": 1, "hardware_id": "2f13349450fa4084", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
+                    "nodes": [{"id": 1, "name": "North bearing", "hardware_id": "2f13349450fa4084", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
                 },
                 {
                     "name": "line-b", "channel_id": 2, "enabled": true,
@@ -706,6 +713,7 @@ mod tests {
         assert_eq!(profile.enabled_channels().count(), 2);
         assert_eq!(profile.channels()[0].transport().device_id(), "usb-rs485-1");
         assert_eq!(profile.channels()[1].transport().device_id(), "usb-rs485-1");
+        assert_eq!(profile.channels()[0].nodes()[0].display_name(), Some("North bearing"));
         assert_eq!(
             profile.channels()[1].nodes()[0].output_rate(),
             OutputRateCode::Hz62_5

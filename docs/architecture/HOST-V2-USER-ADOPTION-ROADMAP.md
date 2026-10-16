@@ -317,7 +317,7 @@ został zapisany na każdym node. Zamknięte okno C nr 67 ma 141965 próbek, zer
 braków oraz jeden oczekiwany `ProcessingReset`. Do pełnego zamknięcia kryterium
 pozostaje zimny restart całego Raspberry Pi i test nagłego przerwania procesu.
 
-### Etap 4 — dashboard v2 i sterowanie kanałem — Configuration gotowe lokalnie
+### Etap 4 — dashboard v2 i sterowanie kanałem — Commissioning gotowy lokalnie
 
 Na początek wykorzystamy istniejący interfejs strony, lecz dodamy osobny adapter
 danych v2. Adapter czyta wyłącznie wersjonowany snapshot i bezpiecznie
@@ -374,9 +374,12 @@ Recording. Formularz respektuje capabilities ODR i optimistic revision.
 Oddzielny checksummowany helper systemd obsługuje trzy globalne przyciski
 Start/Stop/Restart bez nadawania dashboardowi uprawnień roota.
 
-Commissioning nadal oznacza pełne przyjęcie node, nie sam skan. Scan/Assign są
-gotowe w control plane, ale UI i trwałe zatwierdzenie tożsamości w profilu
-instalacji pozostają następną bramką.
+Commissioning nadal oznacza pełne przyjęcie node, nie sam skan. Przycisk
+`Dodaj node` znajduje się bezpośrednio w karcie kanału. UI przyjmuje nazwę i
+adres, automatycznie wykonuje Maintenance, slotowany Scan, Assign z handshake,
+atomowy zapis tożsamości do profilu instalacji oraz restart hosta. Formularz
+Configuration pozostaje właścicielem ODR i pozostałych ustawień pomiarowych.
+Do zamknięcia bramki pozostaje HIL z fabrycznie nieprzypisanym node.
 
 ### Etap 5 — minimalne bezpieczne sterowanie
 

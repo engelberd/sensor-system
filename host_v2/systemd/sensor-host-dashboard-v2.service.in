@@ -32,6 +32,7 @@ ProtectClock=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
+ReadWritePaths=@SYSTEM_PROFILES_ROOT@
 
 [Install]
 WantedBy=multi-user.target

@@ -182,17 +182,18 @@ uzasadnią ją pomiary lub testy awarii.
 
 - obecny grant/burst/commit;
 - timing DRDY i model synchronizacji;
-- zapis HDF5, dashboard i konfigurator pozostają w legacy do czasu powstania
-  produkcyjnego Capture i Operations API.
+- zapis HDF5 pozostaje w legacy; dashboard v2 i Configuration korzystają już z
+  produkcyjnego Capture, Runtime Status i Operations API.
 
 Interfejs operatorski nie wystawia już tych implementacji jako poleceń
 produkcyjnych. `hostctl` obsługuje wyłącznie V2; zakres i jawne braki opisuje
 [HOSTCTL-V2.md](HOSTCTL-V2.md). Produkcyjny Capture V2 ma własną walidację i
 eksport. Configuration, Commissioning i RestartNode protocol 5 są podłączone do
 Operations API i `hostctl` przez jedynego właściciela RS485. HIL firmware 0.5.8
-potwierdził Configuration, pusty skan, restart i Resume; do zamknięcia
-Commissioning pozostaje Scan/Assign z nieprzypisanym node. Archive, kompresja,
-uploader i dashboard są świadomie odłożone poza MVP. Automatyczne pliki
+potwierdził Configuration, pusty skan, restart i Resume; panel Commissioning
+jest gotowy lokalnie, a do zamknięcia pozostaje HIL Scan/Assign z
+nieprzypisanym node. Archive, kompresja i uploader są świadomie odłożone poza
+MVP. Automatyczne pliki
 `Analysis CSV v2` jest obecnym formatem gotowym do podstawowej analizy drgań;
 Capture WAL pozostaje
 źródłem prawdy.
@@ -286,8 +287,10 @@ Istniejący `capture-export` zapisuje strumieniowo `samples.csv`, `events.csv` i
 `windows.csv` ze stałym użyciem pamięci. `analysis-export` publikuje dodatkowo
 osobny, atomowy CSV dla każdego zamkniętego około dziesięciominutowego okna.
 
-Poza MVP pozostają Archive, kompresja, publication outbox, uploader, dashboard,
-automatyczny dobór ODR, pełny commissioning i fizyczna kwalifikacja 16 kanałów.
+Poza MVP pozostają Archive, kompresja, publication outbox, uploader,
+automatyczny dobór ODR i fizyczna kwalifikacja 16 kanałów. Dashboard oraz
+prosty commissioning jednego nowego node są zaimplementowane; wymagają jeszcze
+końcowego HIL.
 Te elementy nie blokują pierwszego recorderowego wdrożenia 24/7.
 
 Numery oznaczają obszary i bramki produktu. Fundament, runtime node i pion HIL
@@ -836,7 +839,9 @@ Bieżąca kolejność implementacji:
 8. **Gotowe dla lifecycle usługi:** osobny root-owned helper z allowlistą
    steruje start/stop/restart recordera i timera eksportu. Instalator publikuje
    checksummowany helper oraz automatyczne jednostki helpera i dashboardu;
-9. dodać panel pełnego Commissioning z trwałym zatwierdzeniem profilu,
+9. **Gotowe lokalnie:** prosty panel Commissioning w karcie kanału przyjmuje
+   nazwę i adres, wykonuje Maintenance/Scan/Assign, atomowy zapis profilu oraz
+   restart hosta; pozostaje HIL z nieprzypisanym node,
    asynchroniczny wynik `doctor` oraz operacje grupowe z wynikiem per target.
 
 ### Etap 11 — prosty eksport i migracja produkcyjna

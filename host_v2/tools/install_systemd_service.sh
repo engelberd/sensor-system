@@ -64,6 +64,7 @@ BINARY="$(cd "$(dirname "$BINARY")" && pwd -P)/$(basename "$BINARY")"
 ANALYSIS_BINARY="$(cd "$(dirname "$ANALYSIS_BINARY")" && pwd -P)/$(basename "$ANALYSIS_BINARY")"
 HOST_PYTHON="$(cd "$(dirname "$HOST_PYTHON")" && pwd -P)/$(basename "$HOST_PYTHON")"
 RUNTIME_DATA_ROOT="$REPOSITORY_ROOT/var"
+SYSTEM_PROFILES_ROOT="$REPOSITORY_ROOT/host/configs/systems"
 TEMPLATE="$REPOSITORY_ROOT/host_v2/systemd/sensor-host-v2.service.in"
 ANALYSIS_TEMPLATE="$REPOSITORY_ROOT/host_v2/systemd/sensor-analysis-export-v2.service.in"
 ANALYSIS_TIMER_TEMPLATE="$REPOSITORY_ROOT/host_v2/systemd/sensor-analysis-export-v2.timer.in"
@@ -156,6 +157,7 @@ render_dashboard_unit() {
   sed \
     -e "s|@REPOSITORY_ROOT@|$REPOSITORY_ROOT|g" \
     -e "s|@CONFIG_PATH@|$CONFIG_PATH|g" \
+    -e "s|@SYSTEM_PROFILES_ROOT@|$SYSTEM_PROFILES_ROOT|g" \
     -e "s|@DASHBOARD_PYTHON@|$REPOSITORY_ROOT/host/.venv/bin/python|g" \
     -e "s|@DASHBOARD_HOST@|$DASHBOARD_HOST|g" \
     -e "s|@DASHBOARD_PORT@|$DASHBOARD_PORT|g" \

@@ -125,4 +125,5 @@ nie jest planowana pomiędzy produkcyjnymi pullami próbek.
 - osobna, odzyskiwalna migracja baudrate;
 - polityka hosta dobierająca początkowy i maksymalny `slot_count`;
 - pełny HIL kilku jednocześnie niezaadresowanych node;
-- API operatorskie orkiestrujące rundę, przypisanie i końcową weryfikację.
+- HIL całego przepływu dashboard → Maintenance → Scan → Assign → zapis profilu
+  → restart hosta z fabrycznie nieprzypisanym node.
