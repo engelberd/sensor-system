@@ -123,6 +123,19 @@ metadata = window["metadata"]
 assert window["is_continuous"]
 ```
 
+Środowisko analityczne można utworzyć bez instalowania pakietów globalnie:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r host_v2/analysis/requirements.txt
+jupyter lab host_v2/analysis/analysis_window.ipynb
+```
+
+W PowerShell polecenie aktywacji ma postać
+`.venv\Scripts\Activate.ps1`, a pozostałe polecenia pozostają takie same.
+
 Skrypt wymaga tylko `numpy`. Kończy się kodem `0` dla ciągłego okna, `2` dla
 jawnej luki lub continuity break oraz `1` dla niespójnych plików. Wektor czasu
 uwzględnia brakujące próbki opisane przez zdarzenia `gap`.
