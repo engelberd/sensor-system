@@ -2315,7 +2315,7 @@ mod tests {
     use crate::channel_admission::AdmissionPolicy;
     use crate::channel_agent::{ChannelAgent, ChannelPolicy};
     use crate::channel_bootstrap::NodeBootstrapEvidence;
-    use crate::channel_endpoint::{ChannelEndpoint, SystemMonotonicClock};
+    use crate::channel_endpoint::{ChannelEndpoint, MonotonicClock, SystemMonotonicClock};
     use crate::channel_port::ChannelPort;
     use crate::channel_runtime::TimeSyncScheduleConfig;
     use crate::channel_scheduler::ChannelSchedulerPolicy;
@@ -2581,6 +2581,7 @@ mod tests {
         )
         .unwrap();
         let stops = Arc::new(AtomicUsize::new(0));
+        let clock = SystemMonotonicClock::new();
         let endpoint = ChannelEndpoint::new(
             agent,
             ChannelPort::from_io(StartBus {
@@ -2590,7 +2591,7 @@ mod tests {
                 stops: Arc::clone(&stops),
                 pulls: 0,
             }),
-            SystemMonotonicClock::new(),
+            clock.clone(),
         );
         let bootstrapped = BootstrappedChannel::from_parts(
             endpoint,
@@ -2658,7 +2659,7 @@ mod tests {
         )
         .unwrap();
 
-        let now = crate::transaction::MonotonicMicros::new(1_000_000);
+        let now = clock.now();
         assert_eq!(
             recording
                 .measurements()
