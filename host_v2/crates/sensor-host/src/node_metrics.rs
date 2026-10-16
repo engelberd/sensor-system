@@ -16,6 +16,8 @@ pub struct NodeMetricsSnapshot {
     pub produced_cursor: Option<u64>,
     pub last_measurement_monotonic_us: Option<u64>,
     pub last_time_sync_monotonic_us: Option<u64>,
+    pub configuration_revision: Option<u32>,
+    pub output_rate_code: Option<u8>,
 }
 
 #[derive(Default)]
@@ -29,6 +31,9 @@ struct NodeMetricsAtomic {
     has_measurement: AtomicBool,
     last_time_sync_monotonic_us: AtomicU64,
     has_time_sync: AtomicBool,
+    configuration_revision: AtomicU64,
+    output_rate_code: AtomicU64,
+    has_configuration: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -59,6 +64,16 @@ impl NodeMetricsReader {
                 &self.metrics.has_time_sync,
                 &self.metrics.last_time_sync_monotonic_us,
             ),
+            configuration_revision: optional_counter(
+                &self.metrics.has_configuration,
+                &self.metrics.configuration_revision,
+            )
+            .and_then(|value| u32::try_from(value).ok()),
+            output_rate_code: optional_counter(
+                &self.metrics.has_configuration,
+                &self.metrics.output_rate_code,
+            )
+            .and_then(|value| u8::try_from(value).ok()),
         }
     }
 }
@@ -116,6 +131,22 @@ impl NodeMetricsPublisher {
         self.metrics.has_time_sync.store(true, Ordering::Release);
     }
 
+    pub(crate) fn observe_configuration(
+        &self,
+        configuration: sensor_protocol::ObservedConfiguration,
+    ) {
+        self.metrics
+            .configuration_revision
+            .store(u64::from(configuration.revision), Ordering::Relaxed);
+        self.metrics.output_rate_code.store(
+            u64::from(configuration.desired.output_rate as u8),
+            Ordering::Relaxed,
+        );
+        self.metrics
+            .has_configuration
+            .store(true, Ordering::Release);
+    }
+
     fn observe_cursors(&self, cursors: DeliveryCursors) {
         self.metrics
             .received_cursor
@@ -152,6 +183,12 @@ mod tests {
         let (publisher, reader) = NodeMetricsPublisher::new(2, 7, session.cursors());
         publisher.observe_session(&session, Some(15), MonotonicMicros::new(123));
         publisher.observe_time_sync(MonotonicMicros::new(456));
+        publisher.observe_configuration(sensor_protocol::ObservedConfiguration {
+            revision: 3,
+            desired: sensor_protocol::MeasurementConfiguration::product_default(),
+            sensor_odr: sensor_protocol::Adxl355Odr::Hz125,
+            decimation_factor: 1,
+        });
 
         assert_eq!(
             reader.snapshot(),
@@ -164,6 +201,8 @@ mod tests {
                 produced_cursor: Some(15),
                 last_measurement_monotonic_us: Some(123),
                 last_time_sync_monotonic_us: Some(456),
+                configuration_revision: Some(3),
+                output_rate_code: Some(sensor_protocol::OutputRateCode::Hz125 as u8),
             }
         );
     }

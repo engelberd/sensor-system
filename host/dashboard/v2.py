@@ -15,6 +15,11 @@ from host.dashboard.v2_operations import (
     OperationsIpcClientError,
     fresh_operation_id,
 )
+from host.dashboard.v2_service_control import (
+    DEFAULT_SERVICE_CONTROL_SOCKET,
+    ServiceControlClient,
+    ServiceControlError,
+)
 
 
 DEFAULT_STATUS_PATH = Path("/run/sensor-system/host-v2-status.json")
@@ -110,12 +115,15 @@ class V2DashboardRepository:
         service_unit: str = DEFAULT_SERVICE_UNIT,
         operations_socket: str | Path = DEFAULT_OPERATIONS_SOCKET,
         operations_client: OperationsIpcClient | None = None,
+        service_control_socket: str | Path = DEFAULT_SERVICE_CONTROL_SOCKET,
+        service_control_client: ServiceControlClient | None = None,
     ) -> None:
         self.config_path = Path(config_path)
         self.default_event_limit = default_event_limit
         self.status_path = Path(status_path)
         self.service_unit = service_unit
         self.operations = operations_client or OperationsIpcClient(operations_socket)
+        self.service_control = service_control_client or ServiceControlClient(service_control_socket)
         self._journal_lock = threading.Lock()
         self._journal_cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
@@ -124,7 +132,36 @@ class V2DashboardRepository:
             "schema_version": 1,
             "operations_transport": "host-v2-unix-datagram",
             "submission": "asynchronous",
-            "service_control": False,
+            "service_control": self.service_control_status_payload().get("available", False),
+            "configuration_workflow": {
+                "automatic_mode_transition": True,
+                "restore_recording_on_success": True,
+                "failure_mode": "maintenance_or_faulted",
+            },
+            "measurement_configuration": {
+                "output_rates": [
+                    {"code": 0, "hz": "4000"},
+                    {"code": 1, "hz": "2000"},
+                    {"code": 2, "hz": "1000"},
+                    {"code": 3, "hz": "500"},
+                    {"code": 4, "hz": "250"},
+                    {"code": 5, "hz": "125"},
+                    {"code": 6, "hz": "62.5"},
+                    {"code": 7, "hz": "31.25"},
+                    {"code": 8, "hz": "15.625"},
+                    {"code": 9, "hz": "7.8125"},
+                    {"code": 10, "hz": "3.90625"},
+                ],
+                "ranges_g": [2, 4, 8],
+                "high_pass_corner": {"minimum": 0, "maximum": 7},
+                "filter_profiles": [
+                    {"code": 0, "name": "light"},
+                    {"code": 1, "name": "balanced"},
+                    {"code": 2, "name": "aggressive"},
+                ],
+                "fifo_watermark": {"minimum": 3, "maximum": 96, "step": 3},
+                "offset": {"minimum": -32768, "maximum": 32767},
+            },
             "channel_operations": [
                 "enter_maintenance",
                 "resume_recording",
@@ -139,6 +176,21 @@ class V2DashboardRepository:
                 "restart_node",
             ],
         }
+
+    def service_control_status_payload(self) -> dict[str, Any]:
+        try:
+            response = self.service_control.status()
+        except ServiceControlError as exc:
+            return {"available": False, "active": None, "error": str(exc)}
+        state = response.get("state")
+        if not isinstance(state, dict):
+            return {"available": False, "active": None, "error": "invalid service control state"}
+        return dict(state)
+
+    def perform_service_action(self, action: str) -> dict[str, Any]:
+        if action not in {"start", "stop", "restart"}:
+            raise ValueError("unsupported service action")
+        return self.service_control.perform(action)
 
     def operation_status_payload(self, channel_id: int) -> dict[str, Any]:
         self._validate_channel_id(channel_id)
@@ -405,6 +457,10 @@ class V2DashboardRepository:
                         "sensor_odr_hz": 0,
                         "output_odr_hz": float(node.get("output_rate_hz", raw_node.get("output_rate_hz", 0))) if isinstance(node, dict) else float(raw_node.get("output_rate_hz", 0)),
                         "expected_odr_hz": float(raw_node.get("output_rate_hz", 0)),
+                        "output_rate_mask": _safe_int(node.get("output_rate_mask")) if isinstance(node, dict) else 0,
+                        "configuration_revision": _safe_int(node.get("configuration_revision")) if isinstance(node, dict) else 0,
+                        "service_flags": _safe_int(node.get("service_flags")) if isinstance(node, dict) else 0,
+                        "feature_flags": _safe_int(node.get("feature_flags")) if isinstance(node, dict) else 0,
                         "samples_written": durable,
                         "expected_sample_seq": produced,
                         "instant_samples_per_second_5s": None,
@@ -526,6 +582,7 @@ class V2DashboardRepository:
         return {
             "dashboard_version": "v2-observer-1",
             "dashboard_mode": "host-v2-operations",
+            "service_control": self.service_control_status_payload(),
             "read_only": True,
             "operator_api_available": any(
                 channel.get("controls_enabled", False) for channel in channels

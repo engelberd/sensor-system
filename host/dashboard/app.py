@@ -21,6 +21,7 @@ from host.common.runtime_status import JsonlEventWriter
 from host.common.system_config import HostSystemConfig
 from host.common.version import PROJECT_VERSION
 from host.dashboard.v2_operations import OperationsIpcClientError
+from host.dashboard.v2_service_control import ServiceControlError
 
 
 DASHBOARD_VERSION = PROJECT_VERSION
@@ -199,6 +200,49 @@ INDEX_HTML = """<!doctype html>
       .node-firmware-restart-btn {
         margin-top: 8px;
       }
+
+      .node-action-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      dialog.config-dialog {
+        width: min(720px, calc(100vw - 28px));
+        max-height: calc(100vh - 28px);
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 0;
+        color: var(--text);
+        background: var(--panel-strong);
+        box-shadow: var(--shadow);
+      }
+
+      dialog.config-dialog::backdrop {
+        background: rgba(37, 24, 13, 0.46);
+        backdrop-filter: blur(4px);
+      }
+
+      .config-form { padding: 24px; }
+      .config-form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin: 18px 0;
+      }
+      .config-form .field input,
+      .config-form .field select {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid rgba(69, 50, 26, 0.12);
+        background: rgba(255, 255, 255, 0.9);
+        padding: 11px 12px;
+        font: inherit;
+        color: var(--text);
+      }
+      .config-form-status { min-height: 1.5em; color: var(--muted); }
 
       .hero-meta {
         min-width: min(100%, 300px);
@@ -730,6 +774,7 @@ INDEX_HTML = """<!doctype html>
         .logs-grid,
         .events,
         .config-grid,
+        .config-form-grid,
         .runtime-grid,
         .data-layout,
         .data-summary-grid {
@@ -806,6 +851,9 @@ INDEX_HTML = """<!doctype html>
             </p>
             <div class="actions">
               <button class="btn" id="refresh-btn" type="button">Odśwież teraz</button>
+              <button class="btn" id="service-start-btn" type="button" hidden>Start hosta</button>
+              <button class="btn secondary" id="service-stop-btn" type="button" hidden>Stop hosta</button>
+              <button class="btn" id="service-restart-btn" type="button" hidden>Restart hosta</button>
               <button class="btn" id="restart-all-btn" type="button">Restart all</button>
               <button class="btn secondary" id="purge-all-btn" type="button">Purge all</button>
               <a class="btn secondary" href="#channels">Przejdź do kanałów</a>
@@ -944,6 +992,61 @@ INDEX_HTML = """<!doctype html>
       </section>
     </div>
 
+    <dialog class="config-dialog" id="node-config-dialog">
+      <form class="config-form" id="node-config-form" method="dialog">
+        <p class="eyebrow">Configuration Service · protocol 5</p>
+        <h2 class="section-title" id="node-config-title">Konfiguracja node</h2>
+        <p class="section-note">
+          Host sam bezpiecznie zatrzyma kanał i wznowi Recording, jeśli operacja została rozpoczęta podczas pomiaru.
+        </p>
+        <input id="config-channel-id" type="hidden" />
+        <input id="config-node-id" type="hidden" />
+        <div class="config-form-grid">
+          <label class="field">Revision
+            <input id="config-revision" type="number" readonly />
+          </label>
+          <label class="field">Output ODR
+            <select id="config-output-rate">
+              <option value="0">4000 Hz</option><option value="1">2000 Hz</option>
+              <option value="2">1000 Hz</option><option value="3">500 Hz</option>
+              <option value="4">250 Hz</option><option value="5">125 Hz</option>
+              <option value="6">62.5 Hz</option><option value="7">31.25 Hz</option>
+              <option value="8">15.625 Hz</option><option value="9">7.8125 Hz</option>
+              <option value="10">3.90625 Hz</option>
+            </select>
+          </label>
+          <label class="field">Zakres
+            <select id="config-range"><option value="2">±2 g</option><option value="4">±4 g</option><option value="8">±8 g</option></select>
+          </label>
+          <label class="field">Filtr decymacji
+            <select id="config-filter"><option value="0">Light</option><option value="1">Balanced</option><option value="2">Aggressive</option></select>
+          </label>
+          <label class="field">High-pass corner (0–7)
+            <input id="config-high-pass" type="number" min="0" max="7" step="1" required />
+          </label>
+          <label class="field">FIFO watermark (3–96, wielokrotność 3)
+            <input id="config-watermark" type="number" min="3" max="96" step="3" required />
+          </label>
+          <label class="field">Offset X
+            <input id="config-offset-x" type="number" min="-32768" max="32767" step="1" required />
+          </label>
+          <label class="field">Offset Y
+            <input id="config-offset-y" type="number" min="-32768" max="32767" step="1" required />
+          </label>
+          <label class="field">Offset Z
+            <input id="config-offset-z" type="number" min="-32768" max="32767" step="1" required />
+          </label>
+        </div>
+        <p class="config-form-status" id="node-config-status"></p>
+        <div class="actions">
+          <button class="btn" id="config-apply-btn" type="button">Zastosuj</button>
+          <button class="btn secondary" id="config-validate-btn" type="button">Sprawdź</button>
+          <button class="btn secondary" id="config-reset-btn" type="button">Przywróć domyślne</button>
+          <button class="btn secondary" id="config-close-btn" type="button">Zamknij</button>
+        </div>
+      </form>
+    </dialog>
+
     <script>
       const REFRESH_MS = 2000;
       const LOG_REFRESH_MS = 6000;
@@ -954,6 +1057,7 @@ INDEX_HTML = """<!doctype html>
       let currentDataItems = [];
       let dataSearchMode = false;
       let currentLogChannelFilter = "";
+      let serviceControlBusy = false;
       const selectedDataPaths = new Set();
 
       function $(id) {
@@ -1120,6 +1224,14 @@ INDEX_HTML = """<!doctype html>
           $("restart-all-btn").hidden = true;
           $("purge-all-btn").hidden = true;
         }
+        const serviceControl = data.service_control || {};
+        const serviceAvailable = serviceControl.available === true;
+        $("service-start-btn").hidden = !serviceAvailable;
+        $("service-stop-btn").hidden = !serviceAvailable;
+        $("service-restart-btn").hidden = !serviceAvailable;
+        $("service-start-btn").disabled = serviceControlBusy || serviceControl.active === true;
+        $("service-stop-btn").disabled = serviceControlBusy || serviceControl.active !== true;
+        $("service-restart-btn").disabled = serviceControlBusy || serviceControl.active !== true;
         if (data.data_available === false) {
           $("data").hidden = true;
         }
@@ -1297,14 +1409,25 @@ INDEX_HTML = """<!doctype html>
               ${escapeHtml(node.online ? (node.sample_flow_state === "stalled" ? "ONLINE / BRAK PRÓBEK" : "ONLINE") : (node.has_runtime ? "OFFLINE" : "NO-RUNTIME"))}
               <div class="node-meta">${escapeHtml(alerts)}</div>
               ${channel.runtime_v2
-                ? (["maintenance", "faulted"].includes(channel.operation_mode) ? `<button
-                    class="btn secondary small v2-node-restart-btn"
-                    data-channel-id="${escapeHtml(channel.channel_id)}"
-                    data-channel-name="${escapeHtml(channel.name)}"
-                    data-node-id="${escapeHtml(node.node_id)}"
-                    type="button"
-                    ${channel.enabled && node.enabled ? "" : "disabled"}
-                  >Restart node</button>` : "")
+                ? `<div class="node-action-row">
+                    <button
+                      class="btn small v2-node-config-btn"
+                      data-channel-id="${escapeHtml(channel.channel_id)}"
+                      data-channel-name="${escapeHtml(channel.name)}"
+                      data-node-id="${escapeHtml(node.node_id)}"
+                      data-output-rate-mask="${escapeHtml(node.output_rate_mask || 0)}"
+                      type="button"
+                      ${channel.enabled && node.enabled && ["recording", "maintenance", "faulted"].includes(channel.operation_mode) && !channel.active_operation_id ? "" : "disabled"}
+                    >Konfiguruj</button>
+                    ${["maintenance", "faulted"].includes(channel.operation_mode) ? `<button
+                      class="btn secondary small v2-node-restart-btn"
+                      data-channel-id="${escapeHtml(channel.channel_id)}"
+                      data-channel-name="${escapeHtml(channel.name)}"
+                      data-node-id="${escapeHtml(node.node_id)}"
+                      type="button"
+                      ${channel.enabled && node.enabled && !channel.active_operation_id ? "" : "disabled"}
+                    >Restart node</button>` : ""}
+                  </div>`
                 : (channel.controls_enabled === false ? "" : `<button
                     class="btn secondary small node-firmware-restart-btn"
                     data-channel-name="${escapeHtml(channel.name)}"
@@ -1726,6 +1849,105 @@ INDEX_HTML = """<!doctype html>
         return waitForV2Operation(channelId, submitted.operation_id);
       }
 
+      function setConfigurationFormBusy(busy, message = "") {
+        ["config-apply-btn", "config-validate-btn", "config-reset-btn", "config-close-btn"].forEach((id) => {
+          $(id).disabled = busy;
+        });
+        $("node-config-status").textContent = message;
+      }
+
+      function configurationFromForm() {
+        return {
+          output_rate_code: Number($("config-output-rate").value),
+          range_g: Number($("config-range").value),
+          high_pass_corner: Number($("config-high-pass").value),
+          filter_profile: Number($("config-filter").value),
+          fifo_watermark: Number($("config-watermark").value),
+          offset_x: Number($("config-offset-x").value),
+          offset_y: Number($("config-offset-y").value),
+          offset_z: Number($("config-offset-z").value),
+        };
+      }
+
+      function showObservedConfiguration(observed) {
+        const configuration = observed && observed.configuration;
+        if (!configuration) throw new Error("Host nie zwrócił kompletnej konfiguracji node");
+        $("config-revision").value = observed.revision;
+        $("config-output-rate").value = configuration.output_rate_code;
+        $("config-range").value = configuration.range_g;
+        $("config-high-pass").value = configuration.high_pass_corner;
+        $("config-filter").value = configuration.filter_profile;
+        $("config-watermark").value = configuration.fifo_watermark;
+        $("config-offset-x").value = configuration.offset_x;
+        $("config-offset-y").value = configuration.offset_y;
+        $("config-offset-z").value = configuration.offset_z;
+      }
+
+      async function openNodeConfiguration(button) {
+        const channelId = Number(button.dataset.channelId || 0);
+        const nodeAddress = Number(button.dataset.nodeId || 0);
+        const channelName = button.dataset.channelName || `channel-${channelId}`;
+        const outputRateMask = Number(button.dataset.outputRateMask || 0);
+        if (!channelId || !nodeAddress) return;
+        const previousLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "Odczytywanie...";
+        try {
+          const response = await submitV2Operation(channelId, "get_configuration", { node_address: nodeAddress });
+          if (!response.result || response.result.kind !== "configuration_observed") {
+            throw new Error("Nieoczekiwany wynik GetConfiguration");
+          }
+          $("config-channel-id").value = channelId;
+          $("config-node-id").value = nodeAddress;
+          $("node-config-title").textContent = `${channelName} · node ${nodeAddress}`;
+          Array.from($("config-output-rate").options).forEach((option) => {
+            const code = Number(option.value);
+            option.disabled = outputRateMask !== 0 && (outputRateMask & (1 << code)) === 0;
+          });
+          showObservedConfiguration(response.result.observed);
+          setConfigurationFormBusy(false, `Odczytano revision ${response.result.observed.revision}.`);
+          $("node-config-dialog").showModal();
+          await loadDashboard();
+        } finally {
+          button.disabled = false;
+          button.textContent = previousLabel;
+        }
+      }
+
+      async function runConfigurationOperation(operation) {
+        const form = $("node-config-form");
+        if (operation !== "reset_configuration" && !form.reportValidity()) return;
+        const channelId = Number($("config-channel-id").value);
+        const nodeAddress = Number($("config-node-id").value);
+        const expectedRevision = Number($("config-revision").value);
+        const fields = { node_address: nodeAddress };
+        if (operation === "validate_configuration" || operation === "apply_configuration") {
+          fields.configuration = configurationFromForm();
+        }
+        if (operation === "apply_configuration" || operation === "reset_configuration") {
+          fields.expected_revision = expectedRevision;
+        }
+        setConfigurationFormBusy(true, "Host wykonuje bezpieczną procedurę konfiguracji…");
+        try {
+          const response = await submitV2Operation(channelId, operation, fields);
+          if (response.result && response.result.kind === "configuration_validated") {
+            const labels = ["poprawna", "ODR nieobsługiwane", "błędny zakres", "błędny high-pass", "błędny filtr", "błędny watermark", "błędny offset"];
+            $("node-config-status").textContent = `Walidacja: ${labels[response.result.code] || `kod ${response.result.code}`} (pole ${response.result.field}).`;
+          } else if (response.result && response.result.kind === "configuration_applied") {
+            showObservedConfiguration(response.result.observed);
+            const modeNote = response.mode === "recording"
+              ? "Kanał bezpiecznie wrócił do Recording."
+              : `Kanał pozostał w trybie ${response.mode || "Maintenance"}.`;
+            $("node-config-status").textContent = `Zastosowano revision ${response.result.observed.revision}. ${modeNote}`;
+          } else {
+            $("node-config-status").textContent = "Operacja zakończona.";
+          }
+          await loadDashboard();
+        } finally {
+          setConfigurationFormBusy(false, $("node-config-status").textContent);
+        }
+      }
+
       async function performV2ChannelOperation(button) {
         const channelId = Number(button.dataset.channelId || 0);
         const channelName = button.dataset.channelName || `channel-${channelId}`;
@@ -1814,6 +2036,25 @@ INDEX_HTML = """<!doctype html>
         }, 900);
       }
 
+      async function performV2ServiceAction(action) {
+        const labels = { start: "uruchomić", stop: "zatrzymać", restart: "zrestartować" };
+        if (!window.confirm(`Czy ${labels[action]} cały host pomiarowy?`)) return;
+        if (serviceControlBusy) return;
+        serviceControlBusy = true;
+        ["service-start-btn", "service-stop-btn", "service-restart-btn"].forEach((id) => { $(id).disabled = true; });
+        try {
+          const response = await fetchJson(`/api/v2/service/${encodeURIComponent(action)}`, {
+            method: "POST",
+            headers: { "X-Sensor-System-Request": "dashboard-v2" },
+          });
+          const state = response.state || {};
+          $("overview-note").textContent = `Sterowanie usługą zakończone: host ${state.active ? "aktywny" : "zatrzymany"}`;
+        } finally {
+          serviceControlBusy = false;
+          window.setTimeout(() => refreshAll(true).catch((error) => alert(error.message)), 750);
+        }
+      }
+
       function scheduleRefresh() {
         if (refreshTimer !== null) {
           window.clearInterval(refreshTimer);
@@ -1835,6 +2076,9 @@ INDEX_HTML = """<!doctype html>
       $("purge-all-btn").addEventListener("click", () => {
         performSupervisorAction("purge_all").catch((error) => alert(error.message));
       });
+      $("service-start-btn").addEventListener("click", () => performV2ServiceAction("start").catch((error) => alert(error.message)));
+      $("service-stop-btn").addEventListener("click", () => performV2ServiceAction("stop").catch((error) => alert(error.message)));
+      $("service-restart-btn").addEventListener("click", () => performV2ServiceAction("restart").catch((error) => alert(error.message)));
 
       $("logs-refresh-btn").addEventListener("click", () => {
         loadLogs(true).catch((error) => alert(error.message));
@@ -1913,6 +2157,10 @@ INDEX_HTML = """<!doctype html>
           restartV2Node(target).catch((error) => alert(error.message));
           return;
         }
+        if (target.classList.contains("v2-node-config-btn")) {
+          openNodeConfiguration(target).catch((error) => alert(error.message));
+          return;
+        }
         if (target.classList.contains("node-firmware-restart-btn")) {
           const channelName = target.dataset.channelName || "";
           const nodeId = target.dataset.nodeId || "";
@@ -1932,6 +2180,25 @@ INDEX_HTML = """<!doctype html>
         }
         performChannelAction(channelName, action).catch((error) => alert(error.message));
       });
+
+      $("config-apply-btn").addEventListener("click", () => {
+        runConfigurationOperation("apply_configuration").catch((error) => {
+          setConfigurationFormBusy(false, `Błąd: ${error.message}`);
+        });
+      });
+      $("config-validate-btn").addEventListener("click", () => {
+        runConfigurationOperation("validate_configuration").catch((error) => {
+          setConfigurationFormBusy(false, `Błąd: ${error.message}`);
+        });
+      });
+      $("config-reset-btn").addEventListener("click", () => {
+        if (window.confirm("Przywrócić domyślną konfigurację pomiarową node?")) {
+          runConfigurationOperation("reset_configuration").catch((error) => {
+            setConfigurationFormBusy(false, `Błąd: ${error.message}`);
+          });
+        }
+      });
+      $("config-close-btn").addEventListener("click", () => $("node-config-dialog").close());
 
       refreshAll(true).catch((error) => {
         $("hero-copy").textContent = `Nie udało się pobrać danych panelu: ${error}`;
@@ -4850,6 +5117,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._write_json(self.repository.operator_capabilities_payload())
                 return
 
+            if route == "/api/v2/service" and getattr(
+                self.repository, "supports_v2_operations", False
+            ):
+                self._write_json(self.repository.service_control_status_payload())
+                return
+
             operation_route = self._parse_v2_operation_route(route)
             if operation_route is not None and getattr(
                 self.repository, "supports_v2_operations", False
@@ -4925,11 +5198,25 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except OperationsIpcClientError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+        except ServiceControlError as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def do_POST(self) -> None:
         try:
             parsed = urlparse(self.path)
             route = parsed.path
+            if route.startswith("/api/v2/service/") and getattr(
+                self.repository, "supports_v2_operations", False
+            ):
+                if self.headers.get("X-Sensor-System-Request") != "dashboard-v2":
+                    self._write_json(
+                        {"error": "missing dashboard-v2 request marker"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                action = route.removeprefix("/api/v2/service/")
+                self._write_json(self.repository.perform_service_action(action))
+                return
             operation_route = self._parse_v2_operation_route(route)
             if (
                 operation_route is not None
@@ -5044,6 +5331,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except OperationsIpcClientError as exc:
             self._write_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+        except ServiceControlError as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _write_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -5138,6 +5427,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-limit", type=int, default=40)
     parser.add_argument("--runtime-status", default="/run/sensor-system/host-v2-status.json")
     parser.add_argument("--service-unit", default="sensor-host-v2.service")
+    parser.add_argument("--operations-socket", default="/run/sensor-system/operations-v1.sock")
+    parser.add_argument("--service-control-socket", default="/run/sensor-system-control/service-control-v1.sock")
     return parser.parse_args()
 
 
@@ -5151,8 +5442,10 @@ def main() -> int:
             default_event_limit=args.event_limit,
             status_path=args.runtime_status,
             service_unit=args.service_unit,
+            operations_socket=args.operations_socket,
+            service_control_socket=args.service_control_socket,
         )
-        mode = "host-v2 read-only"
+        mode = "host-v2 operations"
     else:
         repository = DashboardRepository(args.config, default_event_limit=args.event_limit)
         mode = "legacy"

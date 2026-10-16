@@ -244,6 +244,20 @@ impl ChannelWorkCoordinator {
             .collect()
     }
 
+    pub fn observe_configuration(
+        &self,
+        node_address: u8,
+        configuration: sensor_protocol::ObservedConfiguration,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        let managed = self
+            .sessions
+            .iter()
+            .find(|managed| managed.node_address == node_address)
+            .ok_or(MeasurementCoordinatorError::UnknownNode(node_address))?;
+        managed.metrics.observe_configuration(configuration);
+        Ok(())
+    }
+
     pub fn dispatch_next(
         &mut self,
         agent: &mut ChannelAgent,

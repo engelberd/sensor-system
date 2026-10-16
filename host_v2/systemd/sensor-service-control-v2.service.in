@@ -1,0 +1,35 @@
+[Unit]
+Description=Sensor System bounded service control helper
+Documentation=file://@REPOSITORY_ROOT@/docs/architecture/OPERATOR-HTTP-API-V1.md
+After=dbus.service
+
+[Service]
+Type=simple
+User=root
+Group=@SERVICE_GROUP@
+WorkingDirectory=@INSTALL_ROOT@/current
+ExecStart=@HOST_PYTHON@ @CURRENT_SERVICE_CONTROL@
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+RuntimeDirectory=sensor-system-control
+RuntimeDirectoryMode=0750
+UMask=0007
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sensor-service-control-v2
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

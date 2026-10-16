@@ -164,6 +164,7 @@ pub struct ProductionChannelTask<P, C, T> {
     maintenance: Option<MaintenanceEntryExecution>,
     resume: Option<ResumeRecordingExecution>,
     configuration: Option<ConfigurationExecution>,
+    configuration_workflow: Option<AutomaticConfigurationWorkflow>,
     commissioning: Option<CommissioningExecution>,
     restart: Option<RestartExecution>,
     commissioning_discoveries: Vec<sensor_protocol::CommissioningIdentity>,
@@ -186,6 +187,7 @@ struct MaintenanceEntryExecution {
     barrier_deadline: Instant,
     drain_deadline: Option<Instant>,
     drain_started: bool,
+    finish_active_operation: bool,
 }
 
 struct ResumeRecordingExecution {
@@ -195,6 +197,7 @@ struct ResumeRecordingExecution {
     reconciled_nodes: usize,
     pending_time: Option<PendingTimeRollover>,
     reconciliation_deadline: Option<Instant>,
+    completion_result: Option<OperationResult>,
 }
 
 struct PendingTimeRollover {
@@ -208,6 +211,14 @@ struct ConfigurationExecution {
     key: ControlWorkKey,
     deadline: Instant,
     terminal_error: Option<OperationsError>,
+    finish_active_operation: bool,
+}
+
+enum AutomaticConfigurationWorkflow {
+    EnteringMaintenance(OperationRequest),
+    Configuring,
+    ReadyToResume(OperationResult),
+    Resuming,
 }
 
 enum CommissioningExecution {
@@ -258,6 +269,7 @@ impl ResumeRecordingExecution {
     fn new(
         nodes: &[ChannelControlNode],
         policy: ChannelMaintenancePolicy,
+        completion_result: Option<OperationResult>,
     ) -> Result<Self, ChannelMaintenanceError> {
         let contracts = nodes
             .iter()
@@ -273,6 +285,7 @@ impl ResumeRecordingExecution {
             reconciled_nodes: 0,
             pending_time: None,
             reconciliation_deadline: None,
+            completion_result,
         })
     }
 }
@@ -281,6 +294,7 @@ impl MaintenanceEntryExecution {
     fn new(
         nodes: &[ChannelControlNode],
         policy: ChannelMaintenancePolicy,
+        finish_active_operation: bool,
     ) -> Result<Self, ChannelMaintenanceError> {
         let contracts = nodes
             .iter()
@@ -302,6 +316,7 @@ impl MaintenanceEntryExecution {
             barrier_deadline,
             drain_deadline: None,
             drain_started: false,
+            finish_active_operation,
         })
     }
 }
@@ -322,7 +337,7 @@ where
     ) -> Result<Self, ProductionChannelTaskBuildError> {
         let shutdown_policy = shutdown_policy.validate()?;
         let maintenance_policy = maintenance_policy.validate()?;
-        let nodes = startup
+        let nodes: Vec<ChannelControlNode> = startup
             .nodes()
             .iter()
             .map(|node| ChannelControlNode {
@@ -335,6 +350,11 @@ where
                 configuration: node.configuration,
             })
             .collect();
+        for node in &nodes {
+            recording
+                .observe_configuration(node.id.node_address, node.configuration)
+                .map_err(ProductionChannelTaskBuildError::Measurement)?;
+        }
         let storage_metrics = recording.persistence().metrics_reader();
         let node_metrics_readers = recording.measurements().node_metrics_readers();
         let (metrics, metrics_reader) =
@@ -351,6 +371,7 @@ where
             maintenance: None,
             resume: None,
             configuration: None,
+            configuration_workflow: None,
             commissioning: None,
             restart: None,
             commissioning_discoveries: Vec::new(),
@@ -371,14 +392,34 @@ where
         &self.nodes
     }
 
-    fn begin_configuration(
+    fn begin_automatic_configuration(
         &mut self,
         request: OperationRequest,
-    ) -> Result<Option<ConfigurationExecution>, ProductionChannelStepError> {
+    ) -> Result<(), ProductionChannelStepError> {
+        if !self.preflight_configuration(&request)? {
+            return Ok(());
+        }
+        self.recording.begin_quiesce();
+        self.operations
+            .set_mode(ChannelOperatingMode::EnteringMaintenance)?;
+        self.maintenance = Some(MaintenanceEntryExecution::new(
+            &self.nodes,
+            self.maintenance_policy,
+            false,
+        )?);
+        self.configuration_workflow =
+            Some(AutomaticConfigurationWorkflow::EnteringMaintenance(request));
+        Ok(())
+    }
+
+    fn preflight_configuration(
+        &mut self,
+        request: &OperationRequest,
+    ) -> Result<bool, ProductionChannelStepError> {
         let OperationTarget::Node { node_address, .. } = request.target else {
             self.operations
                 .fail_active(OperationsError::ExecutorUnavailable)?;
-            return Ok(None);
+            return Ok(false);
         };
         if !self
             .nodes
@@ -387,11 +428,9 @@ where
         {
             self.operations
                 .fail_active(OperationsError::NodeNotConfigured)?;
-            return Ok(None);
+            return Ok(false);
         }
-
-        let kind = request.kind.clone();
-        let proposed = match &kind {
+        let proposed = match &request.kind {
             OperationKind::ApplyConfiguration { configuration, .. } => Some(*configuration),
             OperationKind::ResetConfiguration { .. } => Some(default_measurement_configuration()),
             _ => None,
@@ -405,15 +444,66 @@ where
                 Ok(_) => {
                     self.operations
                         .fail_active(OperationsError::ConfigurationAdmissionRejected)?;
-                    return Ok(None);
+                    return Ok(false);
                 }
                 Err(_) => {
                     self.operations
                         .fail_active(OperationsError::ConfigurationFailed)?;
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
         }
+        Ok(true)
+    }
+
+    fn advance_automatic_configuration(&mut self) -> Result<(), ProductionChannelStepError> {
+        if self.operations.active_operation().is_none() {
+            self.configuration_workflow = None;
+            return Ok(());
+        }
+        let Some(workflow) = self.configuration_workflow.take() else {
+            return Ok(());
+        };
+        self.configuration_workflow = match workflow {
+            AutomaticConfigurationWorkflow::EnteringMaintenance(request)
+                if self.maintenance.is_none() =>
+            {
+                self.configuration = self.begin_configuration(request, false)?;
+                self.configuration
+                    .as_ref()
+                    .map(|_| AutomaticConfigurationWorkflow::Configuring)
+            }
+            AutomaticConfigurationWorkflow::ReadyToResume(result)
+                if self.configuration.is_none() && self.resume.is_none() =>
+            {
+                self.operations
+                    .set_mode(ChannelOperatingMode::ResumingRecording)?;
+                self.resume = Some(ResumeRecordingExecution::new(
+                    &self.nodes,
+                    self.maintenance_policy,
+                    Some(result),
+                )?);
+                Some(AutomaticConfigurationWorkflow::Resuming)
+            }
+            workflow => Some(workflow),
+        };
+        if self.operations.active_operation().is_none() {
+            self.configuration_workflow = None;
+        }
+        Ok(())
+    }
+
+    fn begin_configuration(
+        &mut self,
+        request: OperationRequest,
+        finish_active_operation: bool,
+    ) -> Result<Option<ConfigurationExecution>, ProductionChannelStepError> {
+        if finish_active_operation && !self.preflight_configuration(&request)? {
+            return Ok(None);
+        }
+        let OperationTarget::Node { node_address, .. } = request.target else {
+            unreachable!("configuration preflight validates node scope")
+        };
 
         let submission = match request.kind {
             OperationKind::GetConfiguration => self
@@ -467,6 +557,7 @@ where
             },
             deadline,
             terminal_error: None,
+            finish_active_operation,
         }))
     }
 
@@ -570,6 +661,14 @@ where
                             execution.terminal_error = Some(OperationsError::ConfigurationFailed);
                             return Ok(Some(execution));
                         }
+                        if self
+                            .recording
+                            .observe_configuration(node_address, value.observed)
+                            .is_err()
+                        {
+                            execution.terminal_error = Some(OperationsError::ConfigurationFailed);
+                            return Ok(Some(execution));
+                        }
                         self.configuration_plan = candidate;
                         let node = self
                             .nodes
@@ -588,7 +687,12 @@ where
                         return Ok(Some(execution));
                     }
                 };
-                self.operations.complete_active(result)?;
+                if execution.finish_active_operation {
+                    self.operations.complete_active(result)?;
+                } else {
+                    self.configuration_workflow =
+                        Some(AutomaticConfigurationWorkflow::ReadyToResume(result));
+                }
                 Ok(None)
             }
             ChannelEndpointEvent::Agent(ChannelEvent::ConfigurationNotAccepted {
@@ -1092,7 +1196,9 @@ where
             MaintenanceEntryDirective::CompleteMaintenance => {
                 self.operations
                     .set_mode(ChannelOperatingMode::Maintenance)?;
-                self.operations.finish_active(true)?;
+                if execution.finish_active_operation {
+                    self.operations.finish_active(true)?;
+                }
                 return Ok(None);
             }
             MaintenanceEntryDirective::CompleteIdle => {
@@ -1376,7 +1482,11 @@ where
             }
             ResumeRecordingDirective::Complete => {
                 self.operations.set_mode(ChannelOperatingMode::Recording)?;
-                self.operations.finish_active(true)?;
+                if let Some(result) = execution.completion_result.take() {
+                    self.operations.complete_active(result)?;
+                } else {
+                    self.operations.finish_active(true)?;
+                }
                 return Ok(None);
             }
             ResumeRecordingDirective::Faulted => {
@@ -1526,6 +1636,7 @@ where
                     self.maintenance = Some(MaintenanceEntryExecution::new(
                         &self.nodes,
                         self.maintenance_policy,
+                        true,
                     )?);
                 } else if request.kind == OperationKind::ResumeRecording && self.resume.is_none() {
                     self.operations
@@ -1534,6 +1645,7 @@ where
                     self.resume = Some(ResumeRecordingExecution::new(
                         &self.nodes,
                         self.maintenance_policy,
+                        None,
                     )?);
                 } else if matches!(
                     request.kind,
@@ -1543,7 +1655,11 @@ where
                         | OperationKind::ResetConfiguration { .. }
                 ) && self.configuration.is_none()
                 {
-                    self.configuration = self.begin_configuration(request)?;
+                    if self.operations.mode() == ChannelOperatingMode::Recording {
+                        self.begin_automatic_configuration(request)?;
+                    } else {
+                        self.configuration = self.begin_configuration(request, true)?;
+                    }
                 } else if matches!(
                     request.kind,
                     OperationKind::ScanUnassigned { .. } | OperationKind::AssignAddress { .. }
@@ -1562,6 +1678,7 @@ where
             | ChannelCommandDecision::Existing { .. }
             | ChannelCommandDecision::Rejected { .. } => {}
         }
+        self.advance_automatic_configuration()?;
         if let Some(execution) = self.maintenance.take() {
             self.maintenance = self.drive_maintenance(execution)?;
             return Ok(());
@@ -1693,6 +1810,7 @@ impl std::error::Error for ProductionChannelStepError {}
 pub enum ProductionChannelTaskBuildError {
     Shutdown(ControlledChannelShutdownError),
     Maintenance(ChannelMaintenanceError),
+    Measurement(MeasurementCoordinatorError),
 }
 
 impl From<ControlledChannelShutdownError> for ProductionChannelTaskBuildError {

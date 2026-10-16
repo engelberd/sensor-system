@@ -829,11 +829,15 @@ Bieżąca kolejność implementacji:
 6. **Gotowe:** bounded lokalne IPC, adapter `hostctl`, operacje per node oraz
    trwały audit obejmują Status, Maintenance, Resume, Configuration,
    Commissioning i RestartNode;
-7. **Gotowy pierwszy przyrost:** bounded Operator HTTP API i dashboard są
-   cienkimi klientami tego samego IPC. UI obsługuje Maintenance, Resume i
-   restart node; pełny katalog pojedynczych operacji ma już endpointy;
-8. dodać formularze Configuration/Commissioning, operacje grupowe z wynikiem
-   per target oraz osobny helper systemowy dla start/stop/restart/doctor.
+7. **Gotowe:** bounded Operator HTTP API i dashboard są cienkimi klientami tego
+   samego IPC. UI obsługuje Maintenance, Resume, restart node i kompletny
+   formularz Configuration. Configuration z Recording jest worker-owned
+   workflow Maintenance → operacja → Resume, a capabilities ograniczają ODR;
+8. **Gotowe dla lifecycle usługi:** osobny root-owned helper z allowlistą
+   steruje start/stop/restart recordera i timera eksportu. Instalator publikuje
+   checksummowany helper oraz automatyczne jednostki helpera i dashboardu;
+9. dodać panel pełnego Commissioning z trwałym zatwierdzeniem profilu,
+   asynchroniczny wynik `doctor` oraz operacje grupowe z wynikiem per target.
 
 ### Etap 11 — prosty eksport i migracja produkcyjna
 

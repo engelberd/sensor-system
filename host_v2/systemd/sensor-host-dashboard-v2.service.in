@@ -1,0 +1,37 @@
+[Unit]
+Description=Sensor System host v2 operator dashboard
+Documentation=file://@REPOSITORY_ROOT@/docs/architecture/OPERATOR-HTTP-API-V1.md
+After=network-online.target sensor-service-control-v2.service
+Wants=network-online.target sensor-service-control-v2.service
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@REPOSITORY_ROOT@
+ExecStart=@DASHBOARD_PYTHON@ @REPOSITORY_ROOT@/host/host_dashboard.py --config @CONFIG_PATH@ --host @DASHBOARD_HOST@ --port @DASHBOARD_PORT@
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+KillSignal=SIGINT
+UMask=0027
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sensor-host-dashboard-v2
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

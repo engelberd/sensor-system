@@ -3,6 +3,7 @@ set -euo pipefail
 
 SERVICE_NAME="${SENSOR_HOST_SERVICE_NAME:-sensor-host-v2.service}"
 ANALYSIS_TIMER_NAME="${SENSOR_ANALYSIS_TIMER_NAME:-sensor-analysis-export-v2.timer}"
+SERVICE_CONTROL_NAME="${SENSOR_SERVICE_CONTROL_NAME:-sensor-service-control-v2.service}"
 INSTALL_ROOT="${SENSOR_HOST_INSTALL_ROOT:-/opt/sensor-system}"
 CUSTOM_ROOT=0
 [[ -n ${SENSOR_HOST_INSTALL_ROOT:-} ]] && CUSTOM_ROOT=1
@@ -52,6 +53,12 @@ if [[ -x $previous_target/analysis-export ]]; then
 else
   systemctl disable "$ANALYSIS_TIMER_NAME"
   echo "previous release has no analysis exporter; timer disabled" >&2
+fi
+if [[ -x $previous_target/service-control-v2.py && -f $previous_target/v2_service_control.py ]]; then
+  systemctl restart "$SERVICE_CONTROL_NAME"
+else
+  systemctl disable --now "$SERVICE_CONTROL_NAME"
+  echo "previous release has no service control helper; helper disabled" >&2
 fi
 
 echo "rolled back $SERVICE_NAME"

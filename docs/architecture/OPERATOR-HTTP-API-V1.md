@@ -1,6 +1,6 @@
 # Operator HTTP API v1
 
-- Status: pierwszy przyrost zaimplementowany
+- Status: Configuration UI i sterowanie usługą zaimplementowane lokalnie
 - Zakres: cienki adapter dashboardu do lokalnego Operations API hosta v2
 
 ## Granica odpowiedzialności
@@ -21,6 +21,8 @@ samym ID zachowuje idempotency Operations API.
 | Metoda | Ścieżka | Znaczenie |
 | --- | --- | --- |
 | GET | `/api/v2/operator/capabilities` | katalog operacji i granic adaptera |
+| GET | `/api/v2/service` | stan recordera i timera eksportu |
+| POST | `/api/v2/service/{start|stop|restart}` | sterowanie całym hostem przez allowlisted helper |
 | GET | `/api/v2/channels/{channel_id}/operations/status` | tryb kanału i aktywna operacja |
 | POST | `/api/v2/channels/{channel_id}/operations` | złożenie jednej operacji |
 | GET | `/api/v2/channels/{channel_id}/operations/{operation_id}` | odczyt fazy i wyniku |
@@ -66,13 +68,34 @@ pozostaje w domenie hosta. Adapter HTTP jedynie ogranicza nazwy i wymagane pola,
 a następnie przekazuje request do tego samego API, z którego korzysta
 `hostctl channel`.
 
+Operacje Configuration złożone podczas `Recording` są jedną operacją domenową.
+Worker wykonuje `EnteringMaintenance → Configuring → ResumingRecording`, a wynik
+publikuje dopiero po pełnym Resume. Kanał, który już był w `Maintenance`, nie
+jest automatycznie uruchamiany. Błąd konfiguracji pozostawia stabilne
+`Maintenance`, `Faulted` albo `Offline`; nigdy nie jest maskowany samym Resume.
+Formularz udostępnia ODR, zakres, high-pass, profil filtra, FIFO watermark,
+offsety i revision. ODR nierozgłaszane przez capabilities danego node są
+wyłączone w UI.
+
+Commissioning oznacza całą procedurę przyjęcia nowego urządzenia: wyłączne okno
+Maintenance, slotowany `ScanUnassigned`, wybór po `hardware_id`,
+`AssignAddress`, handshake pod nowym adresem i zatwierdzenie tożsamości w
+profilu instalacji. Sam skan jest tylko discovery. Wire Scan/Assign jest gotowy;
+trwała aktualizacja profilu oraz panel zatwierdzania pozostają otwartą bramką.
+
 ## Osobna granica systemowa
 
-Start, stop i restart całego `sensor-host-v2.service` oraz uruchomienie
-`doctor` nie są operacjami działającego hosta. Po zatrzymaniu procesu socket
-Operations znika, dlatego tych poleceń nie przedstawiamy jako operacji kanału.
-Wymagają osobnego, wąskiego helpera systemowego z allowlistą poleceń, auditem i
-uprawnieniami. `capabilities.service_control=false` informuje o tym jawnie.
+Start, stop i restart całego `sensor-host-v2.service` nie są operacjami
+działającego hosta. Obsługuje je osobny root-owned
+`sensor-service-control-v2.service` przez socket mode `0660`. Helper przyjmuje
+wyłącznie `status/start/stop/restart`, ma stałe nazwy jednostek i nigdy nie
+buduje polecenia shell z danych HTTP. Stop wyłącza najpierw timer eksportu, a
+następnie czeka na kontrolowany shutdown recordera; Start i Restart uruchamiają
+timer po hostcie. Checksummowana kopia helpera jest częścią release w `/opt`,
+więc root nie wykonuje kodu zapisywalnego przez użytkownika dashboardu.
+
+`doctor` nadal pozostaje poza tym helperem. Jest read-only, lecz wymaga osobnej
+polityki czasu wykonania i publikacji wyniku zamiast blokowania żądania HTTP.
 
 ## Pierwsze sterowanie dashboardu
 
@@ -88,6 +111,6 @@ Przeglądarka po submit odpytuje wynik co 250 ms przez maksymalnie 120 s.
 Odświeżenie lub zamknięcie strony nie anuluje operacji; wynik nadal pozostaje w
 bounded ledgerze hosta i trwałym audycie.
 
-Następny przyrost UI obejmie formularz konfiguracji oraz commissioning nad tymi
-samymi endpointami. Następnie powstanie osobna granica do sterowania usługą i
-uruchamiania `doctor`.
+Następny przyrost UI obejmuje pełny commissioning wraz z zatwierdzeniem zmiany
+profilu. Osobno pozostają `doctor`, operacje grupowe i uwierzytelnienie aplikacji
+ponad obecną granicę prywatnej sieci Tailscale.

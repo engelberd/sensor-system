@@ -50,6 +50,26 @@ class FakeOperationsClient:
         }
 
 
+class FakeServiceControlClient:
+    def __init__(self, available: bool = False) -> None:
+        self.available = available
+        self.actions: list[str] = []
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "ok": True,
+            "state": {"available": self.available, "active": True},
+        }
+
+    def perform(self, action: str) -> dict[str, Any]:
+        self.actions.append(action)
+        return {
+            "schema_version": 1,
+            "ok": True,
+            "state": {"available": True, "active": action != "stop"},
+        }
+
 class V2OperatorApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -78,6 +98,7 @@ class V2OperatorApiTests(unittest.TestCase):
             self.config,
             status_path=root / "missing-status.json",
             operations_client=self.operations,
+            service_control_client=FakeServiceControlClient(),
         )
 
     def tearDown(self) -> None:
@@ -203,6 +224,32 @@ class V2OperatorApiTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 403)
             response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_http_service_control_uses_separate_allowlisted_client(self) -> None:
+        service = FakeServiceControlClient(available=True)
+        self.repository.service_control = service
+        server = DashboardServer(("127.0.0.1", 0), self.repository)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_port, timeout=2
+            )
+            connection.request(
+                "POST",
+                "/api/v2/service/restart",
+                headers={"X-Sensor-System-Request": "dashboard-v2"},
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertTrue(payload["state"]["active"])
+            self.assertEqual(service.actions, ["restart"])
             connection.close()
         finally:
             server.shutdown()

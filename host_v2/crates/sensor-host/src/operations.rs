@@ -177,7 +177,16 @@ pub fn admit_operation(
         | OperationKind::ValidateConfiguration { .. }
         | OperationKind::ApplyConfiguration { .. }
         | OperationKind::ResetConfiguration { .. }
-        | OperationKind::RestartNode
+            if matches!(
+                mode,
+                ChannelOperatingMode::Recording
+                    | ChannelOperatingMode::Maintenance
+                    | ChannelOperatingMode::Faulted
+            ) =>
+        {
+            Ok(())
+        }
+        OperationKind::RestartNode
             if matches!(
                 mode,
                 ChannelOperatingMode::Maintenance | ChannelOperatingMode::Faulted
@@ -1005,13 +1014,11 @@ mod tests {
     }
 
     #[test]
-    fn configuration_requires_node_target_and_maintenance() {
+    fn configuration_accepts_recording_for_worker_owned_safe_transition() {
         let request = get_configuration(1);
         assert_eq!(
             admit_operation(&request, ChannelOperatingMode::Recording),
-            Err(OperationsError::WrongMode {
-                mode: ChannelOperatingMode::Recording
-            })
+            Ok(())
         );
         assert_eq!(
             admit_operation(&request, ChannelOperatingMode::Maintenance),

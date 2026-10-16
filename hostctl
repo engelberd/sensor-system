@@ -187,8 +187,11 @@ case "$COMMAND" in
     exec "$ROOT_DIR/host_v2/tools/install_systemd_service.sh" \
       --repository-root "$ROOT_DIR" --config "$HOST_CONFIG" --binary "$HOST_BINARY" \
       --analysis-binary "$ANALYSIS_EXPORT_BINARY" \
+      --python "${SENSOR_HOST_SYSTEM_PYTHON:-/usr/bin/python3}" \
       --user "${SENSOR_HOST_SERVICE_USER:-$(id -un)}" \
-      --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" "$@"
+      --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" \
+      --dashboard-host "${SENSOR_HOST_DASHBOARD_HOST:-127.0.0.1}" \
+      --dashboard-port "${SENSOR_HOST_DASHBOARD_PORT:-8090}" "$@"
     ;;
   rollback-services)
     exec "$ROOT_DIR/host_v2/tools/rollback_systemd_service.sh" "$@"

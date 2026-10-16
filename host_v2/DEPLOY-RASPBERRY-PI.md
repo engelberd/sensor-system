@@ -131,13 +131,14 @@ laboratoryjnego; każdy wyjątek analizujemy przed dalszym etapem.
 ## 6. Instalacja systemd
 
 Tracked szablony znajdują się w `host_v2/systemd/`. Nie są aktywnymi
-jednostkami. Instalator generuje z nich lokalny recorder oraz timer eksportu,
-dlatego rzeczywiste ścieżki, użytkownik oraz lokalny `host/system_config.json`
-nie trafiają do Git.
+jednostkami. Instalator generuje z nich recorder, timer eksportu, dashboard i
+wąski helper sterowania usługą. Rzeczywiste ścieżki, użytkownik oraz lokalny
+`host/system_config.json` nie trafiają do Git. Dashboard domyślnie wiąże się z
+`127.0.0.1`; adres Tailscale trzeba podać jawnie:
 
 ```bash
-./hostctl install-services --dry-run
-./hostctl install-services
+SENSOR_HOST_DASHBOARD_HOST=100.88.176.26 ./hostctl install-services --dry-run
+SENSOR_HOST_DASHBOARD_HOST=100.88.176.26 ./hostctl install-services
 ./hostctl start
 ./hostctl status
 ./hostctl logs --since today
@@ -148,9 +149,10 @@ nie trafiają do Git.
 Pierwsze polecenie pokazuje wynik bez zapisu do `/opt` i `/etc`. Instalacja
 buduje release, ponownie waliduje profil, liczy SHA-256 i umieszcza niezmienne
 binaria w `/opt/sensor-system/releases/<wersja>-<sha>`. Symlink `current` jest
-przełączany atomowo, a poprzedni cel zachowuje `previous`. Instalator włącza
-start przy boot, lecz celowo nie uruchamia procesu; start pozostaje jawną
-operacją po zatrzymaniu legacy hosta i sprawdzeniu właścicieli portów.
+przełączany atomowo, a poprzedni cel zachowuje `previous`. Instalator uruchamia
+dashboard i helper, lecz recorder jedynie włącza do startu przy boot; pierwszy
+Start pozostaje jawną operacją po zatrzymaniu legacy hosta i sprawdzeniu
+właścicieli portów.
 `rollback-services` czeka na kontrolowany Stop, sprawdza wykonywalność
 poprzedniego artefaktu, atomowo zamienia `current/previous` i uruchamia usługę.
 
@@ -167,6 +169,12 @@ pracują, a Runtime Status zachowuje jawny `faulted` i ogólny stan `degraded`.
 zamkniętych manifestów Capture. Eksporter nie posiada portów RS485 i nie może
 wpłynąć na potwierdzanie próbek. Wyniki trafiają domyślnie do `var/analysis`;
 format oraz ograniczenie czasu UTC opisuje `ANALYSIS-CSV-V1.md`.
+
+`sensor-service-control-v2.service` działa jako root, ale przyjmuje przez socket
+tylko stałe akcje `status/start/stop/restart` dla recordera i timera. Jego kod
+jest checksummowaną, root-owned częścią release; dashboard nie otrzymuje sudo i
+nie może przekazać nazwy jednostki ani polecenia powłoki. Jednostka
+`sensor-host-dashboard-v2.service` działa jako zwykły użytkownik instalacji.
 
 Przełączenie wykonujemy w oknie serwisowym: zatrzymujemy legacy host, upewniamy
 się, że zwolnił wszystkie porty, uruchamiamy v2 i sprawdzamy discovery oraz

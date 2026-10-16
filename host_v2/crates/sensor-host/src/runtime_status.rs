@@ -273,6 +273,10 @@ fn nodes_json(observation: &HostRuntimeObservation, now_us: u64) -> Vec<Value> {
                 metrics.channel_id == node.channel_id()
                     && metrics.node_address == node.node_address()
             });
+            let output_rate = metrics
+                .and_then(|metrics| metrics.output_rate_code)
+                .and_then(sensor_protocol::OutputRateCode::from_wire)
+                .unwrap_or_else(|| node.output_rate());
             json!({
                 "channel_id": node.channel_id(),
                 "channel_name": node.channel_name(),
@@ -283,7 +287,12 @@ fn nodes_json(observation: &HostRuntimeObservation, now_us: u64) -> Vec<Value> {
                 "firmware": format!("{}.{}.{}", identity.firmware.major, identity.firmware.minor, identity.firmware.patch),
                 "framing_protocol": identity.protocol.framing,
                 "application_protocol": identity.protocol.application,
-                "output_rate_hz": node.output_rate().hertz_label(),
+                "output_rate_hz": output_rate.hertz_label(),
+                "output_rate_code": output_rate as u8,
+                "configuration_revision": metrics.and_then(|metrics| metrics.configuration_revision),
+                "output_rate_mask": node.capabilities().output_rate_mask,
+                "service_flags": node.capabilities().service_flags,
+                "feature_flags": node.capabilities().feature_flags,
                 "cursors": metrics.map(|metrics| json!({
                     "received": metrics.received_cursor,
                     "durable": metrics.durable_cursor,

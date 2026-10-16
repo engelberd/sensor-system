@@ -317,7 +317,7 @@ został zapisany na każdym node. Zamknięte okno C nr 67 ma 141965 próbek, zer
 braków oraz jeden oczekiwany `ProcessingReset`. Do pełnego zamknięcia kryterium
 pozostaje zimny restart całego Raspberry Pi i test nagłego przerwania procesu.
 
-### Etap 4 — dashboard v2 i sterowanie kanałem — drugi przyrost gotowy lokalnie
+### Etap 4 — dashboard v2 i sterowanie kanałem — Configuration gotowe lokalnie
 
 Na początek wykorzystamy istniejący interfejs strony, lecz dodamy osobny adapter
 danych v2. Adapter czyta wyłącznie wersjonowany snapshot i bezpiecznie
@@ -368,19 +368,26 @@ istniejącego Operations IPC. Endpointy obsługują pełny katalog pojedynczych
 operacji kanału i node, zwracają `operation_id` i pozwalają odpytąć terminalny
 wynik bez blokowania requestu HTTP. Dashboard pokazuje obecnie bezpieczne
 przejścia Recording → Maintenance → Recording oraz restart node w dozwolonym
-trybie. Formularz Configuration, panel Commissioning i osobny helper systemd
-dla start/stop/restart/doctor pozostają następnymi przyrostami UI.
+trybie. Trzeci przyrost dodaje formularz wszystkich pól Configuration protocol
+5 oraz worker-owned automatyczne przejście Recording → Maintenance → operacja →
+Recording. Formularz respektuje capabilities ODR i optimistic revision.
+Oddzielny checksummowany helper systemd obsługuje trzy globalne przyciski
+Start/Stop/Restart bez nadawania dashboardowi uprawnień roota.
+
+Commissioning nadal oznacza pełne przyjęcie node, nie sam skan. Scan/Assign są
+gotowe w control plane, ale UI i trwałe zatwierdzenie tożsamości w profilu
+instalacji pozostają następną bramką.
 
 ### Etap 5 — minimalne bezpieczne sterowanie
 
-Pierwsza wersja sterowania udostępni wyłącznie operacje całego rejestratora:
+Pierwsza wersja sterowania udostępnia operacje całego rejestratora:
 
 - Start;
 - Stop z kontrolowanym domknięciem;
 - Restart;
-- uruchomienie `doctor` i odczyt wyniku.
+- uruchomienie `doctor` i odczyt wyniku — jeszcze niezaimplementowane.
 
-Dashboard pozostanie procesem bez uprawnień roota. Polecenia przejdą przez
+Dashboard pozostaje procesem bez uprawnień roota. Polecenia przechodzą przez
 wąską lokalną granicę sterowania do systemd. Każde żądanie otrzyma operation ID,
 będzie idempotentne, zapisane w audycie i zwróci wynik terminalny. Dashboard nie
 będzie budował poleceń powłoki z danych HTTP.
@@ -388,6 +395,11 @@ będzie budował poleceń powłoki z danych HTTP.
 Dostęp do operacji będzie chroniony uwierzytelnieniem w prywatnej sieci,
 autoryzacją oraz ochroną żądań POST. Interfejs będzie domyślnie nasłuchiwał na
 localhost albo adresie Tailscale, nie na wszystkich interfejsach publicznych.
+
+Start/Stop/Restart oraz automatyczne uruchomienie helpera i dashboardu mają
+gotowe szablony systemd i instalator. Do zamknięcia etapu pozostają wdrożenie
+na Raspberry Pi, HIL pełnego workflow konfiguracji, asynchroniczny `doctor`
+oraz aplikacyjne uwierzytelnienie ponad prywatną siecią.
 
 Kryterium ukończenia: wielokrotne kliknięcie nie duplikuje operacji, Stop czeka
 na domknięcie, każda operacja ma audit trail, a użytkownik bez uprawnienia nie

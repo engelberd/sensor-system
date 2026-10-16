@@ -175,6 +175,15 @@ where
         self.measurements.reconfigure_node(config, now)
     }
 
+    pub fn observe_configuration(
+        &self,
+        node_address: u8,
+        configuration: sensor_protocol::ObservedConfiguration,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        self.measurements
+            .observe_configuration(node_address, configuration)
+    }
+
     pub fn into_parts(self) -> (ChannelEndpoint<P, C>, ChannelWorkCoordinator, S, T) {
         (
             self.endpoint,
@@ -475,6 +484,15 @@ where
     ) -> Result<(), MeasurementCoordinatorError> {
         let now = self.endpoint.now();
         self.measurements.reconfigure_node(config, now)
+    }
+
+    pub fn observe_configuration(
+        &self,
+        node_address: u8,
+        configuration: sensor_protocol::ObservedConfiguration,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        self.measurements
+            .observe_configuration(node_address, configuration)
     }
 
     pub fn reconcile_resume_stream(
