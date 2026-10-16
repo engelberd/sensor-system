@@ -136,6 +136,7 @@ fn export_new(arguments: Arguments) -> Result<Summary, Box<dyn std::error::Error
                 let result = export_analysis_window(
                     &stream,
                     &output,
+                    profile.storage().time_persistence().root(),
                     ordinal,
                     AnalysisWindowIdentity {
                         channel_name: channel.name(),
@@ -198,7 +199,6 @@ fn pending_ordinals(
     ordinals: Vec<u64>,
     initial_backfill_windows: usize,
 ) -> Result<Vec<u64>, std::io::Error> {
-    let marker = format!("_{}_boot{boot_epoch:016x}_w", hardware_id_hex(hardware_id));
     let mut last_exported = None;
     let entries = match fs::read_dir(output_directory) {
         Ok(entries) => Some(entries),
@@ -207,21 +207,34 @@ fn pending_ordinals(
     };
     if let Some(entries) = entries {
         for entry in entries {
-            let name = entry?.file_name();
+            let entry = entry?;
+            let name = entry.file_name();
             let Some(name) = name.to_str() else {
                 continue;
             };
-            let Some(value) = name
-                .strip_suffix(".csv")
-                .and_then(|value| value.rsplit_once(&marker).map(|(_, value)| value))
-            else {
+            if !name.ends_with(".json") {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(bytes) = fs::read(path) else {
                 continue;
             };
-            if value.len() == 20 && value.bytes().all(|byte| byte.is_ascii_digit()) {
-                if let Ok(ordinal) = value.parse::<u64>() {
-                    last_exported =
-                        Some(last_exported.map_or(ordinal, |last: u64| last.max(ordinal)));
-                }
+            let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let same_stream = metadata.get("schema").and_then(|value| value.as_str())
+                == Some("sensor-system-analysis-csv-v2")
+                && metadata.get("hardware_id").and_then(|value| value.as_str())
+                    == Some(hardware_id_hex(hardware_id).as_str())
+                && metadata.get("boot_epoch").and_then(|value| value.as_u64()) == Some(boot_epoch);
+            if !same_stream {
+                continue;
+            }
+            if let Some(ordinal) = metadata
+                .get("window_ordinal")
+                .and_then(|value| value.as_u64())
+            {
+                last_exported = Some(last_exported.map_or(ordinal, |last: u64| last.max(ordinal)));
             }
         }
     }
@@ -269,8 +282,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(
-            root.join("device-t00000000000000000001us_ch02_node001_0102030405060708_boot0000000000000009_w00000000000000000002.csv"),
-            b"complete",
+            root.join("line_b-node_1-11:10-16.10.2026.json"),
+            br#"{"schema":"sensor-system-analysis-csv-v2","hardware_id":"0102030405060708","boot_epoch":9,"window_ordinal":2}"#,
         )
         .unwrap();
         assert_eq!(

@@ -84,7 +84,7 @@ WAL. Proces wypisuje wynik każdego kanału i kończy się kodem 0 wyłącznie p
 czystym shutdownie. Szablony usługi i timera znajdują się w `systemd/`; nie są
 aktywnymi jednostkami, lecz wejściem dla `./hostctl install-services`.
 Instalator podstawia rzeczywiste ścieżki, użytkownika i grupę, instaluje
-wersjonowane binaria recordera oraz eksportera `Analysis CSV v1` i dopiero
+wersjonowane binaria recordera oraz eksportera `Analysis CSV v2` i dopiero
 potem publikuje jednostki. Szczegóły znajdują się w
 [`DEPLOY-RASPBERRY-PI.md`](DEPLOY-RASPBERRY-PI.md).
 

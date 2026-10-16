@@ -42,8 +42,8 @@ Granice timestampów `t1..t4`, model dryfu i zasady niepewności opisuje
 [TIME-SERVICE.md](architecture/TIME-SERVICE.md).
 Kompaktowy format surowych obserwacji czasu i jego recovery opisuje
 [TIME-WAL-V1.md](architecture/TIME-WAL-V1.md).
-Tymczasowy automatyczny widok około dziesięciominutowych plików dla MATLAB-a i
-notebooków opisuje [ANALYSIS-CSV-V1.md](architecture/ANALYSIS-CSV-V1.md).
+Główny automatyczny widok około dziesięciominutowych plików dla MATLAB-a i
+notebooków opisuje [ANALYSIS-CSV-V2.md](architecture/ANALYSIS-CSV-V2.md).
 Relację many-to-many pomiędzy zakresami Capture i produktami godzinnymi opisuje
 [ARCHIVE-COVERAGE-INDEX.md](architecture/ARCHIVE-COVERAGE-INDEX.md).
 Ograniczony handoff rekordów z kanałów do storage opisuje

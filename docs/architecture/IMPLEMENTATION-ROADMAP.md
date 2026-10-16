@@ -155,11 +155,12 @@ uzasadnią ją pomiary lub testy awarii.
   rekonfigurację quiescent schedulera i trwały WAL znaczenia `config_revision`;
 - bounded walidacja Capture i strumieniowy `capture-export`, generujący
   `samples.csv`, `events.csv` oraz `windows.csv` bez ładowania nagrania do RAM;
-- automatyczny, idempotentny `Analysis CSV v1` per zamknięte okno Capture:
-  próbki raw XYZ z numerem i czasem device, prawdziwy ODR z historii
-  konfiguracji, osobne zdarzenia jakości oraz timer systemd poza gorącą
-  ścieżką RS485; pierwszy przebieg ma ograniczony backfill i nie rozwija całej
-  historycznej bazy do tekstu;
+- automatyczny, idempotentny `Analysis CSV v2` per zamknięte okno Capture:
+  tylko osie XYZ w `m/s²`, uproszczona nazwa z czasem pierwszej próbki,
+  ustawiony i wyznaczony ODR oraz pełne znaczenie czasu i konwersji w JSON,
+  osobne zdarzenia jakości oraz timer systemd poza gorącą ścieżką RS485;
+  pierwszy przebieg ma ograniczony backfill i nie rozwija całej historycznej
+  bazy do tekstu;
 
 ### Gotowe jako decyzja lub kontrakt
 
@@ -192,7 +193,8 @@ Operations API i `hostctl` przez jedynego właściciela RS485. HIL firmware 0.5.
 potwierdził Configuration, pusty skan, restart i Resume; do zamknięcia
 Commissioning pozostaje Scan/Assign z nieprzypisanym node. Archive, kompresja,
 uploader i dashboard są świadomie odłożone poza MVP. Automatyczne pliki
-`Analysis CSV v1` są obecnym prostym formatem wymiany; Capture WAL pozostaje
+`Analysis CSV v2` jest obecnym formatem gotowym do podstawowej analizy drgań;
+Capture WAL pozostaje
 źródłem prawdy.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.

@@ -6,11 +6,16 @@ use std::path::{Path, PathBuf};
 use sensor_core::{BootEpoch, HardwareId};
 use serde_json::json;
 
+use crate::analysis_time::{
+    estimate_first_sample_timestamp, AnalysisTimeError, AnalysisTimeRequest, AnalysisTimestamp,
+};
 use crate::capture_segments::{
     capture_segment_paths, validate_capture_segment, CaptureSegmentError,
 };
 use crate::capture_wal::{CaptureRecord, CaptureWalError, CaptureWalReader};
 use crate::configuration_history::ConfigurationSnapshot;
+
+const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnalysisWindowIdentity<'a> {
@@ -36,6 +41,7 @@ pub struct AnalysisWindowSummary {
 pub fn export_analysis_window(
     stream_directory: &Path,
     output_directory: &Path,
+    time_root: &Path,
     ordinal: u64,
     identity: AnalysisWindowIdentity<'_>,
     configurations: &[ConfigurationSnapshot],
@@ -44,19 +50,27 @@ pub fn export_analysis_window(
     let validation = validate_capture_segment(&paths.wal, &paths.manifest)
         .map_err(AnalysisExportError::Segment)?;
     let manifest = validation.manifest;
-    let first_device_time_us =
-        first_sample_time(&paths.wal)?.ok_or(AnalysisExportError::WindowWithoutSamples)?;
+    let (first_device_time_us, last_device_time_us) =
+        sample_time_bounds(&paths.wal)?.ok_or(AnalysisExportError::WindowWithoutSamples)?;
+    let first_sample_timestamp = estimate_first_sample_timestamp(AnalysisTimeRequest {
+        time_root,
+        channel_name: identity.channel_name,
+        hardware_id: manifest.hardware_id,
+        node_address: identity.node_address,
+        boot_epoch: manifest.boot_epoch,
+        first_device_time_us,
+        last_device_time_us,
+        sealed_manifest: &paths.manifest,
+    })
+    .map_err(AnalysisExportError::Time)?;
     fs::create_dir_all(output_directory).map_err(AnalysisExportError::Io)?;
 
-    let stem = format!(
-        "device-t{first_device_time_us:020}us_ch{:02}_node{:03}_{}_boot{:016x}_w{ordinal:020}",
-        identity.channel_id,
-        identity.node_address,
-        hardware_id_hex(manifest.hardware_id),
-        manifest.boot_epoch.get(),
-    );
-    let csv_path = output_directory.join(format!("{stem}.csv"));
-    if csv_path.exists() {
+    if let Some(csv_path) = existing_product_path(
+        output_directory,
+        manifest.hardware_id,
+        manifest.boot_epoch,
+        ordinal,
+    )? {
         return Ok(AnalysisWindowSummary {
             csv_path,
             sample_count: manifest.sample_count,
@@ -68,6 +82,13 @@ pub fn export_analysis_window(
         });
     }
 
+    let simple_channel_name = identity.channel_name.replace('-', "_");
+    let base_stem = format!(
+        "{simple_channel_name}-node_{}-{}",
+        identity.node_address, first_sample_timestamp.local_filename_minute,
+    );
+    let stem = unique_product_stem(output_directory, &base_stem, ordinal);
+    let csv_path = output_directory.join(format!("{stem}.csv"));
     let events_path = output_directory.join(format!("{stem}.events.csv"));
     let metadata_path = output_directory.join(format!("{stem}.json"));
     let nonce = format!(
@@ -95,6 +116,8 @@ pub fn export_analysis_window(
         manifest.missing_sample_count,
         manifest.continuity_break_count,
         configurations,
+        &first_sample_timestamp,
+        &format!("{stem}.csv"),
     );
     let written = match result {
         Ok(value) => value,
@@ -142,14 +165,13 @@ fn write_window(
     missing_samples: u64,
     continuity_breaks: u64,
     configurations: &[ConfigurationSnapshot],
+    first_sample_timestamp: &AnalysisTimestamp,
+    csv_file_name: &str,
 ) -> Result<WrittenWindow, AnalysisExportError> {
     let mut samples = create_writer(csv_path)?;
     let mut events = create_writer(events_path)?;
-    writeln!(
-        samples,
-        "sample_number,device_time_us,x_raw,y_raw,z_raw,output_odr_hz"
-    )?;
-    writeln!(events, "sample_number,event,count,reason")?;
+    writeln!(samples, "x_m_s2,y_m_s2,z_m_s2")?;
+    writeln!(events, "row_index,source_sample_number,event,count,reason")?;
 
     let mut reader = CaptureWalReader::open(wal_path).map_err(AnalysisExportError::Wal)?;
     let mut sample_count = 0_u64;
@@ -157,16 +179,34 @@ fn write_window(
     let mut prior = None::<(u64, u64)>;
     let mut interval_sum_us = 0_u128;
     let mut interval_count = 0_u64;
+    let mut analysis_configuration = None::<AnalysisConfiguration>;
+    let mut first_config_revision = None;
+    let mut last_config_revision = None;
     while let Some(record) = reader.next_record().map_err(AnalysisExportError::Wal)? {
         match record {
             CaptureRecord::SampleChunk(chunk) => {
-                let output_rate = configuration_for_chunk(
+                let snapshot = configuration_for_chunk(
                     configurations,
                     hardware_id,
                     boot_epoch,
                     chunk.config_revision,
                     chunk.header.first.get(),
                 )?;
+                let current_configuration = AnalysisConfiguration::from_snapshot(snapshot)?;
+                if let Some(expected) = analysis_configuration {
+                    if expected.output_rate_nanohertz != current_configuration.output_rate_nanohertz
+                        || expected.range_g != current_configuration.range_g
+                    {
+                        return Err(AnalysisExportError::MixedAnalysisConfiguration {
+                            first_revision: first_config_revision.unwrap_or(chunk.config_revision),
+                            next_revision: chunk.config_revision,
+                        });
+                    }
+                } else {
+                    analysis_configuration = Some(current_configuration);
+                    first_config_revision = Some(chunk.config_revision);
+                }
+                last_config_revision = Some(chunk.config_revision);
                 for (index, sample) in chunk.samples.iter().enumerate() {
                     let cursor = chunk
                         .header
@@ -190,13 +230,13 @@ fn write_window(
                         }
                     }
                     prior = Some((cursor, device_time));
+                    let scale = current_configuration.m_s2_per_lsb;
                     writeln!(
                         samples,
-                        "{cursor},{device_time},{},{},{},{}",
-                        sample.x.get(),
-                        sample.y.get(),
-                        sample.z.get(),
-                        output_rate,
+                        "{:.9},{:.9},{:.9}",
+                        f64::from(sample.x.get()) * scale,
+                        f64::from(sample.y.get()) * scale,
+                        f64::from(sample.z.get()) * scale,
                     )?;
                     sample_count = sample_count
                         .checked_add(1)
@@ -205,14 +245,14 @@ fn write_window(
             }
             CaptureRecord::Gap(gap) => writeln!(
                 events,
-                "{},gap,{},\"{:?}\"",
+                "{sample_count},{},gap,{},\"{:?}\"",
                 gap.first_missing.get(),
                 gap.missing_count,
                 gap.reason
             )?,
             CaptureRecord::ContinuityBreak(observed) => writeln!(
                 events,
-                "{},continuity_break,1,\"{:?}\"",
+                "{sample_count},{},continuity_break,1,\"{:?}\"",
                 observed.at.get(),
                 observed.reason
             )?,
@@ -226,6 +266,8 @@ fn write_window(
         });
     }
     let first_device_time_us = first_time.ok_or(AnalysisExportError::WindowWithoutSamples)?;
+    let analysis_configuration =
+        analysis_configuration.ok_or(AnalysisExportError::WindowWithoutSamples)?;
     let estimated_odr_hz = if interval_count == 0 || interval_sum_us == 0 {
         None
     } else {
@@ -237,7 +279,8 @@ fn write_window(
     events.get_ref().sync_all()?;
 
     let metadata = json!({
-        "schema": "sensor-system-analysis-csv-v1",
+        "schema": "sensor-system-analysis-csv-v2",
+        "data_file": csv_file_name,
         "channel_name": identity.channel_name,
         "channel_id": identity.channel_id,
         "node_address": identity.node_address,
@@ -245,13 +288,26 @@ fn write_window(
         "boot_epoch": boot_epoch.get(),
         "window_ordinal": ordinal,
         "first_device_time_us": first_device_time_us,
-        "file_time_basis": "node monotonic time since boot; not UTC",
+        "first_sample_time_utc": first_sample_timestamp.utc,
+        "first_sample_time_local": first_sample_timestamp.local,
+        "first_sample_unix_time_us": first_sample_timestamp.unix_time_us,
+        "first_sample_time_uncertainty_us": first_sample_timestamp.uncertainty_us,
+        "first_sample_time_method": first_sample_timestamp.method,
         "sample_count": sample_count,
         "missing_sample_count": missing_samples,
         "continuity_break_count": continuity_breaks,
         "estimated_odr_hz": estimated_odr_hz,
         "estimated_odr_method": "mean interval between adjacent, consecutive samples",
-        "axis_unit": "raw ADXL355 signed sample code",
+        "configured_odr_hz": analysis_configuration.output_rate_hz(),
+        "range_g": analysis_configuration.range_g,
+        "first_config_revision": first_config_revision,
+        "last_config_revision": last_config_revision,
+        "axis_unit": "m/s^2",
+        "columns": ["x_m_s2", "y_m_s2", "z_m_s2"],
+        "nominal_sensitivity_lsb_per_g": analysis_configuration.sensitivity_lsb_per_g,
+        "standard_gravity_m_s2": STANDARD_GRAVITY_M_S2,
+        "conversion": "raw_code / nominal_sensitivity_lsb_per_g * standard_gravity_m_s2",
+        "sensitivity_basis": "ADXL355 datasheet Rev. D typical digital sensitivity for the configured range",
         "source": "validated sealed Capture WAL"
     });
     let mut metadata_file = OpenOptions::new()
@@ -277,7 +333,7 @@ fn configuration_for_chunk(
     boot_epoch: BootEpoch,
     revision: u32,
     first_cursor: u64,
-) -> Result<&'static str, AnalysisExportError> {
+) -> Result<&ConfigurationSnapshot, AnalysisExportError> {
     configurations
         .iter()
         .rev()
@@ -287,7 +343,6 @@ fn configuration_for_chunk(
                 && snapshot.observed.revision == revision
                 && snapshot.effective_sample_seq <= first_cursor
         })
-        .map(|snapshot| snapshot.observed.desired.output_rate.hertz_label())
         .ok_or(AnalysisExportError::MissingConfiguration {
             boot_epoch,
             revision,
@@ -295,11 +350,105 @@ fn configuration_for_chunk(
         })
 }
 
-fn first_sample_time(wal_path: &Path) -> Result<Option<u64>, AnalysisExportError> {
+fn sample_time_bounds(wal_path: &Path) -> Result<Option<(u64, u64)>, AnalysisExportError> {
     let mut reader = CaptureWalReader::open(wal_path).map_err(AnalysisExportError::Wal)?;
+    let mut first = None;
+    let mut last = None;
     while let Some(record) = reader.next_record().map_err(AnalysisExportError::Wal)? {
         if let CaptureRecord::SampleChunk(chunk) = record {
-            return Ok(Some(chunk.timing.first_device_time_us));
+            first.get_or_insert(chunk.timing.first_device_time_us);
+            last = Some(chunk.timing.last_device_time_us);
+        }
+    }
+    Ok(first.zip(last))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AnalysisConfiguration {
+    output_rate_nanohertz: u64,
+    range_g: u8,
+    sensitivity_lsb_per_g: u32,
+    m_s2_per_lsb: f64,
+}
+
+impl AnalysisConfiguration {
+    fn from_snapshot(snapshot: &ConfigurationSnapshot) -> Result<Self, AnalysisExportError> {
+        let range_g = snapshot.observed.desired.range_g;
+        let sensitivity_lsb_per_g = match range_g {
+            2 => 256_000,
+            4 => 128_000,
+            8 => 64_000,
+            value => return Err(AnalysisExportError::UnsupportedRange(value)),
+        };
+        Ok(Self {
+            output_rate_nanohertz: snapshot
+                .observed
+                .desired
+                .output_rate
+                .sample_rate()
+                .nanohertz(),
+            range_g,
+            sensitivity_lsb_per_g,
+            m_s2_per_lsb: STANDARD_GRAVITY_M_S2 / f64::from(sensitivity_lsb_per_g),
+        })
+    }
+
+    fn output_rate_hz(self) -> f64 {
+        self.output_rate_nanohertz as f64 / 1_000_000_000.0
+    }
+}
+
+fn unique_product_stem(output_directory: &Path, base: &str, ordinal: u64) -> String {
+    if !output_directory.join(format!("{base}.csv")).exists() {
+        base.to_owned()
+    } else {
+        format!("{base}-w{ordinal}")
+    }
+}
+
+fn existing_product_path(
+    output_directory: &Path,
+    hardware_id: HardwareId,
+    boot_epoch: BootEpoch,
+    ordinal: u64,
+) -> Result<Option<PathBuf>, AnalysisExportError> {
+    let entries = match fs::read_dir(output_directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AnalysisExportError::Io(error)),
+    };
+    let expected_hardware = hardware_id_hex(hardware_id);
+    for entry in entries {
+        let path = entry.map_err(AnalysisExportError::Io)?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let metadata: serde_json::Value = match fs::read(&path)
+            .map_err(AnalysisExportError::Io)
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(AnalysisExportError::Json))
+        {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if metadata.get("schema").and_then(|value| value.as_str())
+            != Some("sensor-system-analysis-csv-v2")
+            || metadata.get("hardware_id").and_then(|value| value.as_str())
+                != Some(expected_hardware.as_str())
+            || metadata.get("boot_epoch").and_then(|value| value.as_u64()) != Some(boot_epoch.get())
+            || metadata
+                .get("window_ordinal")
+                .and_then(|value| value.as_u64())
+                != Some(ordinal)
+        {
+            continue;
+        }
+        let csv_path = metadata
+            .get("data_file")
+            .and_then(|value| value.as_str())
+            .map(|name| output_directory.join(name))
+            .unwrap_or_else(|| path.with_extension("csv"));
+        if csv_path.is_file() {
+            return Ok(Some(csv_path));
         }
     }
     Ok(None)
@@ -359,9 +508,15 @@ pub enum AnalysisExportError {
     Json(serde_json::Error),
     Segment(CaptureSegmentError),
     Wal(CaptureWalError),
+    Time(AnalysisTimeError),
     WindowWithoutSamples,
     InvalidTiming,
     CounterOverflow,
+    UnsupportedRange(u8),
+    MixedAnalysisConfiguration {
+        first_revision: u32,
+        next_revision: u32,
+    },
     MissingConfiguration {
         boot_epoch: BootEpoch,
         revision: u32,
@@ -508,27 +663,44 @@ mod tests {
             channel_id: 2,
             node_address: 1,
         };
-        let first =
-            export_analysis_window(&stream_dir, &output_dir, 0, identity, &[configuration()])
-                .unwrap();
+        let first = export_analysis_window(
+            &stream_dir,
+            &output_dir,
+            &temp.0.join("time"),
+            0,
+            identity,
+            &[configuration()],
+        )
+        .unwrap();
         assert!(!first.already_exists);
         assert_eq!(first.sample_count, 2);
         assert_eq!(first.first_device_time_us, 1_000_000);
         assert_eq!(first.estimated_odr_hz, Some(125.0));
         let csv = fs::read_to_string(&first.csv_path).unwrap();
-        assert!(csv.starts_with("sample_number,device_time_us,x_raw,y_raw,z_raw,output_odr_hz\n"));
-        assert!(csv.contains("0,1000000,10,20,30,125\n"));
-        assert!(csv.contains("1,1008000,11,21,31,125\n"));
+        assert!(csv.starts_with("x_m_s2,y_m_s2,z_m_s2\n"));
+        assert!(csv.contains("0.000383072,0.000766145,0.001149217\n"));
+        assert!(csv.contains("0.000421379,0.000804452,0.001187524\n"));
         assert!(first
             .csv_path
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .contains("device-t00000000000001000000us_ch02_node001_0102030405060708"));
+            .starts_with("line_b-node_1-"));
+        let metadata = fs::read_to_string(first.csv_path.with_extension("json")).unwrap();
+        assert!(metadata.contains("\"schema\": \"sensor-system-analysis-csv-v2\""));
+        assert!(metadata.contains("\"configured_odr_hz\": 125.0"));
+        assert!(metadata.contains("\"range_g\": 2"));
+        assert!(metadata.contains("\"axis_unit\": \"m/s^2\""));
 
-        let repeated =
-            export_analysis_window(&stream_dir, &output_dir, 0, identity, &[configuration()])
-                .unwrap();
+        let repeated = export_analysis_window(
+            &stream_dir,
+            &output_dir,
+            &temp.0.join("time"),
+            0,
+            identity,
+            &[configuration()],
+        )
+        .unwrap();
         assert!(repeated.already_exists);
     }
 }

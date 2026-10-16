@@ -10,4 +10,5 @@ sensor-core = { path = "../sensor-core" }
 sensor-protocol = { path = "../sensor-protocol" }
 serialport.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 nix.workspace = true

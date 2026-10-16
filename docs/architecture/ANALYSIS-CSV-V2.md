@@ -1,0 +1,112 @@
+# Analysis CSV v2
+
+- Status: główny format analityczny dla pomiarów drgań
+- Ostatnia aktualizacja: 2026-10-16
+
+## Cel i źródło prawdy
+
+`Analysis CSV v2` jest prostym widokiem dla MATLAB-a, notebooków i systemów
+zewnętrznych. Nie zastępuje Capture WAL i nie uczestniczy w
+`fsync -> Release`. Eksporter czyta wyłącznie zamknięte okna, waliduje WAL
+względem trwałego manifestu i może być bezpiecznie ponawiany. Awaria eksportu
+nie zatrzymuje ani nie opóźnia RS485.
+
+Domyślne `storage.window_seconds = 600` daje około dziesięciu minut danych od
+rzeczywistej pierwszej próbki. Chunk przekraczający próg nie jest dzielony,
+więc okno może być nieznacznie dłuższe. Nie wyrównujemy go do pełnej minuty.
+
+## Publikowane pliki
+
+Dla każdego zamkniętego okna powstają trzy pliki o wspólnym rdzeniu:
+
+```text
+line_b-node_1-11:10-16.10.2026.csv
+line_b-node_1-11:10-16.10.2026.events.csv
+line_b-node_1-11:10-16.10.2026.json
+```
+
+Czas w nazwie jest lokalnym, minutowym przybliżeniem czasu pierwszej próbki.
+Jeżeli restart lub krótki segment spowoduje kolizję nazwy w tej samej minucie,
+eksporter dodaje wyłącznie techniczny suffix `-w<ordinal>`, zamiast nadpisywać
+gotowy produkt.
+
+Główny CSV zawiera tylko:
+
+```text
+x_m_s2,y_m_s2,z_m_s2
+```
+
+Kolejność wierszy jest kolejnością próbek. Kody signed ADXL355 są przeliczane
+na `m/s²` przy użyciu zakresu z trwałej historii konfiguracji, standardowego
+przyspieszenia `9.80665 m/s²` i typowej czułości cyfrowej producenta:
+
+| Zakres | Czułość nominalna |
+| --- | ---: |
+| ±2 g | 256000 LSB/g |
+| ±4 g | 128000 LSB/g |
+| ±8 g | 64000 LSB/g |
+
+Źródłem wartości jest tabela „Digital Output for the ADXL355” w
+[ADXL354/ADXL355 Data Sheet Rev. D](https://www.analog.com/media/en/technical-documentation/data-sheets/adxl354_adxl355.pdf).
+Eksporter odrzuca okno mieszające różne ODR lub zakresy, ponieważ taki plik bez
+kolumny czasu nie byłby samowystarczalnym, jednoznacznym szeregiem.
+
+Plik `.json` jest obowiązkowym opisem CSV i zawiera między innymi:
+
+- nazwę pliku danych, kanał, node, hardware ID, `boot_epoch` i ordinal okna;
+- dokładny `first_device_time_us` z monotonicznego zegara node;
+- oszacowany czas pierwszej próbki w UTC i czasie lokalnym, metodę oraz
+  niepewność, jeśli można ją policzyć;
+- ustawiony `configured_odr_hz` oraz niezależnie wyznaczony
+  `estimated_odr_hz`;
+- zakres, nominalną czułość, stałą g i wzór konwersji;
+- liczbę próbek, brakujących numerów i przerwań ciągłości.
+
+Czas kalendarzowy jest rekonstruowany z Time WAL `node -> CLOCK_BOOTTIME`, a
+następnie z bieżącej relacji `CLOCK_BOOTTIME -> UTC`. Jeżeli odpowiedni Time
+WAL z tego samego bootu hosta nie jest dostępny, eksporter używa jawnie
+oznaczonego fallbacku: czas publikacji manifestu minus dokładny interwał
+monotoniczny okna. `first_device_time_us` pozostaje dokładnym dowodem źródłowym
+niezależnie od jakości czasu kalendarzowego.
+
+Plik `.events.csv` zachowuje luki i continuity breaks. Ponieważ główny CSV nie
+ma numeru próbki, zdarzenie zawiera `row_index` wskazujący miejsce w tablicy
+danych oraz `source_sample_number` służący do audytu Capture.
+
+## Automatyzacja i konfiguracja
+
+`analysis-export` skanuje tylko skonfigurowane, aktywne tożsamości. Najpierw
+publikuje zdarzenia i JSON, a główny CSV przez atomowy rename publikuje jako
+ostatni znacznik ukończenia produktu. Kursor eksportu jest odczytywany z
+metadanych JSON, więc uproszczona nazwa nie usuwa idempotencji ani informacji o
+`boot_epoch` i ordinalu.
+
+Konfiguracja produktu znajduje się w `storage.analysis_v2`:
+
+```json
+{
+  "enabled": true,
+  "root_dir": "var/analysis",
+  "scan_interval_seconds": 60,
+  "initial_backfill_windows": 1
+}
+```
+
+Timer `sensor-analysis-export-v2.timer` uruchamia proces jednokrotny co podany
+interwał. Ręczne wykonanie tej samej operacji:
+
+```bash
+./hostctl analysis export-new
+```
+
+Przy pierwszym uruchomieniu eksporter bierze tylko skonfigurowaną liczbę
+najnowszych zamkniętych okien bieżącego `boot_epoch`. Capture z poprzednich
+epok pozostaje dostępny do jawnego eksportu offline.
+
+## Migracja z v1
+
+Pliki v1 z surowymi osiami pozostają wyłącznie starym produktem pochodnym.
+Capture WAL nadal zawiera pełny materiał źródłowy, więc katalog Analysis można
+bezpiecznie odbudować w v2 bez zmiany lub usuwania Capture. Po wdrożeniu v2 na
+Raspberry Pi stary katalog Analysis jest czyszczony i eksporter publikuje
+najnowsze zamknięte okno każdej aktywnej linii w nowym formacie.
