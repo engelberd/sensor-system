@@ -130,7 +130,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r host_v2/analysis/requirements.txt
-jupyter lab host_v2/analysis/analysis_window.ipynb
+cd host_v2/analysis
+python -m jupyter lab analysis_window.ipynb
 ```
 
 W PowerShell polecenie aktywacji ma postać
