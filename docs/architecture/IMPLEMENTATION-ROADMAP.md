@@ -829,8 +829,11 @@ Bieżąca kolejność implementacji:
 6. **Gotowe:** bounded lokalne IPC, adapter `hostctl`, operacje per node oraz
    trwały audit obejmują Status, Maintenance, Resume, Configuration,
    Commissioning i RestartNode;
-7. operacje grupowe z wynikiem per target;
-8. dopiero potem dashboard jako cienki klient tego samego API.
+7. **Gotowy pierwszy przyrost:** bounded Operator HTTP API i dashboard są
+   cienkimi klientami tego samego IPC. UI obsługuje Maintenance, Resume i
+   restart node; pełny katalog pojedynczych operacji ma już endpointy;
+8. dodać formularze Configuration/Commissioning, operacje grupowe z wynikiem
+   per target oraz osobny helper systemowy dla start/stop/restart/doctor.
 
 ### Etap 11 — prosty eksport i migracja produkcyjna
 
