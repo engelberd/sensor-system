@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-16
+- Ostatnia aktualizacja: 2026-10-18
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -150,6 +150,11 @@ uzasadnią ją pomiary lub testy awarii.
 - lokalne Operations IPC schema 1 przez bounded Unix datagram oraz natywny
   adapter `hostctl channel`; status kanału, Maintenance i Resume docierają do
   istniejącego worker-owned ledgera bez otwierania RS485 przez klienta;
+- bootstrap aktywnego kanału traktuje zapisany profil instalacji jako trwały
+  desired state: node pozostawiony w Maintenance przez przerwany proces jest
+  po pełnym handshake i rekonstrukcji cursorów jawnie przeprowadzany przez
+  ExitMaintenance do Recording. Worker nie znika już z Operations API w stanie,
+  z którego jedyną drogą odzyskania był restart zasilania;
 - Get/Validate/Apply/Reset Configuration per node przez ten sam control plane;
   mutacje mają optimistic revision, preflight admission całego kanału,
   rekonfigurację quiescent schedulera i trwały WAL znaczenia `config_revision`;

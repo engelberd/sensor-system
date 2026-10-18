@@ -57,22 +57,81 @@ where
 {
     let policy = policy.validate()?;
     for node in nodes {
-        match (node.runtime().state, node.runtime().observability) {
-            (RuntimeState::Recording, ObservabilityProfile::Production) => continue,
-            (RuntimeState::Idle, _) => {}
-            (state, profile) => {
+        match node.runtime().state {
+            RuntimeState::Maintenance => {
+                let result = prepare_recording_node(
+                    endpoint,
+                    node.id(),
+                    RuntimeOperation::ExitMaintenance,
+                    policy,
+                )?;
+                if result.state != RuntimeState::Idle {
+                    return Err(RecordingActivationError::PreparationRejected {
+                        id: node.id(),
+                        operation: RuntimeOperation::ExitMaintenance,
+                        result,
+                    });
+                }
+                node.confirm_runtime(result);
+            }
+            RuntimeState::Idle | RuntimeState::Recording => {}
+            state => {
                 return Err(RecordingActivationError::ExplicitOperationRequired {
                     id: node.id(),
                     state,
-                    profile,
+                    profile: node.runtime().observability,
                 });
             }
         }
 
-        let result = start_recording_node(endpoint, node.id(), policy)?;
-        node.confirm_runtime(result);
+        if node.runtime().observability != ObservabilityProfile::Production {
+            let result = prepare_recording_node(
+                endpoint,
+                node.id(),
+                RuntimeOperation::SetObservabilityProfile,
+                policy,
+            )?;
+            if result.observability != ObservabilityProfile::Production {
+                return Err(RecordingActivationError::PreparationRejected {
+                    id: node.id(),
+                    operation: RuntimeOperation::SetObservabilityProfile,
+                    result,
+                });
+            }
+            node.confirm_runtime(result);
+        }
+
+        if node.runtime().state == RuntimeState::Idle {
+            let result = start_recording_node(endpoint, node.id(), policy)?;
+            node.confirm_runtime(result);
+        }
     }
     Ok(())
+}
+
+fn prepare_recording_node<P, C>(
+    endpoint: &mut ChannelEndpoint<P, C>,
+    id: DiscoveryTargetId,
+    operation: RuntimeOperation,
+    policy: RecordingActivationPolicy,
+) -> Result<RuntimeResult, RecordingActivationError>
+where
+    P: Read + Write,
+    C: MonotonicClock,
+{
+    endpoint
+        .agent_mut()
+        .submit_lifecycle(id.node_address, operation, ObservabilityProfile::Production)
+        .map_err(RecordingActivationError::Agent)?;
+    let result = wait_for_start(endpoint, id, Instant::now() + policy.node_deadline)?;
+    if result.code != RuntimeResultCode::Ok {
+        return Err(RecordingActivationError::PreparationRejected {
+            id,
+            operation,
+            result,
+        });
+    }
+    Ok(result)
 }
 
 /// Starts a known set of quiesced nodes after their retained Measurement tail
@@ -257,6 +316,11 @@ pub enum RecordingActivationError {
         state: RuntimeState,
         profile: ObservabilityProfile,
     },
+    PreparationRejected {
+        id: DiscoveryTargetId,
+        operation: RuntimeOperation,
+        result: RuntimeResult,
+    },
     StartRejected {
         id: DiscoveryTargetId,
         result: RuntimeResult,
@@ -345,6 +409,8 @@ mod tests {
                 let state = match command.operation {
                     RuntimeOperation::Start => RuntimeState::Recording,
                     RuntimeOperation::Stop => RuntimeState::Idle,
+                    RuntimeOperation::ExitMaintenance => RuntimeState::Idle,
+                    RuntimeOperation::SetObservabilityProfile => RuntimeState::Recording,
                     _ => return Err(io::Error::other("unexpected lifecycle operation")),
                 };
                 let payload = encode_lifecycle_response(RuntimeResult {
@@ -463,22 +529,61 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_requires_an_explicit_service_operation() {
+    fn maintenance_is_recovered_to_recording_during_process_bootstrap() {
         let mut endpoint = endpoint();
         let mut nodes = [recovered(1, RuntimeState::Maintenance)];
-        assert!(matches!(
-            activate_recording_nodes(
-                &mut endpoint,
-                &mut nodes,
-                RecordingActivationPolicy {
-                    node_deadline: Duration::from_secs(1),
-                },
-            ),
-            Err(RecordingActivationError::ExplicitOperationRequired {
-                state: RuntimeState::Maintenance,
-                ..
-            })
-        ));
+        let before = nodes[0].session().cursors();
+        activate_recording_nodes(
+            &mut endpoint,
+            &mut nodes,
+            RecordingActivationPolicy {
+                node_deadline: Duration::from_secs(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(nodes[0].runtime().state, RuntimeState::Recording);
+        assert_eq!(nodes[0].session().cursors(), before);
+
+        let (_agent, port, _clock) = endpoint.into_parts();
+        assert_eq!(
+            port.into_inner().operations,
+            vec![RuntimeOperation::ExitMaintenance, RuntimeOperation::Start]
+        );
+    }
+
+    #[test]
+    fn diagnostic_recording_is_returned_to_the_configured_production_profile() {
+        let mut endpoint = endpoint();
+        let mut node = recovered(1, RuntimeState::Recording);
+        node.confirm_runtime(RuntimeResult {
+            operation_id: 2,
+            code: RuntimeResultCode::Ok,
+            state: RuntimeState::Recording,
+            observability: ObservabilityProfile::Diagnostic,
+            sensor_status: SensorStatusCode::Ok,
+        });
+        let before = node.session().cursors();
+        let mut nodes = [node];
+
+        activate_recording_nodes(
+            &mut endpoint,
+            &mut nodes,
+            RecordingActivationPolicy {
+                node_deadline: Duration::from_secs(1),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            nodes[0].runtime().observability,
+            ObservabilityProfile::Production
+        );
+        assert_eq!(nodes[0].session().cursors(), before);
+        let (_agent, port, _clock) = endpoint.into_parts();
+        assert_eq!(
+            port.into_inner().operations,
+            vec![RuntimeOperation::SetObservabilityProfile]
+        );
     }
 
     #[test]
