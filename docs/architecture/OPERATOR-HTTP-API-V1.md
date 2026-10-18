@@ -39,13 +39,16 @@ Przykład:
 {
   "operation": "restart_node",
   "node_address": 1,
-  "operation_id": 123456
+  "operation_id": "123456"
 }
 ```
 
 Jeśli `operation_id` nie zostanie podane, adapter generuje niezerowe `u64` i
-zwraca je klientowi. Limit requestu i odpowiedzi pozostaje zgodny z IPC i
-wynosi 4096 bajtów.
+zwraca je klientowi. Na granicy HTTP identyfikatory `operation_id` oraz
+`active_operation_id` są dziesiętnymi stringami, ponieważ JavaScript nie potrafi
+bezstratnie reprezentować całego zakresu `u64`. POST przyjmuje zarówno liczbę,
+jak i dziesiętny string, po czym wewnętrzne IPC nadal pracuje na `u64`. Limit
+requestu i odpowiedzi pozostaje zgodny z IPC i wynosi 4096 bajtów.
 
 ## Dostępne operacje
 

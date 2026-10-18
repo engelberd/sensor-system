@@ -234,13 +234,58 @@ class V2OperatorApiTests(unittest.TestCase):
             response = connection.getresponse()
             submitted = json.loads(response.read())
             self.assertEqual(response.status, 202)
-            self.assertEqual(submitted["operation_id"], 91)
+            self.assertEqual(submitted["operation_id"], "91")
 
             connection.request("GET", "/api/v2/channels/2/operations/91")
             response = connection.getresponse()
             completed = json.loads(response.read())
             self.assertEqual(response.status, 200)
             self.assertEqual(completed["phase"], "succeeded")
+            self.assertEqual(completed["operation_id"], "91")
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_http_preserves_u64_operation_id_as_decimal_string(self) -> None:
+        operation_id = (1 << 63) + 123
+        server = DashboardServer(("127.0.0.1", 0), self.repository)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_port, timeout=2
+            )
+            connection.request(
+                "POST",
+                "/api/v2/channels/2/operations",
+                body=json.dumps(
+                    {
+                        "operation": "enter_maintenance",
+                        "operation_id": str(operation_id),
+                    }
+                ),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Sensor-System-Request": "dashboard-v2",
+                },
+            )
+            response = connection.getresponse()
+            submitted = json.loads(response.read())
+            self.assertEqual(response.status, 202)
+            self.assertEqual(submitted["operation_id"], str(operation_id))
+            self.assertEqual(
+                self.operations.submitted[-1]["operation_id"], operation_id
+            )
+
+            connection.request(
+                "GET", f"/api/v2/channels/2/operations/{operation_id}"
+            )
+            response = connection.getresponse()
+            completed = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(completed["operation_id"], str(operation_id))
             connection.close()
         finally:
             server.shutdown()

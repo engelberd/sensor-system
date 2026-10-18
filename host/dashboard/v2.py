@@ -351,8 +351,12 @@ class V2DashboardRepository:
             raise ValueError("unsupported host-v2 operation")
 
         operation_id = payload.get("operation_id", fresh_operation_id())
+        if isinstance(operation_id, str):
+            if not operation_id.isascii() or not operation_id.isdecimal():
+                raise ValueError("operation_id must be an integer or decimal string")
+            operation_id = int(operation_id)
         if isinstance(operation_id, bool) or not isinstance(operation_id, int):
-            raise ValueError("operation_id must be an integer")
+            raise ValueError("operation_id must be an integer or decimal string")
         if operation_id <= 0 or operation_id >= 1 << 64:
             raise ValueError("operation_id must be in 1..2^64-1")
 

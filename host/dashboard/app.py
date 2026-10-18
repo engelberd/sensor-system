@@ -5883,8 +5883,32 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._write_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _write_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
-        encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+        # Operation identifiers are u64 in the host domain.  JSON numbers are
+        # parsed as IEEE-754 doubles by browsers, so values above 2^53 would be
+        # rounded and the dashboard would poll a different ledger entry.  Keep
+        # the IPC/domain representation numeric and make only the HTTP boundary
+        # lossless by publishing these identifiers as decimal strings.
+        encoded = json.dumps(
+            self._http_json_safe(payload), indent=2, sort_keys=True
+        ).encode("utf-8")
         self._write_response(encoded, "application/json; charset=utf-8", status=status)
+
+    @classmethod
+    def _http_json_safe(cls, payload: Any, *, field_name: str | None = None) -> Any:
+        if (
+            field_name in {"operation_id", "active_operation_id"}
+            and isinstance(payload, int)
+            and not isinstance(payload, bool)
+        ):
+            return str(payload)
+        if isinstance(payload, dict):
+            return {
+                key: cls._http_json_safe(value, field_name=str(key))
+                for key, value in payload.items()
+            }
+        if isinstance(payload, list):
+            return [cls._http_json_safe(value) for value in payload]
+        return payload
 
     def _read_json_body(self, *, max_bytes: int | None = None) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0"))
