@@ -45,6 +45,7 @@ pub struct LinuxHostProcess {
     runtime: HostCoordinatorRuntime<LinuxProductionChannelTask>,
     storage: StorageHealthProbe,
     supervision_interval: Duration,
+    status_interval: Duration,
     metrics_interval: Duration,
 }
 
@@ -108,6 +109,7 @@ impl LinuxHostProcess {
             runtime,
             storage,
             supervision_interval: profile.runtime().supervision_interval(),
+            status_interval: profile.runtime().status_interval(),
             metrics_interval: profile.runtime().metrics_interval(),
         })
     }
@@ -118,6 +120,10 @@ impl LinuxHostProcess {
 
     pub const fn metrics_interval(&self) -> Duration {
         self.metrics_interval
+    }
+
+    pub const fn status_interval(&self) -> Duration {
+        self.status_interval
     }
 
     pub fn channel_metrics(&self) -> Vec<ChannelMetricsSnapshot> {

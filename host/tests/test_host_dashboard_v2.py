@@ -128,6 +128,7 @@ class V2DashboardRepositoryTests(unittest.TestCase):
                         "uptime_ms": 10_000,
                         "started_unix_ms": now_ms - 10_000,
                         "updated_unix_ms": now_ms,
+                        "updated_monotonic_us": 1_000_000,
                     },
                     "health": {"level": "healthy", "reasons": []},
                     "storage": {
@@ -217,10 +218,30 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertEqual(node["last_measurement_age_ms"], 40)
             self.assertEqual(node["release_backlog"], 40)
             self.assertEqual(node["board_revision"], 2)
+            self.assertIsNone(node["instant_samples_per_second_5s"])
             disabled = payload["channels"][1]
             self.assertFalse(disabled["enabled"])
             self.assertFalse(disabled["controls_enabled"])
             self.assertIsNone(disabled["operating_mode"])
+
+    @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
+    def test_calculates_measured_sample_rate_from_durable_cursor(self, _journal: object) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config, status = self._fixture(Path(tmp))
+            repository = V2DashboardRepository(config, status_path=status)
+
+            first = repository.dashboard_payload()["channels"][0]["nodes"][0]
+            self.assertIsNone(first["instant_samples_per_second_5s"])
+
+            document = json.loads(status.read_text(encoding="utf-8"))
+            document["sequence"] = 8
+            document["process"]["updated_monotonic_us"] = 6_000_000
+            document["process"]["updated_unix_ms"] += 5_000
+            document["nodes"][0]["cursors"]["durable"] += 625
+            status.write_text(json.dumps(document), encoding="utf-8")
+
+            second = repository.dashboard_payload()["channels"][0]["nodes"][0]
+            self.assertAlmostEqual(second["instant_samples_per_second_5s"], 125.0)
 
     @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
     def test_stale_status_marks_channel_offline(self, _journal: object) -> None:

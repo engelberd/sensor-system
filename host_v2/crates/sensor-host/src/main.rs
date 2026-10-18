@@ -168,11 +168,12 @@ fn run(
         let _ = process.request_stop();
     }
     println!(
-        "host running: system={} channels={} startup_faults={} supervision_interval_ms={} metrics_interval_ms={}",
+        "host running: system={} channels={} startup_faults={} supervision_interval_ms={} status_interval_ms={} metrics_interval_ms={}",
         system_name,
         process.channel_count(),
         process.startup_channel_faults().len(),
         process.supervision_interval().as_millis(),
+        process.status_interval().as_millis(),
         process.metrics_interval().as_millis()
     );
     for fault in process.startup_channel_faults() {
@@ -183,6 +184,7 @@ fn run(
     }
 
     let mut next_metrics = Instant::now() + process.metrics_interval();
+    let mut next_status = Instant::now() + process.status_interval();
     while cause.is_none() {
         if let Err(error) = operations.poll() {
             cause = Some(error.to_string());
@@ -218,8 +220,12 @@ fn run(
             let _ = process.request_stop();
             break;
         }
-        if Instant::now() >= next_metrics {
+        let now = Instant::now();
+        if now >= next_metrics {
             print_runtime_metrics(&process);
+            next_metrics = now + process.metrics_interval();
+        }
+        if now >= next_status {
             let observation = observe_runtime(&process);
             if let Err(error) = status.publish(
                 runtime_phase(&observation),
@@ -232,7 +238,7 @@ fn run(
                 let _ = process.request_stop();
                 break;
             }
-            next_metrics = Instant::now() + process.metrics_interval();
+            next_status = now + process.status_interval();
         }
         std::thread::sleep(process.supervision_interval());
     }

@@ -37,6 +37,7 @@
   },
   "runtime_v2": {
     "supervision_interval_ms": 100,
+    "status_interval_ms": 1000,
     "metrics_interval_ms": 10000,
     "transaction_timeout_ms": 250,
     "retry_delay_ms": 25,

@@ -1117,7 +1117,7 @@ INDEX_HTML = """<!doctype html>
     </dialog>
 
     <script>
-      const REFRESH_MS = 2000;
+      const REFRESH_MS = 1000;
       const LOG_REFRESH_MS = 6000;
       let refreshTimer = null;
       let lastLogsRefreshAt = 0;
@@ -1445,8 +1445,9 @@ INDEX_HTML = """<!doctype html>
               <div class="node-meta">${escapeHtml(hasAlerts ? node.alerts.join(", ") : "bez aktywnych uwag")}</div>
             </td>
             <td data-label="Output ODR">
-              <span class="mono">${escapeHtml(formatFloat(node.output_odr_hz, 1))} Hz</span>
-              <div class="node-meta">profil ${escapeHtml(formatFloat(node.expected_odr_hz, 1))} Hz</div>
+              <span class="mono">node ${escapeHtml(formatFloat(node.output_odr_hz, 1))} Hz</span>
+              <div class="node-meta mono">pomiar ${escapeHtml(node.instant_samples_per_second_5s == null ? "zbieranie 5 s…" : `${formatFloat(node.instant_samples_per_second_5s, 1)} samples/s`)}</div>
+              <div class="node-meta">profil hosta ${escapeHtml(formatFloat(node.expected_odr_hz, 1))} Hz</div>
             </td>
             <td data-label="Cursory">
               <span class="mono">rx ${escapeHtml(formatNumber(node.received_cursor))} · durable ${escapeHtml(formatNumber(node.durable_cursor))}</span>

@@ -39,6 +39,24 @@ class FakeOperationsClient:
                 "hardware_id": request["hardware_id"],
                 "node_address": request["new_node_address"],
             }
+        elif request is not None and request.get("operation") in {
+            "apply_configuration",
+            "reset_configuration",
+        }:
+            configuration = request.get("configuration") or {
+                "output_rate_code": 5,
+                "range_g": 2,
+                "high_pass_corner": 0,
+                "filter_profile": 1,
+                "fifo_watermark": 30,
+                "offset_x": 0,
+                "offset_y": 0,
+                "offset_z": 0,
+            }
+            result = {
+                "kind": "configuration_applied",
+                "observed": {"revision": 2, "configuration": configuration},
+            }
         return {
             "schema_version": 1,
             "ok": True,
@@ -97,7 +115,7 @@ class V2OperatorApiTests(unittest.TestCase):
                             "channel_id": 2,
                             "enabled": True,
                             "transport": {"kind": "serial-rs485"},
-                            "nodes": [{"id": 1, "enabled": True}],
+                            "nodes": [{"id": 1, "enabled": True, "output_rate_hz": 125}],
                         }
                     ],
                 }
@@ -208,6 +226,30 @@ class V2OperatorApiTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "node_address is required"):
             self.repository.submit_operation_payload(2, {"operation": "restart_node"})
+
+    def test_apply_configuration_persists_confirmed_output_rate(self) -> None:
+        response = self.repository.submit_operation_payload(
+            2,
+            {
+                "operation": "apply_configuration",
+                "node_address": 1,
+                "expected_revision": 1,
+                "configuration": {
+                    "output_rate_code": 3,
+                    "range_g": 2,
+                    "high_pass_corner": 0,
+                    "filter_profile": 1,
+                    "fifo_watermark": 30,
+                    "offset_x": 0,
+                    "offset_y": 0,
+                    "offset_z": 0,
+                },
+            },
+        )
+
+        self.assertEqual(response["phase"], "succeeded")
+        saved = json.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(saved["channels"][0]["nodes"][0]["output_rate_hz"], 500)
 
     def test_http_submit_and_poll_use_same_operations_client(self) -> None:
         server = DashboardServer(("127.0.0.1", 0), self.repository)

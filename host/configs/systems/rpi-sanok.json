@@ -33,7 +33,7 @@
     {
       "name": "line-h", "channel_id": 8, "label": "Linia H", "enabled": true,
       "transport": {"kind": "serial-rs485", "device_id": "wch-ch9344-3-2", "endpoint": "/dev/sensor-system-line-h", "baud_rate": 115200},
-      "nodes": [{"id": 1, "hardware_id": "e648a8babac453a2", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
+      "nodes": [{"id": 1, "hardware_id": "e648a8babac453a2", "board_revision": 2, "enabled": true, "output_rate_hz": 500}]
     }
   ]
 }

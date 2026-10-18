@@ -95,6 +95,27 @@ class CommissioningProfileStoreTests(unittest.TestCase):
             )
         self.assertEqual(self.profile.read_bytes(), original)
 
+    def test_updates_scheduler_output_rate_in_stable_system_profile(self) -> None:
+        result = self.store.update_node_output_rate(
+            channel_id=2,
+            node_address=1,
+            output_rate_hz=500,
+        )
+
+        saved = json.loads(self.profile.read_text(encoding="utf-8"))
+        self.assertEqual(saved["channels"][0]["nodes"][0]["output_rate_hz"], 500)
+        self.assertEqual(result["output_rate_hz"], 500)
+
+    def test_rejects_output_rate_update_for_unknown_node(self) -> None:
+        original = self.profile.read_bytes()
+        with self.assertRaisesRegex(CommissioningProfileError, "node is not defined"):
+            self.store.update_node_output_rate(
+                channel_id=2,
+                node_address=9,
+                output_rate_hz=500,
+            )
+        self.assertEqual(self.profile.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

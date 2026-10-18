@@ -82,6 +82,75 @@ class CommissioningProfileStore:
         self._atomic_write(profile_path, profile)
         return {"profile_path": str(profile_path), "node": node}
 
+    def update_node_output_rate(
+        self,
+        *,
+        channel_id: int,
+        node_address: int,
+        output_rate_hz: float | int,
+    ) -> dict[str, Any]:
+        """Persist the scheduler-relevant part of node configuration.
+
+        The complete measurement configuration is owned and persisted by the
+        node.  Output ODR is also installation policy because the host uses it
+        for admission and scheduling after the next process start.
+        """
+        rate = float(output_rate_hz)
+        supported_rates = {
+            4000.0,
+            2000.0,
+            1000.0,
+            500.0,
+            250.0,
+            125.0,
+            62.5,
+            31.25,
+            15.625,
+            7.8125,
+            3.90625,
+        }
+        if rate not in supported_rates:
+            raise CommissioningProfileError("unsupported output rate")
+
+        profile_path = self.profile_path()
+        profile = self._read_document(profile_path)
+        channels = profile.get("channels")
+        if not isinstance(channels, list):
+            raise CommissioningProfileError("installation profile has no channels array")
+        channel = next(
+            (
+                value
+                for value in channels
+                if isinstance(value, dict) and int(value.get("channel_id", 0)) == channel_id
+            ),
+            None,
+        )
+        if channel is None:
+            raise CommissioningProfileError("channel is not defined in the installation profile")
+        nodes = channel.get("nodes")
+        if not isinstance(nodes, list):
+            raise CommissioningProfileError("channel has no nodes array")
+        node = next(
+            (
+                value
+                for value in nodes
+                if isinstance(value, dict) and int(value.get("id", 0)) == node_address
+            ),
+            None,
+        )
+        if node is None:
+            raise CommissioningProfileError("node is not defined in the installation profile")
+
+        stored_rate: float | int = int(rate) if rate.is_integer() else rate
+        node["output_rate_hz"] = stored_rate
+        self._atomic_write(profile_path, profile)
+        return {
+            "profile_path": str(profile_path),
+            "channel_id": channel_id,
+            "node_address": node_address,
+            "output_rate_hz": stored_rate,
+        }
+
     def verify_writable(self) -> Path:
         profile_path = self.profile_path()
         descriptor: int | None = None

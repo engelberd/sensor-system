@@ -5,6 +5,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,20 @@ DEFAULT_SERVICE_UNIT = "sensor-host-v2.service"
 MAX_STATUS_BYTES = 4 * 1024 * 1024
 STATUS_STALE_AFTER_S = 30.0
 JOURNAL_CACHE_SECONDS = 5.0
+SAMPLE_RATE_WINDOW_US = 5_000_000
+OUTPUT_RATE_HZ_BY_CODE = {
+    0: 4000.0,
+    1: 2000.0,
+    2: 1000.0,
+    3: 500.0,
+    4: 250.0,
+    5: 125.0,
+    6: 62.5,
+    7: 31.25,
+    8: 15.625,
+    9: 7.8125,
+    10: 3.90625,
+}
 
 
 def _deep_merge(base: Any, overlay: Any, section: str | None = None) -> Any:
@@ -149,6 +164,51 @@ class V2DashboardRepository:
         self.host_metrics_sampler = host_metrics_sampler or HostMetricsSampler()
         self._journal_lock = threading.Lock()
         self._journal_cache: tuple[float, int, list[dict[str, Any]]] | None = None
+        self._rate_lock = threading.Lock()
+        self._rate_observations: dict[
+            tuple[int, int], tuple[int, deque[tuple[int, int]]]
+        ] = {}
+
+    def _sample_rate(
+        self,
+        *,
+        channel_id: int,
+        node_address: int,
+        boot_epoch: int,
+        status_monotonic_us: int,
+        durable_cursor: int,
+    ) -> float | None:
+        if status_monotonic_us <= 0:
+            return None
+        key = (channel_id, node_address)
+        with self._rate_lock:
+            state = self._rate_observations.get(key)
+            if state is None or state[0] != boot_epoch:
+                observations: deque[tuple[int, int]] = deque()
+                self._rate_observations[key] = (boot_epoch, observations)
+            else:
+                observations = state[1]
+
+            if observations:
+                last_time, last_cursor = observations[-1]
+                if status_monotonic_us < last_time or durable_cursor < last_cursor:
+                    observations.clear()
+                elif status_monotonic_us > last_time:
+                    observations.append((status_monotonic_us, durable_cursor))
+            else:
+                observations.append((status_monotonic_us, durable_cursor))
+
+            cutoff = status_monotonic_us - SAMPLE_RATE_WINDOW_US
+            while len(observations) > 2 and observations[1][0] <= cutoff:
+                observations.popleft()
+            if len(observations) < 2:
+                return None
+            first_time, first_cursor = observations[0]
+            last_time, last_cursor = observations[-1]
+            elapsed_us = last_time - first_time
+            if elapsed_us <= 0 or last_cursor < first_cursor:
+                return None
+            return (last_cursor - first_cursor) * 1_000_000.0 / elapsed_us
 
     def _operations_status(self, channel_id: int) -> dict[str, Any] | None:
         try:
@@ -386,6 +446,38 @@ class V2DashboardRepository:
             if field not in payload:
                 raise ValueError(f"{field} is required for {operation}")
             request[field] = payload[field]
+        if operation in {"apply_configuration", "reset_configuration"}:
+            # The node owns the full persisted configuration, while output ODR
+            # is also host scheduling policy.  Preflight the profile before
+            # touching the node, then commit its confirmed effective ODR.
+            self.commissioning_profiles.verify_writable()
+            submitted = self.operations.submit(request)
+            completed = self._wait_for_operation(
+                channel_id, submitted, timeout_seconds=120.0
+            )
+            result = completed.get("result")
+            observed = result.get("observed") if isinstance(result, dict) else None
+            configuration = (
+                observed.get("configuration") if isinstance(observed, dict) else None
+            )
+            if not isinstance(result, dict) or result.get("kind") != "configuration_applied":
+                raise OperationsIpcClientError(
+                    "host did not confirm the effective node configuration"
+                )
+            if not isinstance(configuration, dict):
+                raise OperationsIpcClientError(
+                    "host did not return the effective node configuration"
+                )
+            output_rate_code = _safe_int(configuration.get("output_rate_code"), -1)
+            output_rate_hz = OUTPUT_RATE_HZ_BY_CODE.get(output_rate_code)
+            if output_rate_hz is None:
+                raise OperationsIpcClientError("host returned an unsupported output rate")
+            completed["profile"] = self.commissioning_profiles.update_node_output_rate(
+                channel_id=channel_id,
+                node_address=_safe_int(payload.get("node_address")),
+                output_rate_hz=output_rate_hz,
+            )
+            return completed
         return self.operations.submit(request)
 
     def _validate_channel_id(self, channel_id: int) -> None:
@@ -513,6 +605,9 @@ class V2DashboardRepository:
         health = (status or {}).get("health")
         health = health if isinstance(health, dict) else {}
         health_reasons = health.get("reasons", [])
+        process = (status or {}).get("process")
+        process = process if isinstance(process, dict) else {}
+        status_monotonic_us = _safe_int(process.get("updated_monotonic_us"))
         result: list[dict[str, Any]] = []
         for raw_channel in profile.get("channels", []):
             if not isinstance(raw_channel, dict):
@@ -576,6 +671,25 @@ class V2DashboardRepository:
                 durable = _safe_int(cursors.get("durable")) if isinstance(cursors, dict) else 0
                 released = _safe_int(cursors.get("released")) if isinstance(cursors, dict) else 0
                 produced = _safe_int(cursors.get("produced")) if isinstance(cursors, dict) else 0
+                measured_rate = (
+                    self._sample_rate(
+                        channel_id=channel_id,
+                        node_address=address,
+                        boot_epoch=_safe_int(node.get("boot_epoch")),
+                        status_monotonic_us=status_monotonic_us,
+                        durable_cursor=durable,
+                    )
+                    if isinstance(node, dict) and isinstance(cursors, dict) and not status_stale
+                    else None
+                )
+                expected_odr_hz = float(raw_node.get("output_rate_hz", 0))
+                output_odr_hz = (
+                    float(node.get("output_rate_hz", expected_odr_hz))
+                    if isinstance(node, dict)
+                    else expected_odr_hz
+                )
+                if node is not None and abs(output_odr_hz - expected_odr_hz) > 1e-9:
+                    alerts.append("ODR node różni się od profilu hosta")
                 nodes.append(
                     {
                         "node_id": address,
@@ -595,15 +709,15 @@ class V2DashboardRepository:
                         "boot_epoch": node.get("boot_epoch") if isinstance(node, dict) else None,
                         "application_protocol": node.get("application_protocol") if isinstance(node, dict) else None,
                         "framing_protocol": node.get("framing_protocol") if isinstance(node, dict) else None,
-                        "output_odr_hz": float(node.get("output_rate_hz", raw_node.get("output_rate_hz", 0))) if isinstance(node, dict) else float(raw_node.get("output_rate_hz", 0)),
-                        "expected_odr_hz": float(raw_node.get("output_rate_hz", 0)),
+                        "output_odr_hz": output_odr_hz,
+                        "expected_odr_hz": expected_odr_hz,
                         "output_rate_mask": _safe_int(node.get("output_rate_mask")) if isinstance(node, dict) else 0,
                         "configuration_revision": _safe_int(node.get("configuration_revision")) if isinstance(node, dict) else 0,
                         "service_flags": _safe_int(node.get("service_flags")) if isinstance(node, dict) else 0,
                         "feature_flags": _safe_int(node.get("feature_flags")) if isinstance(node, dict) else 0,
                         "samples_written": durable,
                         "expected_sample_seq": produced,
-                        "instant_samples_per_second_5s": None,
+                        "instant_samples_per_second_5s": measured_rate,
                         "rate_stability_percent_5s": None,
                         "bursts_no_data": _safe_int(metrics.get("measurement_no_data")),
                         "received_cursor": received,

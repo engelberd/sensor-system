@@ -23,8 +23,9 @@ use crate::safe_state::{SafeStatePolicy, SafeStateWirePolicy};
 use crate::time_profile::TimeSyncInstallationPolicy;
 use crate::transaction::DurationMicros;
 
-const RUNTIME_V2_KEYS: [&str; 40] = [
+const RUNTIME_V2_KEYS: [&str; 41] = [
     "supervision_interval_ms",
+    "status_interval_ms",
     "metrics_interval_ms",
     "transaction_timeout_ms",
     "retry_delay_ms",
@@ -74,6 +75,7 @@ const RUNTIME_V2_KEYS: [&str; 40] = [
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostRuntimeInstallationProfile {
     supervision_interval: Duration,
+    status_interval: Duration,
     metrics_interval: Duration,
     serial_bootstrap: SerialInstallationBootstrapPolicy,
     startup_base: ChannelStartupBasePolicy,
@@ -214,6 +216,7 @@ impl HostRuntimeInstallationProfile {
 
         Ok(Self {
             supervision_interval: duration_from_ms(runtime, "supervision_interval_ms")?,
+            status_interval: duration_from_ms(runtime, "status_interval_ms")?,
             metrics_interval: duration_from_ms(runtime, "metrics_interval_ms")?,
             serial_bootstrap,
             startup_base,
@@ -231,6 +234,10 @@ impl HostRuntimeInstallationProfile {
 
     pub const fn metrics_interval(&self) -> Duration {
         self.metrics_interval
+    }
+
+    pub const fn status_interval(&self) -> Duration {
+        self.status_interval
     }
 
     pub const fn serial_bootstrap(&self) -> SerialInstallationBootstrapPolicy {
@@ -419,6 +426,7 @@ mod tests {
         let startup = profile.channel_startup(time_sync).unwrap();
 
         assert_eq!(profile.supervision_interval(), Duration::from_millis(100));
+        assert_eq!(profile.status_interval(), Duration::from_secs(1));
         assert_eq!(profile.metrics_interval(), Duration::from_secs(10));
         assert_eq!(profile.serial_bootstrap().agent.max_pending_work_items, 8);
         assert_eq!(startup.target_chunk_samples, 32);

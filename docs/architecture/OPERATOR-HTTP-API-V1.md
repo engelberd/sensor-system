@@ -83,6 +83,16 @@ wyłączone w UI. Okno Configuration otwiera się synchronicznie po potwierdzeni
 operatora, a podczas asynchronicznego GetConfiguration pokazuje fazę i czas
 operacji. Pola edycji pojawiają się dopiero po otrzymaniu kompletnej
 konfiguracji; błąd pozostawia widoczne wyjaśnienie i bezpiecznie blokuje mutacje.
+Po potwierdzonym `ApplyConfiguration` lub `ResetConfiguration` dashboard zapisuje
+efektywny output ODR także do profilu instalacji. Pełna konfiguracja pozostaje
+trwale własnością node, natomiast ODR musi być częścią profilu hosta, ponieważ
+wpływa na admission i harmonogram kanału przy następnym starcie.
+
+Widok węzła rozróżnia trzy wartości: ODR odczytany ze stanu node, output ODR
+oczekiwany przez profil hosta oraz zmierzone `samples/s` z przyrostu trwałego
+kursora w ruchomym oknie około 5 sekund. Runtime Status jest publikowany co
+1 sekundę, niezależnie od dziesięciosekundowego logowania pełnych metryk;
+dashboard odpytuje stan z taką samą częstotliwością.
 
 Commissioning oznacza całą procedurę przyjęcia nowego urządzenia: wyłączne okno
 Maintenance, slotowany `ScanUnassigned`, wybór po `hardware_id`,
