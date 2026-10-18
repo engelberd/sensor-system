@@ -236,6 +236,27 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertEqual(payload["overview"]["nodes_online"], 0)
 
     @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
+    def test_starting_status_accepts_null_runtime_sections(self, _journal: object) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config, status = self._fixture(Path(tmp))
+            document = json.loads(status.read_text(encoding="utf-8"))
+            document["process"]["phase"] = "starting"
+            document["health"] = None
+            document["storage"] = None
+            document["channels"] = []
+            document["nodes"] = []
+            status.write_text(json.dumps(document), encoding="utf-8")
+            repository = V2DashboardRepository(config, status_path=status)
+
+            payload = repository.dashboard_payload()
+
+            self.assertEqual(payload["overview"]["process_phase"], "starting")
+            self.assertEqual(payload["overview"]["health_level"], "unknown")
+            self.assertEqual(payload["overview"]["channels_running"], 0)
+            self.assertEqual(payload["supervisor"]["process_phase"], "starting")
+            self.assertEqual(repository.events_payload(), [])
+
+    @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
     def test_http_server_rejects_post_in_v2_mode(self, _journal: object) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config, status = self._fixture(Path(tmp))

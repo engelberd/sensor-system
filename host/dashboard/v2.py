@@ -422,7 +422,9 @@ class V2DashboardRepository:
     def _status_age(self, status: dict[str, Any] | None) -> tuple[str | None, float | None, bool]:
         if status is None:
             return None, None, True
-        updated = _unix_ms_to_iso(status.get("process", {}).get("updated_unix_ms"))
+        process = status.get("process")
+        process = process if isinstance(process, dict) else {}
+        updated = _unix_ms_to_iso(process.get("updated_unix_ms"))
         if updated is None:
             return None, None, True
         updated_dt = datetime.fromisoformat(updated)
@@ -508,7 +510,9 @@ class V2DashboardRepository:
             for node in (status or {}).get("nodes", [])
             if isinstance(node, dict)
         }
-        health_reasons = (status or {}).get("health", {}).get("reasons", [])
+        health = (status or {}).get("health")
+        health = health if isinstance(health, dict) else {}
+        health_reasons = health.get("reasons", [])
         result: list[dict[str, Any]] = []
         for raw_channel in profile.get("channels", []):
             if not isinstance(raw_channel, dict):
@@ -656,8 +660,14 @@ class V2DashboardRepository:
         online_nodes = sum(1 for node in enabled_nodes if node["online"])
         receiving_nodes = sum(1 for node in enabled_nodes if node["receiving_samples"])
         attention_count = sum(channel["attention_count"] for channel in enabled_channels)
-        storage = (status or {}).get("storage", {})
-        process = (status or {}).get("process", {})
+        storage = (status or {}).get("storage")
+        storage = storage if isinstance(storage, dict) else {}
+        process = (status or {}).get("process")
+        process = process if isinstance(process, dict) else {}
+        health = (status or {}).get("health")
+        health = health if isinstance(health, dict) else {}
+        software = (status or {}).get("software")
+        software = software if isinstance(software, dict) else {}
         phase = str(process.get("phase", "offline"))
         if status is None:
             summary = "Brak poprawnego Runtime Status v1"
@@ -690,7 +700,7 @@ class V2DashboardRepository:
             "storage_free_percent": None,
             "storage_low": str(storage.get("state", "unknown")) != "healthy",
             "process_phase": phase,
-            "health_level": str((status or {}).get("health", {}).get("level", "unknown")),
+            "health_level": str(health.get("level", "unknown")),
             "status_summary": summary,
         }
         config = self.config_payload()
@@ -701,7 +711,7 @@ class V2DashboardRepository:
             "event_log": f"journald:{self.service_unit}",
             "updated_utc": updated_utc,
             "started_utc": _unix_ms_to_iso(process.get("started_unix_ms")),
-            "supervisor_version": (status or {}).get("software", {}).get("host_version"),
+            "supervisor_version": software.get("host_version"),
             "storage_root": storage.get("root", config["storage"].get("root_dir")),
             "status_age_s": age_s,
             "status_stale": stale,
@@ -712,14 +722,14 @@ class V2DashboardRepository:
             "storage_minimum_available_bytes": storage.get("minimum_available_bytes"),
             "process_phase": phase,
             "health_level": overview["health_level"],
-            "coordinator_state": (status or {}).get("health", {}).get("coordinator"),
-            "time_persistence_state": (status or {}).get("health", {}).get("time_persistence"),
+            "coordinator_state": health.get("coordinator"),
+            "time_persistence_state": health.get("time_persistence"),
             "process_id": process.get("pid"),
             "process_instance_id": process.get("instance_id"),
             "process_uptime_ms": process.get("uptime_ms"),
             "status_sequence": (status or {}).get("sequence"),
-            "application_protocol": (status or {}).get("software", {}).get("application_protocol"),
-            "framing_protocol": (status or {}).get("software", {}).get("framing_protocol"),
+            "application_protocol": software.get("application_protocol"),
+            "framing_protocol": software.get("framing_protocol"),
             **host_metrics,
         }
         return {
@@ -748,8 +758,12 @@ class V2DashboardRepository:
         status = _load_status(self.status_path)
         events: list[dict[str, Any]] = []
         if status is not None:
-            utc = _unix_ms_to_iso(status.get("process", {}).get("updated_unix_ms"))
-            for reason in status.get("health", {}).get("reasons", []):
+            process = status.get("process")
+            process = process if isinstance(process, dict) else {}
+            health = status.get("health")
+            health = health if isinstance(health, dict) else {}
+            utc = _unix_ms_to_iso(process.get("updated_unix_ms"))
+            for reason in health.get("reasons", []):
                 if not isinstance(reason, dict):
                     continue
                 events.append(
