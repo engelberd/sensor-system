@@ -164,6 +164,7 @@ class V2OperatorApiTests(unittest.TestCase):
             self.assertIn('id="config-load-stage" hidden', html)
             self.assertIn('id="config-fields"', html)
             self.assertIn('$("node-config-dialog").showModal();', html)
+            self.assertIn("formatOperationId(channel.active_operation_id)", html)
             self.assertIn("16 szczelin odpowiedzi", html)
             self.assertIn("Rozpocząć skan teraz?", html)
             self.assertIn("przerwie nagrywanie na wszystkich aktywnych kanałach", html)

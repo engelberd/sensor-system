@@ -1170,6 +1170,14 @@ INDEX_HTML = """<!doctype html>
         return new Intl.NumberFormat("pl-PL").format(value);
       }
 
+      function formatOperationId(value) {
+        return typeof value === "string" && /^\\d+$/.test(value)
+          ? value
+          : Number.isSafeInteger(value) && value > 0
+            ? String(value)
+            : "-";
+      }
+
       function formatFloat(value, digits = 2) {
         if (typeof value !== "number" || !Number.isFinite(value)) {
           return "-";
@@ -1490,7 +1498,7 @@ INDEX_HTML = """<!doctype html>
               <div class="chip-row">
                 ${chip(phase, phaseKind)}
                 ${chip(channel.health || "unknown", channel.health === "healthy" ? "good" : channel.health === "faulted" ? "bad" : "warn")}
-                ${channel.active_operation_id != null ? chip(`operacja ${formatNumber(channel.active_operation_id)}`, "info") : ""}
+                ${channel.active_operation_id != null ? chip(`operacja ${formatOperationId(channel.active_operation_id)}`, "info") : ""}
                 ${channel.attention_count ? chip(`uwagi ${formatNumber(channel.attention_count)}`, "warn") : ""}
               </div>
             </div>
