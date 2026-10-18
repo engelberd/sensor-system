@@ -116,6 +116,18 @@ class CommissioningProfileStoreTests(unittest.TestCase):
             )
         self.assertEqual(self.profile.read_bytes(), original)
 
+    def test_same_output_rate_does_not_rewrite_profile(self) -> None:
+        original = self.profile.read_bytes()
+
+        result = self.store.update_node_output_rate(
+            channel_id=2,
+            node_address=1,
+            output_rate_hz=125.0,
+        )
+
+        self.assertEqual(result["output_rate_hz"], 125)
+        self.assertEqual(self.profile.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

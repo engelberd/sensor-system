@@ -142,6 +142,17 @@ class CommissioningProfileStore:
             raise CommissioningProfileError("node is not defined in the installation profile")
 
         stored_rate: float | int = int(rate) if rate.is_integer() else rate
+        try:
+            unchanged = float(node.get("output_rate_hz")) == rate
+        except (TypeError, ValueError):
+            unchanged = False
+        if unchanged:
+            return {
+                "profile_path": str(profile_path),
+                "channel_id": channel_id,
+                "node_address": node_address,
+                "output_rate_hz": stored_rate,
+            }
         node["output_rate_hz"] = stored_rate
         self._atomic_write(profile_path, profile)
         return {
