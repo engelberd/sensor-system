@@ -1579,7 +1579,7 @@ mod tests {
                 .unwrap(),
             ChannelEvent::MeasurementPersistenceRequired {
                 node_address: 7,
-                kind: PersistenceKind::SampleChunk,
+                kind: PersistenceKind::SampleChunk { sample_count: 1 },
             }
         );
         assert_eq!(

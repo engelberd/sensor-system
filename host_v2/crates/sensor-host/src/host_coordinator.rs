@@ -444,8 +444,11 @@ where
             });
         }
     };
-    let mut prepared = Vec::with_capacity(channels.len());
+    let mut running = ChannelSupervisorSet::empty();
     let mut startup_channel_faults = Vec::new();
+    let mut channel_metrics = Vec::with_capacity(channels.len());
+    let mut node_metrics = Vec::with_capacity(inventory.nodes().len());
+    let mut channel_operations = Vec::with_capacity(channels.len());
 
     for planned in channels {
         let channel_id = planned.channel_id();
@@ -453,7 +456,7 @@ where
         let time_observations = match time.submitter() {
             Ok(value) => value,
             Err(source) => {
-                let cleanup = cleanup_prepared_channels(prepared, time);
+                let cleanup = cleanup_running_channels(running, time);
                 return Err(HostRuntimeStartError::TimeSubmitter {
                     channel_id,
                     source,
@@ -466,7 +469,7 @@ where
             Ok(value) => value,
             Err(source) => {
                 drop(time_observations);
-                let cleanup = cleanup_prepared_channels(prepared, time);
+                let cleanup = cleanup_running_channels(running, time);
                 return Err(HostRuntimeStartError::OperationsAudit {
                     channel_id,
                     source,
@@ -478,7 +481,7 @@ where
             Some(value) => value,
             None => {
                 drop(time_observations);
-                let cleanup = cleanup_prepared_channels(prepared, time);
+                let cleanup = cleanup_running_channels(running, time);
                 return Err(HostRuntimeStartError::WorkIdSeedOverflow {
                     channel_id,
                     cleanup,
@@ -510,7 +513,7 @@ where
                 continue;
             }
             Err(source) => {
-                let cleanup = cleanup_prepared_channels(prepared, time);
+                let cleanup = cleanup_running_channels(running, time);
                 return Err(HostRuntimeStartError::Channel {
                     channel_id,
                     source,
@@ -539,10 +542,21 @@ where
             ),
         )
         .expect("channel task policies were validated before channel composition");
-        prepared.push((channel_id, channel_name, task, operations_handle));
+        let metrics_reader = task.metrics_reader();
+        let node_readers = task.node_metrics_readers();
+        if let Err(source) = running.add(ChannelTaskSpec::new(channel_id, channel_name, task)) {
+            let cleanup = cleanup_running_channels(running, time);
+            return Err(HostRuntimeStartError::Supervisor {
+                source,
+                time_shutdown_error: cleanup.time_shutdown_error,
+            });
+        }
+        channel_metrics.push(metrics_reader);
+        node_metrics.extend(node_readers);
+        channel_operations.push(operations_handle);
     }
 
-    if prepared.is_empty() {
+    if running.is_empty() {
         let time_shutdown_error = time.shutdown().err();
         return Err(HostRuntimeStartError::NoRunnableChannels {
             faults: startup_channel_faults,
@@ -550,34 +564,9 @@ where
         });
     }
 
-    let mut channel_metrics = Vec::with_capacity(prepared.len());
-    let mut node_metrics = Vec::with_capacity(inventory.nodes().len());
-    let mut channel_operations = Vec::with_capacity(prepared.len());
-    let specs = prepared
-        .into_iter()
-        .map(|(channel_id, channel_name, task, operations)| {
-            channel_metrics.push(task.metrics_reader());
-            node_metrics.extend(task.node_metrics_readers());
-            channel_operations.push(operations);
-            ChannelTaskSpec::new(channel_id, channel_name, task)
-        })
-        .collect();
-    let channels = match ChannelSupervisorSet::start(specs) {
-        Ok(value) => value,
-        Err(source) => {
-            // ChannelSupervisorSet owns cleanup of every supplied task on a
-            // partial spawn. No Time submitters remain after it returns.
-            let time_shutdown_error = time.shutdown().err();
-            return Err(HostRuntimeStartError::Supervisor {
-                source,
-                time_shutdown_error,
-            });
-        }
-    };
-
     Ok(HostCoordinatorRuntime {
         inventory,
-        channels,
+        channels: running,
         channel_metrics,
         node_metrics,
         channel_operations,
@@ -657,13 +646,8 @@ pub struct HostStartupCleanup {
     pub time_shutdown_error: Option<TimePersistenceExecutorError>,
 }
 
-fn cleanup_prepared_channels<P, C>(
-    prepared: Vec<(
-        u8,
-        String,
-        ProductionHostChannelTask<P, C>,
-        ChannelOperationsHandle,
-    )>,
+fn cleanup_running_channels<P, C>(
+    channels: ChannelSupervisorSet<ProductionHostChannelTask<P, C>>,
     time: TimeRuntime,
 ) -> HostStartupCleanup
 where
@@ -671,10 +655,16 @@ where
     C: crate::channel_endpoint::MonotonicClock + Send + 'static,
 {
     let mut cleanup = HostStartupCleanup::default();
-    for (_, _, task, _operations) in prepared {
-        let report = task.shutdown();
-        cleanup.channel_shutdown_failures += usize::from(report.outcome.is_err());
-        cleanup.capture_shutdown_failures += usize::from(report.persistence.is_err());
+    let _ = channels.request_stop_all();
+    for result in channels.join_all() {
+        match result {
+            Ok((_, crate::channel_supervisor::ChannelWorkerExit::Stopped { shutdown, .. }))
+            | Ok((_, crate::channel_supervisor::ChannelWorkerExit::Faulted { shutdown, .. })) => {
+                cleanup.channel_shutdown_failures += usize::from(shutdown.outcome.is_err());
+                cleanup.capture_shutdown_failures += usize::from(shutdown.persistence.is_err());
+            }
+            Err(_) => cleanup.channel_shutdown_failures += 1,
+        }
     }
     cleanup.time_shutdown_error = time.shutdown().err();
     cleanup

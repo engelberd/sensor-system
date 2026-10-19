@@ -1711,8 +1711,8 @@ INDEX_HTML = """<!doctype html>
             </td>
             <td data-label="Gaps / Overflow / No data">
               ${node.runtime_v2
-                ? `<span class="mono">rx ${escapeHtml(formatNumber(node.received_cursor || 0))} · durable ${escapeHtml(formatNumber(node.durable_cursor || 0))}</span>
-                   <div class="node-meta">released ${escapeHtml(formatNumber(node.released_cursor || 0))} · produced ${escapeHtml(formatNumber(node.produced_cursor || 0))} · no_data ${escapeHtml(formatNumber(node.bursts_no_data || 0))}</div>`
+                ? `<span class="mono">luki ${escapeHtml(formatNumber(node.gaps_detected || 0))} · utracone ${escapeHtml(formatNumber(node.missing_sample_count || 0))}</span>
+                   <div class="node-meta">breaks ${escapeHtml(formatNumber(node.continuity_break_count || 0))} · backlog ${escapeHtml(formatNumber(node.node_backlog || 0))} · no_data ${escapeHtml(formatNumber(node.bursts_no_data || 0))}</div>`
                 : `<span class="mono">gaps ${escapeHtml(formatNumber(node.gaps_detected || 0))}</span>
                    <div class="node-meta">rx ${escapeHtml(formatNumber(node.rx_overflow_session || 0))} · pkt ${escapeHtml(formatNumber(node.packet_overwrite_session || 0))} · no_data ${escapeHtml(formatNumber(node.bursts_no_data || 0))}</div>`}
             </td>

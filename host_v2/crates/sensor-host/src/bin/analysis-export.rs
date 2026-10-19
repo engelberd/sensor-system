@@ -32,8 +32,8 @@ fn main() -> ExitCode {
     match export_new(arguments) {
         Ok(summary) => {
             println!(
-                "analysis export complete: created={} existing={} failed=0",
-                summary.created, summary.existing
+                "analysis export complete: created={} existing={} failed={}",
+                summary.created, summary.existing, summary.failed
             );
             ExitCode::SUCCESS
         }
@@ -54,6 +54,7 @@ struct Arguments {
 struct Summary {
     created: u64,
     existing: u64,
+    failed: u64,
 }
 
 fn parse_arguments(arguments: Vec<OsString>) -> Result<Arguments, String> {
@@ -133,7 +134,7 @@ fn export_new(arguments: Arguments) -> Result<Summary, Box<dyn std::error::Error
                 analysis.initial_backfill_windows(),
             )?;
             for ordinal in ordinals {
-                let result = export_analysis_window(
+                let result = match export_analysis_window(
                     &stream,
                     &output,
                     profile.storage().time_persistence().root(),
@@ -144,7 +145,20 @@ fn export_new(arguments: Arguments) -> Result<Summary, Box<dyn std::error::Error
                         node_address: node.node_address(),
                     },
                     &configurations,
-                )?;
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        summary.failed = summary.failed.saturating_add(1);
+                        eprintln!(
+                            "analysis window skipped: channel={} node={} ordinal={} error={}",
+                            channel.name(),
+                            node.node_address(),
+                            ordinal,
+                            error
+                        );
+                        continue;
+                    }
+                };
                 if result.already_exists {
                     summary.existing += 1;
                 } else {

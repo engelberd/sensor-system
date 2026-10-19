@@ -11,7 +11,7 @@ use crate::transaction::{DurationMicros, RequestSpec, TimeoutRecovery};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PersistenceKind {
-    SampleChunk,
+    SampleChunk { sample_count: u16 },
     Gap(Gap),
     ContinuityBreak(ContinuityBreak),
 }
@@ -50,6 +50,7 @@ pub struct MeasurementTransfer {
     max_samples: u16,
     session: NodeSession,
     observed_produced: Option<SequenceCursor>,
+    persistence_kind: Option<PersistenceKind>,
 }
 
 impl MeasurementTransfer {
@@ -66,6 +67,7 @@ impl MeasurementTransfer {
             max_samples,
             session,
             observed_produced: None,
+            persistence_kind: None,
         })
     }
 
@@ -83,6 +85,10 @@ impl MeasurementTransfer {
 
     pub const fn observed_produced(&self) -> Option<SequenceCursor> {
         self.observed_produced
+    }
+
+    pub const fn persistence_kind(&self) -> Option<PersistenceKind> {
+        self.persistence_kind
     }
 
     pub fn take_pending_persistence(
@@ -139,10 +145,12 @@ impl MeasurementTransfer {
         match response {
             PullResponse::SampleChunk(chunk) => {
                 let produced = chunk.header.produced;
+                let sample_count = chunk.header.sample_count;
                 self.session.accept_wire_chunk(chunk)?;
                 self.observed_produced = Some(produced);
+                self.persistence_kind = Some(PersistenceKind::SampleChunk { sample_count });
                 Ok(MeasurementOutcome::PersistenceRequired(
-                    PersistenceKind::SampleChunk,
+                    PersistenceKind::SampleChunk { sample_count },
                 ))
             }
             PullResponse::NoData(state) => {
@@ -153,6 +161,7 @@ impl MeasurementTransfer {
             PullResponse::RangeUnavailable(state) => {
                 let gap = self.session.accept_range_unavailable(state)?;
                 self.observed_produced = Some(state.produced);
+                self.persistence_kind = Some(PersistenceKind::Gap(gap));
                 Ok(MeasurementOutcome::PersistenceRequired(
                     PersistenceKind::Gap(gap),
                 ))
@@ -160,6 +169,7 @@ impl MeasurementTransfer {
             PullResponse::Gap(evidence) => {
                 let gap = self.session.accept_gap(evidence)?;
                 self.observed_produced = Some(evidence.produced);
+                self.persistence_kind = Some(PersistenceKind::Gap(gap));
                 Ok(MeasurementOutcome::PersistenceRequired(
                     PersistenceKind::Gap(gap),
                 ))
@@ -167,6 +177,7 @@ impl MeasurementTransfer {
             PullResponse::ContinuityBreak(evidence) => {
                 let observed = self.session.accept_continuity_break(evidence)?;
                 self.observed_produced = Some(evidence.produced);
+                self.persistence_kind = Some(PersistenceKind::ContinuityBreak(observed));
                 Ok(MeasurementOutcome::PersistenceRequired(
                     PersistenceKind::ContinuityBreak(observed),
                 ))
@@ -297,7 +308,9 @@ mod tests {
 
         assert_eq!(
             transfer.accept_response(&payload[..len]).unwrap(),
-            MeasurementOutcome::PersistenceRequired(PersistenceKind::SampleChunk)
+            MeasurementOutcome::PersistenceRequired(PersistenceKind::SampleChunk {
+                sample_count: 1
+            })
         );
         assert_eq!(transfer.session().pending_wire_chunk(), Some(&chunk));
         assert_eq!(transfer.observed_produced(), Some(SequenceCursor::new(1)));

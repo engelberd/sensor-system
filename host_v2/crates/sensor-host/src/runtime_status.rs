@@ -302,7 +302,11 @@ fn nodes_json(observation: &HostRuntimeObservation, now_us: u64) -> Vec<Value> {
                 "last_measurement_monotonic_us": metrics.and_then(|metrics| metrics.last_measurement_monotonic_us),
                 "last_measurement_age_ms": metrics.and_then(|metrics| age_ms(now_us, metrics.last_measurement_monotonic_us)),
                 "last_time_sync_monotonic_us": metrics.and_then(|metrics| metrics.last_time_sync_monotonic_us),
-                "last_time_sync_age_ms": metrics.and_then(|metrics| age_ms(now_us, metrics.last_time_sync_monotonic_us))
+                "last_time_sync_age_ms": metrics.and_then(|metrics| age_ms(now_us, metrics.last_time_sync_monotonic_us)),
+                "persisted_sample_count": metrics.map(|metrics| metrics.persisted_sample_count),
+                "gap_count": metrics.map(|metrics| metrics.gap_count),
+                "missing_sample_count": metrics.map(|metrics| metrics.missing_sample_count),
+                "continuity_break_count": metrics.map(|metrics| metrics.continuity_break_count)
             })
         })
         .collect()

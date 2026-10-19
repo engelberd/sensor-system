@@ -155,32 +155,57 @@ impl<T> ChannelSupervisorSet<T>
 where
     T: SupervisedChannelTask,
 {
+    pub fn empty() -> Self {
+        Self {
+            channels: Vec::new(),
+        }
+    }
+
+    /// Starts one fully composed channel immediately. Installation startup
+    /// uses this boundary so a node is never left producing into its finite
+    /// journal while unrelated channels are still being prepared.
+    pub fn add(&mut self, spec: ChannelTaskSpec<T>) -> Result<(), ChannelSupervisorError> {
+        validate_add(&self.channels, &spec)?;
+        match spawn_channel(spec) {
+            Ok(channel) => {
+                self.channels.push(channel);
+                Ok(())
+            }
+            Err((error, task)) => {
+                let _ = task.shutdown();
+                Err(error)
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.channels.is_empty()
+    }
+
     /// Starts all prebuilt channel tasks. Validation happens before the first
     /// thread is spawned. If spawning a later worker fails, already-started
     /// workers receive stop and are joined before the error is returned.
     pub fn start(specs: Vec<ChannelTaskSpec<T>>) -> Result<Self, ChannelSupervisorError> {
         validate_specs(&specs)?;
-        let mut channels = Vec::with_capacity(specs.len());
+        let mut set = Self {
+            channels: Vec::with_capacity(specs.len()),
+        };
         let mut specs = specs.into_iter();
         while let Some(spec) = specs.next() {
-            match spawn_channel(spec) {
-                Ok(channel) => channels.push(channel),
-                Err((error, task)) => {
-                    for channel in &channels {
-                        let _ = channel.request_stop();
-                    }
-                    let _ = task.shutdown();
-                    for spec in specs {
-                        let _ = spec.task.shutdown();
-                    }
-                    for channel in channels {
-                        let _ = channel.join();
-                    }
-                    return Err(error);
+            if let Err(error) = set.add(spec) {
+                for channel in &set.channels {
+                    let _ = channel.request_stop();
                 }
+                for spec in specs {
+                    let _ = spec.task.shutdown();
+                }
+                for channel in set.channels {
+                    let _ = channel.join();
+                }
+                return Err(error);
             }
         }
-        Ok(Self { channels })
+        Ok(set)
     }
 
     pub fn channels(&self) -> &[SupervisedChannel<T>] {
@@ -203,6 +228,34 @@ where
             })
             .collect()
     }
+}
+
+fn validate_add<T>(
+    channels: &[SupervisedChannel<T>],
+    spec: &ChannelTaskSpec<T>,
+) -> Result<(), ChannelSupervisorError>
+where
+    T: SupervisedChannelTask,
+{
+    if channels.len() >= MAX_HOST_CHANNELS {
+        return Err(ChannelSupervisorError::InvalidChannelCount {
+            actual: channels.len().saturating_add(1),
+            maximum: MAX_HOST_CHANNELS,
+        });
+    }
+    if spec.channel_id == 0 || usize::from(spec.channel_id) > MAX_HOST_CHANNELS {
+        return Err(ChannelSupervisorError::InvalidChannelId(spec.channel_id));
+    }
+    if spec.channel_name.trim().is_empty() {
+        return Err(ChannelSupervisorError::EmptyChannelName(spec.channel_id));
+    }
+    if channels
+        .iter()
+        .any(|channel| channel.channel_id == spec.channel_id)
+    {
+        return Err(ChannelSupervisorError::DuplicateChannelId(spec.channel_id));
+    }
+    Ok(())
 }
 
 fn validate_specs<T>(specs: &[ChannelTaskSpec<T>]) -> Result<(), ChannelSupervisorError> {

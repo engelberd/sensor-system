@@ -643,6 +643,18 @@ where
                             .ok_or(ProductionChannelStepError::Operations(
                                 OperationsError::NodeNotConfigured,
                             ))?;
+                        if self
+                            .recording
+                            .persistence()
+                            .finish_capture_stream(
+                                identity.requirements.hardware_id,
+                                identity.boot_epoch,
+                            )
+                            .is_err()
+                        {
+                            execution.terminal_error = Some(OperationsError::ConfigurationFailed);
+                            return Ok(Some(execution));
+                        }
                         if append_configuration_snapshot(
                             self.rollover.capture.root(),
                             ConfigurationSnapshot {

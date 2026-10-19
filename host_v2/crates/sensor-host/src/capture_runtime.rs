@@ -126,6 +126,18 @@ impl CaptureRuntime {
 }
 
 impl GroupedPersistenceExecutor<CaptureRepository> {
+    /// Seals the current analysis window at a confirmed configuration boundary.
+    /// The channel must be quiescent and drained before calling this method.
+    pub fn finish_capture_stream(
+        &self,
+        hardware_id: sensor_core::HardwareId,
+        boot_epoch: BootEpoch,
+    ) -> Result<Option<crate::capture_window::CaptureWindowManifest>, CaptureRolloverError> {
+        self.manage_sink(move |repository| repository.finish_stream(hardware_id, boot_epoch))
+            .map_err(CaptureRolloverError::Executor)?
+            .map_err(CaptureRolloverError::Repository)
+    }
+
     /// Changes one sensor's boot epoch without transferring WAL ownership out
     /// of the storage thread. The recording loop must be quiescent first.
     pub fn rollover_capture_stream(

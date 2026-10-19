@@ -13,7 +13,7 @@ use crate::channel_runtime::{
     NodeScheduleConfig, TimeSyncDispatch, TimeSyncScheduleConfig,
 };
 use crate::measurement_persistence::{persist_pending, DurableMeasurementSink, PersistenceError};
-use crate::measurement_transfer::{MeasurementTransfer, MeasurementTransferError};
+use crate::measurement_transfer::{MeasurementTransfer, MeasurementTransferError, PersistenceKind};
 use crate::node_metrics::{NodeMetricsPublisher, NodeMetricsReader};
 use crate::node_session::{NodeSession, SessionPhase};
 use crate::persistence_executor::WriteRecoveryRange;
@@ -32,6 +32,7 @@ pub enum MeasurementSettlement {
     Persisted {
         node_address: u8,
         progress: MeasurementProgress,
+        kind: PersistenceKind,
     },
     NoData {
         node_address: u8,
@@ -409,6 +410,7 @@ impl ChannelWorkCoordinator {
             ));
         }
         let phase_before_settlement = pending.transfer.session().phase();
+        let persistence_kind = pending.transfer.persistence_kind();
         if matches!(
             phase_before_settlement,
             SessionPhase::PersistingChunk
@@ -443,6 +445,11 @@ impl ChannelWorkCoordinator {
                                 MeasurementSettlement::Persisted {
                                     node_address,
                                     progress,
+                                    kind: persistence_kind.ok_or(
+                                        MeasurementSettlementError::Coordinator(
+                                            MeasurementCoordinatorError::InvariantViolation,
+                                        ),
+                                    )?,
                                 }
                             }
                         }
@@ -488,6 +495,9 @@ impl ChannelWorkCoordinator {
         let managed = self
             .managed_session_mut(node_address)
             .map_err(MeasurementSettlementError::Coordinator)?;
+        if let MeasurementSettlement::Persisted { kind, .. } = settlement {
+            managed.metrics.observe_persistence(kind);
+        }
         managed.metrics.observe_session(&session, produced, now);
         managed.session = Some(session);
         self.active_dispatch = None;
@@ -647,6 +657,10 @@ impl ChannelWorkCoordinator {
             received: write.transfer.session().cursors().received(),
             produced,
         };
+        let persistence_kind = write
+            .transfer
+            .persistence_kind()
+            .ok_or(MeasurementCoordinatorError::InvariantViolation)?;
         let settlement =
             match self
                 .runtime
@@ -655,6 +669,7 @@ impl ChannelWorkCoordinator {
                 Ok(()) => MeasurementSettlement::Persisted {
                     node_address,
                     progress,
+                    kind: persistence_kind,
                 },
                 Err(ChannelRuntimeError::StreamRegressed) => {
                     MeasurementSettlement::RecoveryRequired { node_address }
@@ -664,6 +679,9 @@ impl ChannelWorkCoordinator {
         let write = self.in_flight_writes.remove(index);
         let session = write.transfer.into_session();
         let managed = self.managed_session_mut(node_address)?;
+        if let MeasurementSettlement::Persisted { kind, .. } = settlement {
+            managed.metrics.observe_persistence(kind);
+        }
         managed
             .metrics
             .observe_session(&session, Some(produced.get()), now);
@@ -1613,6 +1631,7 @@ mod tests {
                     received: SequenceCursor::new(1),
                     produced: SequenceCursor::new(1),
                 },
+                kind: PersistenceKind::SampleChunk { sample_count: 1 },
             }
         );
         assert_eq!(sink.chunk_calls, 2);
@@ -1711,6 +1730,7 @@ mod tests {
                     received: SequenceCursor::new(1),
                     produced: SequenceCursor::new(1),
                 },
+                kind: PersistenceKind::SampleChunk { sample_count: 1 },
             }
         );
         assert_eq!(coordinator.in_flight_write_count(), 0);

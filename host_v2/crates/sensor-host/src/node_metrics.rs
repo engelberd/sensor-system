@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use sensor_core::DeliveryCursors;
 
+use crate::measurement_transfer::PersistenceKind;
 use crate::node_session::NodeSession;
 use crate::transaction::MonotonicMicros;
 
@@ -18,6 +19,10 @@ pub struct NodeMetricsSnapshot {
     pub last_time_sync_monotonic_us: Option<u64>,
     pub configuration_revision: Option<u32>,
     pub output_rate_code: Option<u8>,
+    pub persisted_sample_count: u64,
+    pub gap_count: u64,
+    pub missing_sample_count: u64,
+    pub continuity_break_count: u64,
 }
 
 #[derive(Default)]
@@ -34,6 +39,10 @@ struct NodeMetricsAtomic {
     configuration_revision: AtomicU64,
     output_rate_code: AtomicU64,
     has_configuration: AtomicBool,
+    persisted_sample_count: AtomicU64,
+    gap_count: AtomicU64,
+    missing_sample_count: AtomicU64,
+    continuity_break_count: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -74,6 +83,10 @@ impl NodeMetricsReader {
                 &self.metrics.output_rate_code,
             )
             .and_then(|value| u8::try_from(value).ok()),
+            persisted_sample_count: load(&self.metrics.persisted_sample_count),
+            gap_count: load(&self.metrics.gap_count),
+            missing_sample_count: load(&self.metrics.missing_sample_count),
+            continuity_break_count: load(&self.metrics.continuity_break_count),
         }
     }
 }
@@ -131,6 +144,24 @@ impl NodeMetricsPublisher {
         self.metrics.has_time_sync.store(true, Ordering::Release);
     }
 
+    pub(crate) fn observe_persistence(&self, kind: PersistenceKind) {
+        match kind {
+            PersistenceKind::SampleChunk { sample_count } => {
+                saturating_add(
+                    &self.metrics.persisted_sample_count,
+                    u64::from(sample_count),
+                );
+            }
+            PersistenceKind::Gap(gap) => {
+                saturating_add(&self.metrics.gap_count, 1);
+                saturating_add(&self.metrics.missing_sample_count, gap.missing_count);
+            }
+            PersistenceKind::ContinuityBreak(_) => {
+                saturating_add(&self.metrics.continuity_break_count, 1);
+            }
+        }
+    }
+
     pub(crate) fn observe_configuration(
         &self,
         configuration: sensor_protocol::ObservedConfiguration,
@@ -166,10 +197,19 @@ fn optional_counter(present: &AtomicBool, value: &AtomicU64) -> Option<u64> {
         .then(|| value.load(Ordering::Relaxed))
 }
 
+fn saturating_add(counter: &AtomicU64, amount: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(amount))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sensor_core::{BootEpoch, HardwareId, SequenceCursor};
+    use sensor_core::{
+        BootEpoch, ContinuityBreak, ContinuityBreakReason, Gap, GapReason, HardwareId,
+        SampleSequence, SequenceCursor,
+    };
 
     #[test]
     fn publishes_cursors_and_freshness_without_locks() {
@@ -203,7 +243,43 @@ mod tests {
                 last_time_sync_monotonic_us: Some(456),
                 configuration_revision: Some(3),
                 output_rate_code: Some(sensor_protocol::OutputRateCode::Hz125 as u8),
+                persisted_sample_count: 0,
+                gap_count: 0,
+                missing_sample_count: 0,
+                continuity_break_count: 0,
             }
         );
+    }
+
+    #[test]
+    fn counts_written_samples_and_explicit_loss_separately() {
+        let (publisher, reader) = NodeMetricsPublisher::new(2, 7, DeliveryCursors::empty());
+        publisher.observe_persistence(PersistenceKind::SampleChunk { sample_count: 48 });
+        publisher.observe_persistence(PersistenceKind::SampleChunk { sample_count: 17 });
+        publisher.observe_persistence(PersistenceKind::Gap(
+            Gap::new(
+                HardwareId::from_bytes([1; 8]),
+                BootEpoch::new(9),
+                SampleSequence::new(65),
+                11,
+                GapReason::JournalOverflow,
+            )
+            .unwrap(),
+        ));
+        publisher.observe_persistence(PersistenceKind::ContinuityBreak(
+            ContinuityBreak::new(
+                HardwareId::from_bytes([1; 8]),
+                BootEpoch::new(9),
+                SequenceCursor::new(76),
+                ContinuityBreakReason::ProcessingReset,
+            )
+            .unwrap(),
+        ));
+
+        let snapshot = reader.snapshot();
+        assert_eq!(snapshot.persisted_sample_count, 65);
+        assert_eq!(snapshot.gap_count, 1);
+        assert_eq!(snapshot.missing_sample_count, 11);
+        assert_eq!(snapshot.continuity_break_count, 1);
     }
 }

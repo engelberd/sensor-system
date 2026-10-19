@@ -160,6 +160,10 @@ class V2DashboardRepositoryTests(unittest.TestCase):
                             "application_protocol": 5,
                             "framing_protocol": 3,
                             "output_rate_hz": "125",
+                            "persisted_sample_count": 1000,
+                            "gap_count": 2,
+                            "missing_sample_count": 17,
+                            "continuity_break_count": 1,
                             "last_measurement_age_ms": 40,
                             "last_time_sync_age_ms": 900,
                             "cursors": {
@@ -218,6 +222,9 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertEqual(node["last_measurement_age_ms"], 40)
             self.assertEqual(node["release_backlog"], 40)
             self.assertEqual(node["board_revision"], 2)
+            self.assertEqual(node["samples_written"], 1000)
+            self.assertEqual(node["gaps_detected"], 2)
+            self.assertEqual(node["missing_sample_count"], 17)
             self.assertIsNone(node["instant_samples_per_second_5s"])
             disabled = payload["channels"][1]
             self.assertFalse(disabled["enabled"])
@@ -225,7 +232,7 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertIsNone(disabled["operating_mode"])
 
     @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
-    def test_calculates_measured_sample_rate_from_durable_cursor(self, _journal: object) -> None:
+    def test_calculates_measured_sample_rate_from_persisted_samples(self, _journal: object) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config, status = self._fixture(Path(tmp))
             repository = V2DashboardRepository(config, status_path=status)
@@ -237,7 +244,7 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             document["sequence"] = 8
             document["process"]["updated_monotonic_us"] = 6_000_000
             document["process"]["updated_unix_ms"] += 5_000
-            document["nodes"][0]["cursors"]["durable"] += 625
+            document["nodes"][0]["persisted_sample_count"] += 625
             status.write_text(json.dumps(document), encoding="utf-8")
 
             second = repository.dashboard_payload()["channels"][0]["nodes"][0]

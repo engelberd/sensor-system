@@ -176,7 +176,7 @@ class V2DashboardRepository:
         node_address: int,
         boot_epoch: int,
         status_monotonic_us: int,
-        durable_cursor: int,
+        persisted_sample_count: int,
     ) -> float | None:
         if status_monotonic_us <= 0:
             return None
@@ -191,12 +191,12 @@ class V2DashboardRepository:
 
             if observations:
                 last_time, last_cursor = observations[-1]
-                if status_monotonic_us < last_time or durable_cursor < last_cursor:
+                if status_monotonic_us < last_time or persisted_sample_count < last_cursor:
                     observations.clear()
                 elif status_monotonic_us > last_time:
-                    observations.append((status_monotonic_us, durable_cursor))
+                    observations.append((status_monotonic_us, persisted_sample_count))
             else:
-                observations.append((status_monotonic_us, durable_cursor))
+                observations.append((status_monotonic_us, persisted_sample_count))
 
             cutoff = status_monotonic_us - SAMPLE_RATE_WINDOW_US
             while len(observations) > 2 and observations[1][0] <= cutoff:
@@ -671,15 +671,29 @@ class V2DashboardRepository:
                 durable = _safe_int(cursors.get("durable")) if isinstance(cursors, dict) else 0
                 released = _safe_int(cursors.get("released")) if isinstance(cursors, dict) else 0
                 produced = _safe_int(cursors.get("produced")) if isinstance(cursors, dict) else 0
+                persisted_samples = (
+                    _safe_int(node.get("persisted_sample_count"))
+                    if isinstance(node, dict) and node.get("persisted_sample_count") is not None
+                    else None
+                )
+                gap_count = _safe_int(node.get("gap_count")) if isinstance(node, dict) else 0
+                missing_sample_count = (
+                    _safe_int(node.get("missing_sample_count")) if isinstance(node, dict) else 0
+                )
+                continuity_break_count = (
+                    _safe_int(node.get("continuity_break_count")) if isinstance(node, dict) else 0
+                )
+                if missing_sample_count > 0:
+                    alerts.append(f"utracone próbki: {missing_sample_count}")
                 measured_rate = (
                     self._sample_rate(
                         channel_id=channel_id,
                         node_address=address,
                         boot_epoch=_safe_int(node.get("boot_epoch")),
                         status_monotonic_us=status_monotonic_us,
-                        durable_cursor=durable,
+                        persisted_sample_count=persisted_samples,
                     )
-                    if isinstance(node, dict) and isinstance(cursors, dict) and not status_stale
+                    if persisted_samples is not None and not status_stale
                     else None
                 )
                 expected_odr_hz = float(raw_node.get("output_rate_hz", 0))
@@ -715,11 +729,14 @@ class V2DashboardRepository:
                         "configuration_revision": _safe_int(node.get("configuration_revision")) if isinstance(node, dict) else 0,
                         "service_flags": _safe_int(node.get("service_flags")) if isinstance(node, dict) else 0,
                         "feature_flags": _safe_int(node.get("feature_flags")) if isinstance(node, dict) else 0,
-                        "samples_written": durable,
+                        "samples_written": persisted_samples if persisted_samples is not None else 0,
                         "expected_sample_seq": produced,
                         "instant_samples_per_second_5s": measured_rate,
                         "rate_stability_percent_5s": None,
                         "bursts_no_data": _safe_int(metrics.get("measurement_no_data")),
+                        "gaps_detected": gap_count,
+                        "missing_sample_count": missing_sample_count,
+                        "continuity_break_count": continuity_break_count,
                         "received_cursor": received,
                         "durable_cursor": durable,
                         "released_cursor": released,

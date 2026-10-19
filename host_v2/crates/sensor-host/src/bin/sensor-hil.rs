@@ -1568,7 +1568,7 @@ fn run_record_cycle(
                 persist_pending(&mut transfer, sink)
                     .map_err(|error| HilError::Persistence(error.to_string()))?;
                 match kind {
-                    PersistenceKind::SampleChunk => {}
+                    PersistenceKind::SampleChunk { .. } => {}
                     PersistenceKind::Gap(gap) => println!(
                         "record-cycle persisted gap: first={} count={} reason={:?}",
                         gap.first_missing.get(),
