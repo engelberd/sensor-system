@@ -2040,10 +2040,6 @@ where
 {
     validate_bootstrap(startup, bootstrapped.nodes())?;
     let (mut endpoint, bootstrap_nodes) = bootstrapped.into_parts();
-    let takeover_required = bootstrap_nodes
-        .iter()
-        .any(|node| node.runtime.state == RuntimeState::Recording);
-
     let mut streams = Vec::with_capacity(bootstrap_nodes.len());
     for node in &bootstrap_nodes {
         append_configuration_snapshot(
@@ -2085,6 +2081,7 @@ where
             return Err(ChannelWorkerError::Reconcile { source, shutdown });
         }
     };
+    let takeover_required = startup_takeover_required(&bootstrap_nodes, &recovered_nodes);
     let activation_targets = startup
         .nodes()
         .iter()
@@ -2198,6 +2195,25 @@ where
         });
     }
     Ok(recording)
+}
+
+/// A startup drain is required whenever acquisition was already active or
+/// durable Capture trails the node's observed producer cursor. The latter can
+/// happen when a previous process stopped the node but did not finish draining
+/// its journal. Starting acquisition before that finite tail is drained can
+/// keep a full journal permanently ahead of the host: every pull then records
+/// another small overflow gap and TimeSync never gets a schedulable slot.
+fn startup_takeover_required(
+    bootstrap_nodes: &[NodeBootstrapEvidence],
+    recovered_nodes: &[crate::channel_recovery::RecoveredNode],
+) -> bool {
+    bootstrap_nodes.iter().any(|node| {
+        node.runtime.state == RuntimeState::Recording
+            || recovered_nodes.iter().any(|recovered| {
+                recovered.id() == node.id
+                    && recovered.session().cursors().received() < node.stream.produced
+            })
+    })
 }
 
 fn validate_bootstrap(
@@ -2524,6 +2540,97 @@ mod tests {
             }]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn startup_takeover_drains_a_stopped_node_when_capture_trails_producer() {
+        let id = DiscoveryTargetId {
+            channel_id: 1,
+            node_address: 1,
+        };
+        let runtime = RuntimeResult {
+            operation_id: 1,
+            code: RuntimeResultCode::Ok,
+            state: RuntimeState::Maintenance,
+            observability: ObservabilityProfile::Production,
+            sensor_status: SensorStatusCode::Ok,
+        };
+        let bootstrap = NodeBootstrapEvidence {
+            id,
+            identity: identity(),
+            capabilities: capabilities(),
+            configuration: observed_configuration(),
+            runtime,
+            stream: StreamState {
+                boot_epoch: EPOCH,
+                retained_from: SequenceCursor::new(120),
+                produced: SequenceCursor::new(140),
+                released: SequenceCursor::new(100),
+                capacity_samples: 2048,
+                overwritten_samples: 20,
+            },
+        };
+        let recovered = crate::channel_recovery::RecoveredNode::from_parts(
+            id,
+            runtime,
+            crate::stream_recovery::RecoveryContinuity::JournalGapRequired {
+                first_missing: SequenceCursor::new(100),
+                missing_count: 20,
+            },
+            crate::node_session::NodeSession::recovered(
+                HARDWARE,
+                EPOCH,
+                SequenceCursor::new(100),
+                SequenceCursor::new(100),
+            )
+            .unwrap(),
+        );
+
+        assert!(startup_takeover_required(&[bootstrap], &[recovered]));
+    }
+
+    #[test]
+    fn startup_takeover_is_not_needed_for_a_stopped_caught_up_node() {
+        let id = DiscoveryTargetId {
+            channel_id: 1,
+            node_address: 1,
+        };
+        let runtime = RuntimeResult {
+            operation_id: 1,
+            code: RuntimeResultCode::Ok,
+            state: RuntimeState::Maintenance,
+            observability: ObservabilityProfile::Production,
+            sensor_status: SensorStatusCode::Ok,
+        };
+        let bootstrap = NodeBootstrapEvidence {
+            id,
+            identity: identity(),
+            capabilities: capabilities(),
+            configuration: observed_configuration(),
+            runtime,
+            stream: StreamState {
+                boot_epoch: EPOCH,
+                retained_from: SequenceCursor::new(140),
+                produced: SequenceCursor::new(140),
+                released: SequenceCursor::new(140),
+                capacity_samples: 2048,
+                overwritten_samples: 0,
+            },
+        };
+        let recovered = crate::channel_recovery::RecoveredNode::from_parts(
+            id,
+            runtime,
+            crate::stream_recovery::RecoveryContinuity::Contiguous,
+            crate::node_session::NodeSession::recovered(
+                HARDWARE,
+                EPOCH,
+                SequenceCursor::new(140),
+                SequenceCursor::new(140),
+            )
+            .unwrap(),
+        );
+
+        assert!(!startup_takeover_required(&[bootstrap], &[recovered]));
     }
 
     #[test]
