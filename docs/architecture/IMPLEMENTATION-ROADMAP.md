@@ -1143,3 +1143,9 @@ kill procesu, restartu Raspberry Pi, odłączenia node i utraty konwertera.
 Scan/Assign z rzeczywistym nieprzypisanym node pozostaje osobnym gate
 commissioning i nie blokuje testu obecnej topologii. Dashboard pozostaje poza
 MVP do czasu zakończenia kwalifikacji recorderowej.
+
+Bench HIL 2026-10-19 wykrył przerwę między trwałym zapisem adresu i odebraniem
+końcowej odpowiedzi AssignAddress. Wersja 0.5.9 uznaje ponowne przypisanie tego
+samego, już zapisanego adresu za idempotentny sukces i po wysłaniu odpowiedzi
+wykonuje wymagany restart. Chroni to commissioning po restarcie procesu hosta
+lub utracie odpowiedzi na przewodzie.

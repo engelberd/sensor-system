@@ -217,7 +217,9 @@ bitmap as if it were the stream rate. The selected current rate belongs to the
 configuration observed state. Firmware 0.5.8 implements the bounded
 Configuration and Commissioning services. Their operator-facing path, together
 with `RestartNode`, is exposed through Operations API while the channel owns
-the serial port and is in Maintenance.
+the serial port and is in Maintenance. Firmware 0.5.9 additionally reconciles
+an interrupted commissioning session: assigning the already-persisted target
+address is an idempotent success and still schedules the required node restart.
 
 After an A/B upload, confirm the trial over RS485 with the expected hardware
 identity. This command performs the same fail-closed handshake first:

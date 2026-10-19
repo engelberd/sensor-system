@@ -127,10 +127,53 @@ void assignment_restarts_only_after_success_response_is_transmitted() {
     assert(action.peek() == runtime::DeferredSystemActionKind::RestartNode);
 }
 
+void repeated_assignment_reconciles_after_host_session_loss() {
+    Mailbox mailbox;
+    runtime::DeferredSystemAction action;
+    auto commissioning_id = commissioning_identity();
+    Handler handler(mailbox, action, commissioning_id);
+    ProtocolV3::NodeCapabilities caps{};
+    ProtocolV3::ApplicationDispatcher dispatcher(
+        unassigned_identity(), caps, nullptr, nullptr, nullptr, nullptr,
+        &handler);
+
+    ProtocolV3::Frame request{};
+    request.role = ProtocolV3::Role::Request;
+    request.source = ProtocolV3::kHostAddress;
+    request.destination = ProtocolV3::kBroadcastAddress;
+    request.service = ProtocolV3::kCommissioningServiceId;
+    request.message = ProtocolV3::kAssignAddressMessageId;
+    request.transaction_id = 13;
+    request.payload[0] = 8;
+    request.payload[4] = 10;
+    std::memcpy(request.payload + 12, commissioning_id.hardware_id,
+                ProtocolV3::kHardwareIdBytes);
+    request.payload[20] = 42;
+    request.payload_size = ProtocolV3::kAssignAddressRequestBytes;
+
+    ProtocolV3::Frame response{};
+    assert(dispatcher.dispatch(request, response));
+    runtime::CommissioningCommand command{};
+    assert(mailbox.try_receive_command(command));
+    assert(mailbox.try_send_result({
+        8, runtime::CommissioningResultCode::AlreadyAssigned, 42}));
+
+    const auto dispatched = dispatcher.dispatch(request, response);
+    assert(dispatched.transmission.required);
+    assert(response.payload_size == ProtocolV3::kAssignAddressResponseBytes);
+    assert(response.payload[0] == static_cast<uint8_t>(
+        ProtocolV3::ResponseStatus::Ok));
+    assert(dispatcher.settle_transmission(
+               dispatched.transmission, true) ==
+           ProtocolV3::TransmissionSettlementStatus::Ok);
+    assert(action.peek() == runtime::DeferredSystemActionKind::RestartNode);
+}
+
 }  // namespace
 
 int main() {
     unassigned_node_responds_only_in_its_host_polled_slot();
     assignment_restarts_only_after_success_response_is_transmitted();
+    repeated_assignment_reconciles_after_host_session_loss();
     return 0;
 }

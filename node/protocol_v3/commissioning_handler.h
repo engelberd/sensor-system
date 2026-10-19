@@ -96,8 +96,12 @@ public:
                 return error(ResponseStatus::Conflict,
                              response_payload, response_capacity);
             }
-            if (cached->result.code !=
-                runtime::CommissioningResultCode::Assigned) {
+            const bool assigned = cached->result.code ==
+                runtime::CommissioningResultCode::Assigned;
+            const bool reconciled = cached->result.code ==
+                    runtime::CommissioningResultCode::AlreadyAssigned &&
+                cached->result.node_address == request.node_address;
+            if (!assigned && !reconciled) {
                 return error(ResponseStatus::InternalError,
                              response_payload, response_capacity);
             }
