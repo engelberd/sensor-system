@@ -31,6 +31,7 @@ MAX_STATUS_BYTES = 4 * 1024 * 1024
 STATUS_STALE_AFTER_S = 30.0
 JOURNAL_CACHE_SECONDS = 5.0
 SAMPLE_RATE_WINDOW_US = 5_000_000
+RESCUE_RESTART_SETTLE_SECONDS = 3.0
 OUTPUT_RATE_HZ_BY_CODE = {
     0: 4000.0,
     1: 2000.0,
@@ -385,6 +386,10 @@ class V2DashboardRepository:
             )
             if completed.returncode != 0:
                 raise OperationsIpcClientError(output or "node rejected the RS485 rescue restart")
+            # The restart acknowledgement is sent before the RP2350 resets.
+            # Give the bootloader and application time to reopen RS485 before
+            # the host begins its discovery handshake.
+            time.sleep(RESCUE_RESTART_SETTLE_SECONDS)
             service = self.service_control.perform("restart")
             return {
                 "ok": True,

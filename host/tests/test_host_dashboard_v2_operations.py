@@ -423,14 +423,17 @@ class V2OperatorApiTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            with patch(
-                "host.dashboard.v2.subprocess.run",
-                return_value=SimpleNamespace(
-                    returncode=0,
-                    stdout="node restart accepted",
-                    stderr="",
-                ),
-            ) as run:
+            with (
+                patch(
+                    "host.dashboard.v2.subprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout="node restart accepted",
+                        stderr="",
+                    ),
+                ) as run,
+                patch("host.dashboard.v2.time.sleep") as settle,
+            ):
                 connection = http.client.HTTPConnection(
                     "127.0.0.1", server.server_port, timeout=2
                 )
@@ -445,6 +448,7 @@ class V2OperatorApiTests(unittest.TestCase):
                 self.assertEqual(payload["action"], "rescue_restart_node")
                 self.assertEqual(payload["transport"], "rs485")
                 self.assertEqual(service.actions, ["restart"])
+                settle.assert_called_once_with(3.0)
                 command = run.call_args.args[0]
                 self.assertEqual(
                     command,
