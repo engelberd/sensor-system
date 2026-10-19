@@ -153,6 +153,7 @@ class V2DashboardRepository:
         service_control_socket: str | Path = DEFAULT_SERVICE_CONTROL_SOCKET,
         service_control_client: ServiceControlClient | None = None,
         host_metrics_sampler: HostMetricsSampler | None = None,
+        hil_binary: str | Path | None = None,
     ) -> None:
         self.config_path = Path(config_path)
         self.default_event_limit = default_event_limit
@@ -162,6 +163,16 @@ class V2DashboardRepository:
         self.service_control = service_control_client or ServiceControlClient(service_control_socket)
         self.commissioning_profiles = CommissioningProfileStore(self.config_path)
         self.host_metrics_sampler = host_metrics_sampler or HostMetricsSampler()
+        self.hil_binary = (
+            Path(hil_binary)
+            if hil_binary is not None
+            else self.config_path.resolve().parent.parent
+            / "host_v2"
+            / "target"
+            / "release"
+            / "sensor-hil"
+        )
+        self._rescue_lock = threading.Lock()
         self._journal_lock = threading.Lock()
         self._journal_cache: tuple[float, int, list[dict[str, Any]]] | None = None
         self._rate_lock = threading.Lock()
@@ -288,6 +299,104 @@ class V2DashboardRepository:
         if action not in {"start", "stop", "restart"}:
             raise ValueError("unsupported service action")
         return self.service_control.perform(action)
+
+    def rescue_restart_node_payload(
+        self,
+        channel_id: int,
+        node_address: int,
+    ) -> dict[str, Any]:
+        """Reboot a node whose channel worker is no longer available.
+
+        The normal Operations IPC remains the only path for a live worker. This
+        fallback is deliberately limited to faulted/offline channels, validates
+        the configured hardware identity through sensor-hil, then restarts the
+        host service so the channel is composed again.
+        """
+        self._validate_channel_id(channel_id)
+        if node_address <= 0 or node_address > 253:
+            raise ValueError("node_address must be in 1..253")
+        operations_status = self._operations_status(channel_id)
+        if operations_status is not None and operations_status.get("ok") is True:
+            mode = operations_status.get("mode")
+            if mode not in {"faulted", "offline"}:
+                raise ValueError("live channel must use the normal restart_node operation")
+
+        profile = load_v2_profile(self.config_path)
+        channel = next(
+            (
+                item
+                for item in profile.get("channels", [])
+                if isinstance(item, dict) and _safe_int(item.get("channel_id")) == channel_id
+            ),
+            None,
+        )
+        if channel is None or not bool(channel.get("enabled", True)):
+            raise ValueError("channel is not enabled in the effective profile")
+        node = next(
+            (
+                item
+                for item in channel.get("nodes", [])
+                if isinstance(item, dict) and _safe_int(item.get("id")) == node_address
+            ),
+            None,
+        )
+        if node is None or not bool(node.get("enabled", True)):
+            raise ValueError("node is not enabled in the effective profile")
+        transport = channel.get("transport")
+        if not isinstance(transport, dict) or transport.get("kind") != "serial-rs485":
+            raise ValueError("rescue restart requires a serial-rs485 transport")
+        endpoint = transport.get("endpoint")
+        hardware_id = node.get("hardware_id")
+        board_revision = node.get("board_revision")
+        baud_rate = transport.get("baud_rate", 115200)
+        if not isinstance(endpoint, str) or not endpoint.startswith("/dev/"):
+            raise ValueError("channel has no valid serial endpoint")
+        if not isinstance(hardware_id, str) or not re.fullmatch(r"[0-9a-fA-F]{16}", hardware_id):
+            raise ValueError("node has no valid hardware_id")
+        if isinstance(board_revision, bool) or not isinstance(board_revision, int):
+            raise ValueError("node has no valid board_revision")
+        if isinstance(baud_rate, bool) or not isinstance(baud_rate, int):
+            raise ValueError("channel has no valid baud_rate")
+        if not self.hil_binary.is_file():
+            raise FileNotFoundError(f"sensor-hil binary not found: {self.hil_binary}")
+        if not self._rescue_lock.acquire(blocking=False):
+            raise OperationsIpcClientError("another rescue restart is already running")
+        try:
+            try:
+                completed = subprocess.run(
+                    [
+                        str(self.hil_binary),
+                        "restart",
+                        endpoint,
+                        str(node_address),
+                        hardware_id.lower(),
+                        str(board_revision),
+                        str(baud_rate),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30.0,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise OperationsIpcClientError(f"RS485 rescue restart failed: {exc}") from exc
+            output = "\n".join(
+                part.strip() for part in (completed.stdout, completed.stderr) if part.strip()
+            )
+            if completed.returncode != 0:
+                raise OperationsIpcClientError(output or "node rejected the RS485 rescue restart")
+            service = self.service_control.perform("restart")
+            return {
+                "ok": True,
+                "channel_id": channel_id,
+                "node_address": node_address,
+                "action": "rescue_restart_node",
+                "transport": "rs485",
+                "recovery_output": output,
+                "service": service.get("state", service),
+            }
+        finally:
+            self._rescue_lock.release()
 
     def register_commissioned_node_payload(
         self,

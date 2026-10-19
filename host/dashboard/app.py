@@ -1417,9 +1417,11 @@ INDEX_HTML = """<!doctype html>
         const canConfigure = channelEnabled && node.enabled
           && ["recording", "maintenance", "faulted"].includes(node.channel_mode)
           && !node.channel_active_operation;
+        const rescueRestart = !node.channel_controls_available
+          || !node.channel_mode
+          || ["faulted", "offline"].includes(node.channel_mode);
         const canRestart = channelEnabled && node.enabled
-          && ["recording", "maintenance", "faulted"].includes(node.channel_mode)
-          && !node.channel_active_operation;
+          && (rescueRestart || !node.channel_active_operation);
         return `
           <tr>
             <td data-label="Węzeł">
@@ -1438,6 +1440,7 @@ INDEX_HTML = """<!doctype html>
                   data-channel-name="${escapeHtml(node.channel_name)}"
                   data-node-id="${escapeHtml(node.node_id)}"
                   data-channel-mode="${escapeHtml(node.channel_mode || "unknown")}"
+                  data-rescue-restart="${rescueRestart ? "true" : "false"}"
                   type="button">Restart node</button>` : ""}
               </div>
             </td>
@@ -1490,6 +1493,7 @@ INDEX_HTML = """<!doctype html>
           channel_name: channel.name,
           channel_mode: channel.operation_mode,
           channel_active_operation: channel.active_operation_id,
+          channel_controls_available: channel.controls_enabled,
         }));
         return `
           <article class="channel-card panel">
@@ -2481,8 +2485,11 @@ INDEX_HTML = """<!doctype html>
         const nodeAddress = Number(button.dataset.nodeId || 0);
         const channelName = button.dataset.channelName || `channel-${channelId}`;
         const channelMode = button.dataset.channelMode || "unknown";
+        const rescueRestart = button.dataset.rescueRestart === "true";
         if (!channelId || !nodeAddress) return;
-        const prompt = channelMode === "recording"
+        const prompt = rescueRestart
+          ? `Kanał ${channelName} nie ma działającego workera. Host wyśle bezpośredni reboot do node ${nodeAddress} po RS485, a następnie zrestartuje usługę hosta, aby ponownie dołączyć kanał. Spowoduje to krótką kontrolowaną przerwę na wszystkich liniach. Kontynuować?`
+          : channelMode === "recording"
           ? `Restart node ${nodeAddress} chwilowo przerwie nagrywanie na ${channelName}. Host trwale zapisze ogon, przejdzie do Maintenance, zrestartuje node, wykona ponowny handshake i automatycznie wznowi Recording. Kontynuować?`
           : `Zrestartować node ${nodeAddress} na ${channelName}? Kanał pozostanie w ${channelMode === "maintenance" ? "Maintenance" : "bieżącym trybie"}; Recording można następnie wznowić przyciskiem kanału.`;
         if (!window.confirm(prompt)) return;
@@ -2490,6 +2497,16 @@ INDEX_HTML = """<!doctype html>
         button.disabled = true;
         let enteredMaintenance = false;
         try {
+          if (rescueRestart) {
+            button.textContent = "Ratowanie...";
+            await fetchJson(`/api/v2/channels/${encodeURIComponent(channelId)}/nodes/${encodeURIComponent(nodeAddress)}/rescue-restart`, {
+              method: "POST",
+              headers: { "X-Sensor-System-Request": "dashboard-v2" },
+            });
+            $("overview-note").textContent = `Node ${nodeAddress} zrestartowany po RS485; host ponownie uruchamia kanały`;
+            window.setTimeout(() => loadDashboard(), 2000);
+            return;
+          }
           if (channelMode === "recording") {
             button.textContent = "Zatrzymywanie...";
             await submitV2Operation(channelId, "enter_maintenance");
@@ -5787,6 +5804,21 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 action = route.removeprefix("/api/v2/service/")
                 self._write_json(self.repository.perform_service_action(action))
                 return
+            rescue_restart_route = self._parse_v2_rescue_restart_route(route)
+            if rescue_restart_route is not None and getattr(
+                self.repository, "supports_v2_operations", False
+            ):
+                if self.headers.get("X-Sensor-System-Request") != "dashboard-v2":
+                    self._write_json(
+                        {"error": "missing dashboard-v2 request marker"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                channel_id, node_address = rescue_restart_route
+                self._write_json(
+                    self.repository.rescue_restart_node_payload(channel_id, node_address)
+                )
+                return
             commissioning_route = self._parse_v2_commissioning_route(route)
             if commissioning_route is not None and getattr(
                 self.repository, "supports_v2_operations", False
@@ -5980,6 +6012,21 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise ValueError("channel_id must be an integer")
         return channel_id, parts[5:]
+
+    @staticmethod
+    def _parse_v2_rescue_restart_route(route: str) -> tuple[int, int] | None:
+        parts = [unquote(part) for part in route.split("/") if part]
+        if (
+            len(parts) != 7
+            or parts[:3] != ["api", "v2", "channels"]
+            or parts[4] != "nodes"
+            or parts[6] != "rescue-restart"
+        ):
+            return None
+        try:
+            return int(parts[3]), int(parts[5])
+        except ValueError:
+            raise ValueError("channel_id and node_address must be integers")
 
     @staticmethod
     def _operation_http_status(payload: dict[str, Any]) -> HTTPStatus:

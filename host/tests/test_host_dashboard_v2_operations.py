@@ -7,11 +7,13 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from host.dashboard.app import DashboardServer
 from host.dashboard.v2 import V2DashboardRepository
-from host.dashboard.v2_operations import OperationsIpcClient
+from host.dashboard.v2_operations import OperationsIpcClient, OperationsIpcClientError
 
 
 class FakeOperationsClient:
@@ -98,6 +100,11 @@ class FakeServiceControlClient:
             "ok": True,
             "state": {"available": True, "active": action != "stop"},
         }
+
+
+class UnavailableOperationsClient(FakeOperationsClient):
+    def status(self, channel_id: int) -> dict[str, Any]:
+        raise OperationsIpcClientError("channel worker unavailable")
 
 class V2OperatorApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -186,7 +193,8 @@ class V2OperatorApiTests(unittest.TestCase):
             self.assertIn("Próbki i ciągłość", html)
             self.assertIn("node.samples_written", html)
             self.assertIn("node.missing_sample_count", html)
-            self.assertIn('["recording", "maintenance", "faulted"]', html)
+            self.assertIn('data-rescue-restart=', html)
+            self.assertIn('/rescue-restart`', html)
             self.assertIn('await submitV2Operation(channelId, "enter_maintenance")', html)
             self.assertIn('await submitV2Operation(channelId, "restart_node"', html)
             self.assertIn('await submitV2Operation(channelId, "resume_recording")', html)
@@ -386,6 +394,71 @@ class V2OperatorApiTests(unittest.TestCase):
             self.assertTrue(payload["state"]["active"])
             self.assertEqual(service.actions, ["restart"])
             connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_faulted_channel_can_reboot_node_over_rs485_and_restart_host(self) -> None:
+        profile = json.loads(self.config.read_text(encoding="utf-8"))
+        channel = profile["channels"][0]
+        channel["transport"].update(
+            {"endpoint": "/dev/sensor-system-line-b", "baud_rate": 115200}
+        )
+        channel["nodes"][0].update(
+            {"hardware_id": "0102030405060708", "board_revision": 2}
+        )
+        self.config.write_text(json.dumps(profile), encoding="utf-8")
+        hil_binary = Path(self.temp.name) / "sensor-hil"
+        hil_binary.write_text("test", encoding="utf-8")
+        service = FakeServiceControlClient(available=True)
+        repository = V2DashboardRepository(
+            self.config,
+            status_path=Path(self.temp.name) / "missing-status.json",
+            operations_client=UnavailableOperationsClient(),
+            service_control_client=service,
+            hil_binary=hil_binary,
+        )
+        server = DashboardServer(("127.0.0.1", 0), repository)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch(
+                "host.dashboard.v2.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout="node restart accepted",
+                    stderr="",
+                ),
+            ) as run:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_port, timeout=2
+                )
+                connection.request(
+                    "POST",
+                    "/api/v2/channels/2/nodes/1/rescue-restart",
+                    headers={"X-Sensor-System-Request": "dashboard-v2"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["action"], "rescue_restart_node")
+                self.assertEqual(payload["transport"], "rs485")
+                self.assertEqual(service.actions, ["restart"])
+                command = run.call_args.args[0]
+                self.assertEqual(
+                    command,
+                    [
+                        str(hil_binary),
+                        "restart",
+                        "/dev/sensor-system-line-b",
+                        "1",
+                        "0102030405060708",
+                        "2",
+                        "115200",
+                    ],
+                )
+                connection.close()
         finally:
             server.shutdown()
             server.server_close()
