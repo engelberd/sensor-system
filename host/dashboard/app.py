@@ -1418,7 +1418,7 @@ INDEX_HTML = """<!doctype html>
           && ["recording", "maintenance", "faulted"].includes(node.channel_mode)
           && !node.channel_active_operation;
         const canRestart = channelEnabled && node.enabled
-          && ["maintenance", "faulted"].includes(node.channel_mode)
+          && ["recording", "maintenance", "faulted"].includes(node.channel_mode)
           && !node.channel_active_operation;
         return `
           <tr>
@@ -1437,6 +1437,7 @@ INDEX_HTML = """<!doctype html>
                   data-channel-id="${escapeHtml(node.channel_id)}"
                   data-channel-name="${escapeHtml(node.channel_name)}"
                   data-node-id="${escapeHtml(node.node_id)}"
+                  data-channel-mode="${escapeHtml(node.channel_mode || "unknown")}"
                   type="button">Restart node</button>` : ""}
               </div>
             </td>
@@ -1449,9 +1450,10 @@ INDEX_HTML = """<!doctype html>
               <div class="node-meta mono">pomiar ${escapeHtml(node.instant_samples_per_second_5s == null ? "zbieranie 5 s…" : `${formatFloat(node.instant_samples_per_second_5s, 1)} samples/s`)}</div>
               <div class="node-meta">profil hosta ${escapeHtml(formatFloat(node.expected_odr_hz, 1))} Hz</div>
             </td>
-            <td data-label="Cursory">
-              <span class="mono">rx ${escapeHtml(formatNumber(node.received_cursor))} · durable ${escapeHtml(formatNumber(node.durable_cursor))}</span>
-              <div class="node-meta">released ${escapeHtml(formatNumber(node.released_cursor))} · produced ${escapeHtml(formatNumber(node.produced_cursor))}</div>
+            <td data-label="Próbki i ciągłość">
+              <span class="mono">próbki ${escapeHtml(formatNumber(node.samples_written || 0))}</span>
+              <div class="node-meta mono">gaps ${escapeHtml(formatNumber(node.gaps_detected || 0))} · missing ${escapeHtml(formatNumber(node.missing_sample_count || 0))} · breaks ${escapeHtml(formatNumber(node.continuity_break_count || 0))}</div>
+              <div class="node-meta">rx ${escapeHtml(formatNumber(node.received_cursor))} · durable ${escapeHtml(formatNumber(node.durable_cursor))}</div>
             </td>
             <td data-label="Backlog">
               <span class="mono">node ${escapeHtml(formatNumber(node.node_backlog))} · zapis ${escapeHtml(formatNumber(node.persistence_backlog))}</span>
@@ -1514,7 +1516,7 @@ INDEX_HTML = """<!doctype html>
               `).join("")}
             </div>
             <table>
-              <thead><tr><th>Węzeł</th><th>Stan</th><th>Output ODR</th><th>Cursory</th><th>Backlog</th><th>Świeżość</th></tr></thead>
+              <thead><tr><th>Węzeł</th><th>Stan</th><th>Output ODR</th><th>Próbki i ciągłość</th><th>Backlog</th><th>Świeżość</th></tr></thead>
               <tbody>${nodes.length ? nodes.map((node) => renderV2NodeRow(node, channel.enabled)).join("") : `<tr><td colspan="6"><div class="empty">Brak skonfigurowanych węzłów.</div></td></tr>`}</tbody>
             </table>
           </article>
@@ -2478,15 +2480,42 @@ INDEX_HTML = """<!doctype html>
         const channelId = Number(button.dataset.channelId || 0);
         const nodeAddress = Number(button.dataset.nodeId || 0);
         const channelName = button.dataset.channelName || `channel-${channelId}`;
+        const channelMode = button.dataset.channelMode || "unknown";
         if (!channelId || !nodeAddress) return;
-        if (!window.confirm(`Zrestartować node ${nodeAddress} na ${channelName}? Po restarcie użyj Resume, aby wykonać handshake i rollover.`)) return;
+        const prompt = channelMode === "recording"
+          ? `Restart node ${nodeAddress} chwilowo przerwie nagrywanie na ${channelName}. Host trwale zapisze ogon, przejdzie do Maintenance, zrestartuje node, wykona ponowny handshake i automatycznie wznowi Recording. Kontynuować?`
+          : `Zrestartować node ${nodeAddress} na ${channelName}? Kanał pozostanie w ${channelMode === "maintenance" ? "Maintenance" : "bieżącym trybie"}; Recording można następnie wznowić przyciskiem kanału.`;
+        if (!window.confirm(prompt)) return;
         const previousLabel = button.textContent;
         button.disabled = true;
-        button.textContent = "Restartowanie...";
+        let enteredMaintenance = false;
         try {
+          if (channelMode === "recording") {
+            button.textContent = "Zatrzymywanie...";
+            await submitV2Operation(channelId, "enter_maintenance");
+            enteredMaintenance = true;
+          }
+          button.textContent = "Restartowanie...";
           const result = await submitV2Operation(channelId, "restart_node", { node_address: nodeAddress });
-          $("overview-note").textContent = `Restart node przyjęty jako operacja ${result.operation_id}`;
+          if (channelMode === "recording") {
+            button.textContent = "Wznawianie...";
+            await submitV2Operation(channelId, "resume_recording");
+            enteredMaintenance = false;
+          }
+          $("overview-note").textContent = channelMode === "recording"
+            ? `Node zrestartowany i Recording wznowiony · operacja restartu ${result.operation_id}`
+            : `Restart node przyjęty jako operacja ${result.operation_id}`;
           await loadDashboard();
+        } catch (error) {
+          if (enteredMaintenance) {
+            try {
+              button.textContent = "Przywracanie...";
+              await submitV2Operation(channelId, "resume_recording");
+            } catch (resumeError) {
+              throw new Error(`${error.message}; automatyczne wznowienie nie powiodło się: ${resumeError.message}`);
+            }
+          }
+          throw error;
         } finally {
           button.disabled = false;
           button.textContent = previousLabel;
