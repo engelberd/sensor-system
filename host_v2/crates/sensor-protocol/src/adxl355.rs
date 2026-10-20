@@ -2,6 +2,53 @@ use core::fmt;
 
 use sensor_core::{SampleAxis, SampleRate};
 
+/// Validated raw code from the ADXL355 internal temperature sensor.
+///
+/// The limits deliberately include margin beyond the device operating range,
+/// while rejecting all-zero/all-one SPI reads that map to impossible values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Adxl355TemperatureCode(u16);
+
+impl Adxl355TemperatureCode {
+    pub const MIN: u16 = 750;
+    pub const MAX: u16 = 2700;
+    pub const RAW_AT_25_C: u16 = 1885;
+    pub const SLOPE_LSB_PER_C: f64 = -9.05;
+
+    pub const fn new(value: u16) -> Result<Self, Adxl355TemperatureCodeError> {
+        if value < Self::MIN || value > Self::MAX {
+            Err(Adxl355TemperatureCodeError { value })
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+
+    pub fn celsius(self) -> f64 {
+        25.0 + (f64::from(self.0) - f64::from(Self::RAW_AT_25_C)) / Self::SLOPE_LSB_PER_C
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Adxl355TemperatureCodeError {
+    value: u16,
+}
+
+impl fmt::Display for Adxl355TemperatureCodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "ADXL355 temperature code {} is implausible",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for Adxl355TemperatureCodeError {}
+
 /// One native, right-aligned ADXL355 ADC code.
 ///
 /// The three sensor registers contain a signed 20-bit two's-complement value.
@@ -135,7 +182,7 @@ impl Adxl355Odr {
 
 #[cfg(test)]
 mod tests {
-    use super::{Adxl355Odr, Adxl355SampleCode};
+    use super::{Adxl355Odr, Adxl355SampleCode, Adxl355TemperatureCode};
     use sensor_core::SampleAxis;
 
     #[test]
@@ -147,6 +194,14 @@ mod tests {
         assert_eq!(SampleAxis::from(maximum).get(), Adxl355SampleCode::MAX);
         assert!(Adxl355SampleCode::new(Adxl355SampleCode::MIN - 1).is_err());
         assert!(Adxl355SampleCode::new(Adxl355SampleCode::MAX + 1).is_err());
+    }
+
+    #[test]
+    fn validates_temperature_code_and_reference_point() {
+        let reference = Adxl355TemperatureCode::new(1885).unwrap();
+        assert_eq!(reference.celsius(), 25.0);
+        assert!(Adxl355TemperatureCode::new(0).is_err());
+        assert!(Adxl355TemperatureCode::new(4095).is_err());
     }
 
     #[test]

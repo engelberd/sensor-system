@@ -5,7 +5,9 @@ use std::time::Duration;
 use crate::channel_agent::ChannelEvent;
 use crate::channel_endpoint::ChannelEndpointEvent;
 use crate::channel_recording_loop::ThreadedChannelRecordingEvent;
-use crate::measurement_coordinator::{MeasurementSettlement, TimeSyncSettlement};
+use crate::measurement_coordinator::{
+    MeasurementSettlement, TelemetrySettlement, TimeSyncSettlement,
+};
 use crate::persistence_executor::GroupCommitMetricsReader;
 
 /// Cumulative, saturating production counters for one physical channel.
@@ -32,6 +34,9 @@ pub struct ChannelMetricsSnapshot {
     pub time_sync_submitted: u64,
     pub time_sync_retries: u64,
     pub time_sync_backpressure: u64,
+    pub telemetry_snapshots: u64,
+    pub telemetry_retries: u64,
+    pub telemetry_backpressure: u64,
     pub maximum_step_us: u64,
     pub storage_committed_groups: u64,
     pub storage_committed_records: u64,
@@ -59,6 +64,9 @@ struct ChannelMetricsAtomic {
     time_sync_submitted: AtomicU64,
     time_sync_retries: AtomicU64,
     time_sync_backpressure: AtomicU64,
+    telemetry_snapshots: AtomicU64,
+    telemetry_retries: AtomicU64,
+    telemetry_backpressure: AtomicU64,
     maximum_step_us: AtomicU64,
 }
 
@@ -82,6 +90,9 @@ impl Default for ChannelMetricsAtomic {
             time_sync_submitted: AtomicU64::new(0),
             time_sync_retries: AtomicU64::new(0),
             time_sync_backpressure: AtomicU64::new(0),
+            telemetry_snapshots: AtomicU64::new(0),
+            telemetry_retries: AtomicU64::new(0),
+            telemetry_backpressure: AtomicU64::new(0),
             maximum_step_us: AtomicU64::new(0),
         }
     }
@@ -121,6 +132,9 @@ impl ChannelMetricsReader {
             time_sync_submitted: load(&self.metrics.time_sync_submitted),
             time_sync_retries: load(&self.metrics.time_sync_retries),
             time_sync_backpressure: load(&self.metrics.time_sync_backpressure),
+            telemetry_snapshots: load(&self.metrics.telemetry_snapshots),
+            telemetry_retries: load(&self.metrics.telemetry_retries),
+            telemetry_backpressure: load(&self.metrics.telemetry_backpressure),
             maximum_step_us: load(&self.metrics.maximum_step_us),
             storage_committed_groups: storage.committed_groups,
             storage_committed_records: storage.committed_records,
@@ -197,6 +211,17 @@ impl ChannelMetricsPublisher {
                     increment(&self.metrics.time_sync_backpressure)
                 }
             },
+            ThreadedChannelRecordingEvent::Telemetry(settlement) => match settlement {
+                TelemetrySettlement::Submitted { .. } => {
+                    increment(&self.metrics.telemetry_snapshots)
+                }
+                TelemetrySettlement::RetryScheduled { .. } => {
+                    increment(&self.metrics.telemetry_retries)
+                }
+                TelemetrySettlement::Backpressured { .. } => {
+                    increment(&self.metrics.telemetry_backpressure)
+                }
+            },
         }
     }
 
@@ -212,6 +237,7 @@ impl ChannelMetricsPublisher {
                 | ChannelEvent::StreamStateTimedOut { .. }
                 | ChannelEvent::MeasurementTimedOut { .. }
                 | ChannelEvent::TimeSyncTimedOut { .. }
+                | ChannelEvent::TelemetryTimedOut { .. }
                 | ChannelEvent::LifecycleTimedOut { .. } => {
                     increment(&self.metrics.transaction_timeouts)
                 }

@@ -92,6 +92,8 @@ z działającego protocol 4 opisuje
 [MIGRATION-V4-V5.md](protocol/MIGRATION-V4-V5.md).
 Minimalny payload synchronizacji zegara opisuje
 [TIME-WIRE-V5.md](protocol/TIME-WIRE-V5.md).
+Rzadkie obserwacje fizyczne, cache node i minimalny snapshot temperatury
+opisuje [TELEMETRY-SERVICE.md](protocol/TELEMETRY-SERVICE.md).
 Atomową konfigurację pomiaru, slotowane discovery i pierwsze przypisanie adresu
 opisuje
 [CONFIGURATION-COMMISSIONING-V5.md](protocol/CONFIGURATION-COMMISSIONING-V5.md).

@@ -11,6 +11,7 @@ pub enum ServiceId {
     Lifecycle = 6,
     Diagnostics = 7,
     Commissioning = 8,
+    Telemetry = 9,
 }
 
 impl ServiceId {

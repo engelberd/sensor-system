@@ -1,5 +1,6 @@
 #include "adxl355/adxl355_driver.h"
 #include "adxl355/adxl355_registers.h"
+#include "adxl355/adxl355_temperature.h"
 
 #include "pico/stdlib.h"
 #include <cstdlib>
@@ -62,6 +63,11 @@ SensorStatus Adxl355Driver::init() {
     initialized_ = true;
 
     SensorStatus st = reset_device();
+    if (st != SensorStatus::Ok) {
+        return st;
+    }
+
+    st = set_temperature_enabled_internal();
     if (st != SensorStatus::Ok) {
         return st;
     }
@@ -513,12 +519,7 @@ SensorStatus Adxl355Driver::read_temperature(TemperatureSample& temperature) {
 
     temperature.raw = temp_raw;
 
-    // Datasheet approximation
-    constexpr float TEMP_AT_25C = 1885.0f;
-    constexpr float TEMP_SLOPE  = -9.05f;
-
-    temperature.celsius =
-        25.0f + (static_cast<float>(temp_raw) - TEMP_AT_25C) / TEMP_SLOPE;
+    temperature.celsius = ADXL355::Temperature::to_celsius(temp_raw);
 
     return SensorStatus::Ok;
 }
@@ -1024,18 +1025,36 @@ int32_t Adxl355Driver::decode_20bit_signed(uint8_t msb,
 // ============================================================
 
 SensorStatus Adxl355Driver::read_temperature_raw(uint16_t& temp_raw) {
-    uint8_t buffer[2] = {0, 0};
+    uint16_t previous = 0;
+    bool have_previous = false;
 
-    SensorStatus st = read_multiple(ADXL355::TEMP2, buffer, 2);
-    if (st != SensorStatus::Ok) {
-        return st;
+    for (uint8_t attempt = 0;
+         attempt < ADXL355::Temperature::kMaximumReadAttempts;
+         ++attempt) {
+        uint8_t buffer[2] = {0, 0};
+        const SensorStatus st = read_multiple(ADXL355::TEMP2, buffer, 2);
+        if (st != SensorStatus::Ok) {
+            return st;
+        }
+
+        const uint16_t candidate =
+            ADXL355::Temperature::decode_raw(buffer[0], buffer[1]);
+        if (!ADXL355::Temperature::is_plausible_raw(candidate)) {
+            have_previous = false;
+            continue;
+        }
+
+        if (have_previous &&
+            ADXL355::Temperature::readings_are_coherent(previous, candidate)) {
+            temp_raw = candidate;
+            return SensorStatus::Ok;
+        }
+
+        previous = candidate;
+        have_previous = true;
     }
 
-    temp_raw =
-        (static_cast<uint16_t>(buffer[0] & 0x0F) << 8) |
-        static_cast<uint16_t>(buffer[1]);
-
-    return SensorStatus::Ok;
+    return SensorStatus::InvalidSample;
 }
 
 SensorStatus Adxl355Driver::read_shadow_registers(uint8_t* values,
@@ -1170,6 +1189,29 @@ SensorStatus Adxl355Driver::set_drdy_enabled_internal(bool enabled) {
         value |= ADXL355::POWER_DRDY_OFF;
     }
     return write_register(ADXL355::POWER_CTL, value);
+}
+
+SensorStatus Adxl355Driver::set_temperature_enabled_internal() {
+    uint8_t value = 0;
+    SensorStatus st = read_register(ADXL355::POWER_CTL, value);
+    if (st != SensorStatus::Ok) {
+        return st;
+    }
+
+    value &= static_cast<uint8_t>(~ADXL355::POWER_TEMP_OFF_MASK);
+    st = write_register(ADXL355::POWER_CTL, value);
+    if (st != SensorStatus::Ok) {
+        return st;
+    }
+
+    uint8_t verified = 0;
+    st = read_register(ADXL355::POWER_CTL, verified);
+    if (st != SensorStatus::Ok) {
+        return st;
+    }
+    return (verified & ADXL355::POWER_TEMP_OFF_MASK) == 0
+        ? SensorStatus::Ok
+        : SensorStatus::InternalError;
 }
 
 SensorStatus Adxl355Driver::set_self_test(bool st1, bool st2) {

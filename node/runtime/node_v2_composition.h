@@ -67,7 +67,8 @@ public:
                            Profile::kIngressDrainBudgetPerPoll},
                        runtime::IFirmwareUpdateControl* firmware_update_control = nullptr,
                        runtime::ITrialBootControl* trial_boot_control = nullptr,
-                       ProtocolV3::IDiagnosticsServiceHandler* diagnostics_handler = nullptr)
+                       ProtocolV3::IDiagnosticsServiceHandler* diagnostics_handler = nullptr,
+                       ProtocolV3::ITelemetryServiceHandler* telemetry_handler = nullptr)
         : data_plane_(data_plane),
           sensor_runtime_(acquisition, data_plane.sink()),
           core0_(sensor_runtime_, mailbox_, fault_latch_),
@@ -84,7 +85,8 @@ public:
                          commissioning_identity(identity)),
           dispatcher_(identity, capabilities,
                       &core1_measurement_.handler(), &lifecycle_,
-                      diagnostics_handler, &configuration_, &commissioning_),
+                      diagnostics_handler, &configuration_, &commissioning_,
+                      telemetry_handler),
           endpoint_(port, dispatcher_, transport_policy),
           core1_(core1_measurement_, lifecycle_, endpoint_, observer,
                  core1_policy),

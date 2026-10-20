@@ -11,13 +11,16 @@ use crate::channel_endpoint::{
 use crate::measurement_coordinator::{
     ChannelWorkCoordinator, MeasurementCoordinatorError, MeasurementHandoffError,
     MeasurementSettlement, MeasurementSettlementError, MeasurementWriteSettlementError,
-    TimeSyncSettlement,
+    TelemetrySettlement, TimeSyncSettlement,
 };
 use crate::measurement_persistence::DurableMeasurementSink;
 use crate::persistence_executor::{
     classify_recovery, GroupedExecutorRecoveryError, GroupedPersistenceExecutor,
     PersistenceExecutor, PersistenceExecutorError, RecoveredCursorEvidence,
     RecoveryClassificationError, WriteRecoveryRange,
+};
+use crate::telemetry_persistence::{
+    RejectingTelemetryObservationSubmitter, TelemetryObservationSubmitter,
 };
 use crate::time_persistence::{RejectingTimeObservationSubmitter, TimeObservationSubmitter};
 
@@ -26,6 +29,7 @@ pub enum ChannelRecordingEvent {
     Endpoint(ChannelEndpointEvent),
     Measurement(MeasurementSettlement),
     TimeSync(TimeSyncSettlement),
+    Telemetry(TelemetrySettlement),
 }
 
 /// One production recording lane for one communication channel.
@@ -37,6 +41,7 @@ pub struct ChannelRecordingLoop<P, C, S, T = RejectingTimeObservationSubmitter> 
     measurements: ChannelWorkCoordinator,
     sink: S,
     time_observations: T,
+    telemetry_observations: Box<dyn TelemetryObservationSubmitter>,
 }
 
 impl<P, C, S> ChannelRecordingLoop<P, C, S, RejectingTimeObservationSubmitter>
@@ -55,6 +60,7 @@ where
             measurements,
             sink,
             time_observations: RejectingTimeObservationSubmitter,
+            telemetry_observations: Box::new(RejectingTelemetryObservationSubmitter),
         }
     }
 }
@@ -77,7 +83,16 @@ where
             measurements,
             sink,
             time_observations,
+            telemetry_observations: Box::new(RejectingTelemetryObservationSubmitter),
         }
+    }
+
+    pub fn with_telemetry_observations(
+        mut self,
+        telemetry_observations: Box<dyn TelemetryObservationSubmitter>,
+    ) -> Self {
+        self.telemetry_observations = telemetry_observations;
+        self
     }
 
     pub fn step(&mut self) -> Result<ChannelRecordingEvent, ChannelRecordingLoopError<S::Error>> {
@@ -108,6 +123,17 @@ where
                 .map_err(ChannelRecordingLoopError::Coordinator)?
             {
                 return Ok(ChannelRecordingEvent::TimeSync(settlement));
+            }
+            if let Some(settlement) = self
+                .measurements
+                .settle_telemetry_event(
+                    agent_event,
+                    self.telemetry_observations.as_mut(),
+                    settled_at,
+                )
+                .map_err(ChannelRecordingLoopError::Coordinator)?
+            {
+                return Ok(ChannelRecordingEvent::Telemetry(settlement));
             }
         }
         if matches!(
@@ -184,12 +210,21 @@ where
             .observe_configuration(node_address, configuration)
     }
 
-    pub fn into_parts(self) -> (ChannelEndpoint<P, C>, ChannelWorkCoordinator, S, T) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        ChannelEndpoint<P, C>,
+        ChannelWorkCoordinator,
+        S,
+        T,
+        Box<dyn TelemetryObservationSubmitter>,
+    ) {
         (
             self.endpoint,
             self.measurements,
             self.sink,
             self.time_observations,
+            self.telemetry_observations,
         )
     }
 }
@@ -226,6 +261,7 @@ pub enum ThreadedChannelRecordingEvent {
     },
     PersistenceBackpressured,
     TimeSync(TimeSyncSettlement),
+    Telemetry(TelemetrySettlement),
 }
 
 pub trait RecordingPersistence: PersistenceSubmitter {
@@ -307,6 +343,7 @@ where
     measurements: ChannelWorkCoordinator,
     persistence: E,
     time_observations: T,
+    telemetry_observations: Box<dyn TelemetryObservationSubmitter>,
 }
 
 impl<P, C, E> ThreadedChannelRecordingLoop<P, C, E, RejectingTimeObservationSubmitter>
@@ -326,6 +363,7 @@ where
             measurements,
             persistence,
             time_observations: RejectingTimeObservationSubmitter,
+            telemetry_observations: Box::new(RejectingTelemetryObservationSubmitter),
         }
     }
 }
@@ -349,7 +387,16 @@ where
             measurements,
             persistence,
             time_observations,
+            telemetry_observations: Box::new(RejectingTelemetryObservationSubmitter),
         }
+    }
+
+    pub fn with_telemetry_observations(
+        mut self,
+        telemetry_observations: Box<dyn TelemetryObservationSubmitter>,
+    ) -> Self {
+        self.telemetry_observations = telemetry_observations;
+        self
     }
 
     pub fn step(
@@ -393,6 +440,17 @@ where
                 .map_err(ThreadedChannelRecordingLoopError::Coordinator)?
             {
                 return Ok(ThreadedChannelRecordingEvent::TimeSync(settlement));
+            }
+            if let Some(settlement) = self
+                .measurements
+                .settle_telemetry_event(
+                    agent_event,
+                    self.telemetry_observations.as_mut(),
+                    settled_at,
+                )
+                .map_err(ThreadedChannelRecordingLoopError::Coordinator)?
+            {
+                return Ok(ThreadedChannelRecordingEvent::Telemetry(settlement));
             }
         }
         match endpoint_event {
@@ -522,12 +580,21 @@ where
             .replace_resume_stream(node_address, expected, durable_cursor, stream, now)
     }
 
-    pub fn into_parts(self) -> (ChannelEndpoint<P, C>, ChannelWorkCoordinator, E, T) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        ChannelEndpoint<P, C>,
+        ChannelWorkCoordinator,
+        E,
+        T,
+        Box<dyn TelemetryObservationSubmitter>,
+    ) {
         (
             self.endpoint,
             self.measurements,
             self.persistence,
             self.time_observations,
+            self.telemetry_observations,
         )
     }
 
@@ -860,7 +927,8 @@ mod tests {
     fn multi_node_recording_survives_one_lost_response_and_storage_retry() {
         let (clock, mut recording_loop) = build_loop(None, Some(2), Some(3), 1);
         let run = run_for(&clock, &mut recording_loop, 10_000_000);
-        let (endpoint, coordinator, sink, _time_observations) = recording_loop.into_parts();
+        let (endpoint, coordinator, sink, _time_observations, _telemetry_observations) =
+            recording_loop.into_parts();
         let (_, port, _) = endpoint.into_parts();
         let bus = port.into_inner();
 
@@ -898,7 +966,8 @@ mod tests {
     fn offline_node_enters_probe_mode_without_starving_healthy_nodes() {
         let (clock, mut recording_loop) = build_loop(Some(1), None, None, 0);
         run_for(&clock, &mut recording_loop, 5_000_000);
-        let (endpoint, coordinator, sink, _time_observations) = recording_loop.into_parts();
+        let (endpoint, coordinator, sink, _time_observations, _telemetry_observations) =
+            recording_loop.into_parts();
         let (_, port, _) = endpoint.into_parts();
         let bus = port.into_inner();
 
@@ -922,7 +991,8 @@ mod tests {
     #[test]
     fn threaded_loop_keeps_collecting_while_storage_owns_previous_chunks() {
         let (clock, recording_loop) = build_loop(None, None, None, 0);
-        let (endpoint, measurements, sink, _time_observations) = recording_loop.into_parts();
+        let (endpoint, measurements, sink, _time_observations, _telemetry_observations) =
+            recording_loop.into_parts();
         let persistence = GroupedPersistenceExecutor::start(
             sink,
             8,
@@ -943,7 +1013,8 @@ mod tests {
             std::thread::yield_now();
         }
 
-        let (endpoint, coordinator, persistence, _time_observations) = recording_loop.into_parts();
+        let (endpoint, coordinator, persistence, _time_observations, _telemetry_observations) =
+            recording_loop.into_parts();
         let shutdown = persistence.shutdown().unwrap();
         let sink = shutdown.sink;
         let (_, port, _) = endpoint.into_parts();

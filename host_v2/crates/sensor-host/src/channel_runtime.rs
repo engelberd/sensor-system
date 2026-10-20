@@ -120,9 +120,45 @@ pub struct TimeSyncDispatch {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TelemetryScheduleConfig {
+    pub interval: DurationMicros,
+    pub estimated_slot: DurationMicros,
+    pub retry_delay: DurationMicros,
+}
+
+impl TelemetryScheduleConfig {
+    pub fn new(
+        interval: DurationMicros,
+        estimated_slot: DurationMicros,
+        retry_delay: DurationMicros,
+    ) -> Result<Self, ChannelRuntimeError> {
+        Self {
+            interval,
+            estimated_slot,
+            retry_delay,
+        }
+        .validate()
+    }
+
+    pub fn validate(self) -> Result<Self, ChannelRuntimeError> {
+        if self.estimated_slot.get() > self.interval.get() {
+            return Err(ChannelRuntimeError::TelemetrySlotExceedsInterval);
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TelemetryDispatch {
+    pub work_id: u64,
+    pub node_address: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelDispatch {
     Measurement(MeasurementDispatch),
     TimeSync(TimeSyncDispatch),
+    Telemetry(TelemetryDispatch),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,6 +181,35 @@ impl TimeSyncScheduleState {
             work_id: self.work_id,
             node_address: self.node_address,
             class: TrafficClass::TimeSync,
+            ready_at: self.ready_at,
+            deadline: Some(self.deadline),
+            queued_at: self.queued_at,
+            time_to_overflow_us: None,
+            estimated_slot: self.config.estimated_slot,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TelemetryScheduleState {
+    node_address: u8,
+    config: TelemetryScheduleConfig,
+    deadline: MonotonicMicros,
+    ready_at: MonotonicMicros,
+    queued_at: MonotonicMicros,
+    work_id: u64,
+    in_flight: bool,
+}
+
+impl TelemetryScheduleState {
+    const fn candidate(self) -> Option<WorkCandidate> {
+        if self.in_flight {
+            return None;
+        }
+        Some(WorkCandidate {
+            work_id: self.work_id,
+            node_address: self.node_address,
+            class: TrafficClass::Telemetry,
             ready_at: self.ready_at,
             deadline: Some(self.deadline),
             queued_at: self.queued_at,
@@ -248,6 +313,7 @@ pub struct ChannelRuntime {
     next_work_id: u64,
     nodes: Vec<NodeScheduleState>,
     time_sync: Vec<TimeSyncScheduleState>,
+    telemetry: Vec<TelemetryScheduleState>,
     candidates: Vec<WorkCandidate>,
     active_dispatch: Option<ChannelDispatch>,
 }
@@ -269,7 +335,8 @@ impl ChannelRuntime {
             next_work_id: work_id_seed.max(1),
             nodes: Vec::with_capacity(max_nodes),
             time_sync: Vec::with_capacity(max_nodes),
-            candidates: Vec::with_capacity(max_nodes.saturating_mul(2)),
+            telemetry: Vec::with_capacity(max_nodes),
+            candidates: Vec::with_capacity(max_nodes.saturating_mul(3)),
             active_dispatch: None,
         })
     }
@@ -381,6 +448,50 @@ impl ChannelRuntime {
         Ok(())
     }
 
+    pub fn configure_telemetry(
+        &mut self,
+        node_address: u8,
+        config: TelemetryScheduleConfig,
+        first_deadline: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        let config = config.validate()?;
+        let node = self
+            .nodes
+            .iter()
+            .find(|node| node.config.node_address == node_address)
+            .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
+        if node.recovery_required {
+            return Err(ChannelRuntimeError::RecoveryRequired(node_address));
+        }
+        if self
+            .telemetry
+            .iter()
+            .any(|state| state.node_address == node_address)
+        {
+            return Err(ChannelRuntimeError::DuplicateTelemetry(node_address));
+        }
+        let work_id = self.allocate_work_id()?;
+        let first_ready_at = MonotonicMicros::new(
+            first_deadline
+                .get()
+                .saturating_sub(config.estimated_slot.get()),
+        );
+        self.telemetry.push(TelemetryScheduleState {
+            node_address,
+            config,
+            deadline: first_deadline,
+            ready_at: first_ready_at,
+            queued_at: first_ready_at,
+            work_id,
+            in_flight: false,
+        });
+        Ok(())
+    }
+
+    pub fn telemetry_schedule_count(&self) -> usize {
+        self.telemetry.len()
+    }
+
     pub fn select_work(
         &mut self,
         now: MonotonicMicros,
@@ -395,6 +506,18 @@ impl ChannelRuntime {
             }
         }
         for state in self.time_sync.iter().copied() {
+            let node_available = self.nodes.iter().any(|node| {
+                node.config.node_address == state.node_address
+                    && !node.recovery_required
+                    && !node.in_flight
+            });
+            if node_available {
+                if let Some(candidate) = state.candidate() {
+                    self.candidates.push(candidate);
+                }
+            }
+        }
+        for state in self.telemetry.iter().copied() {
             let node_available = self.nodes.iter().any(|node| {
                 node.config.node_address == state.node_address
                     && !node.recovery_required
@@ -443,6 +566,18 @@ impl ChannelRuntime {
                     node_address: state.node_address,
                 })
             }
+            TrafficClass::Telemetry => {
+                let state = self
+                    .telemetry
+                    .iter_mut()
+                    .find(|state| state.work_id == selected.work_id)
+                    .ok_or(ChannelRuntimeError::InvariantViolation)?;
+                state.in_flight = true;
+                ChannelDispatch::Telemetry(TelemetryDispatch {
+                    work_id: state.work_id,
+                    node_address: state.node_address,
+                })
+            }
             _ => return Err(ChannelRuntimeError::InvariantViolation),
         };
         self.active_dispatch = Some(dispatch);
@@ -453,7 +588,7 @@ impl ChannelRuntime {
         &mut self,
         now: MonotonicMicros,
     ) -> Result<Option<MeasurementDispatch>, ChannelRuntimeError> {
-        if !self.time_sync.is_empty() {
+        if !self.time_sync.is_empty() || !self.telemetry.is_empty() {
             return Err(ChannelRuntimeError::UnifiedDispatchRequired);
         }
         if self.active_dispatch.is_some() {
@@ -810,6 +945,53 @@ impl ChannelRuntime {
         Ok(())
     }
 
+    pub fn complete_telemetry(
+        &mut self,
+        dispatch: TelemetryDispatch,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        let index = self.active_telemetry_index(dispatch)?;
+        let next_deadline = now
+            .checked_add(self.telemetry[index].config.interval)
+            .ok_or(ChannelRuntimeError::TimeOverflow)?;
+        let next_work_id = self.allocate_work_id()?;
+        let state = &mut self.telemetry[index];
+        state.deadline = next_deadline;
+        state.ready_at = now;
+        state.queued_at = now;
+        state.work_id = next_work_id;
+        state.in_flight = false;
+        self.active_dispatch = None;
+        Ok(())
+    }
+
+    pub fn fail_telemetry(
+        &mut self,
+        dispatch: TelemetryDispatch,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        let index = self.active_telemetry_index(dispatch)?;
+        let ready_at = now
+            .checked_add(self.telemetry[index].config.retry_delay)
+            .ok_or(ChannelRuntimeError::TimeOverflow)?;
+        let state = &mut self.telemetry[index];
+        state.ready_at = ready_at;
+        state.queued_at = now;
+        state.in_flight = false;
+        self.active_dispatch = None;
+        Ok(())
+    }
+
+    pub fn cancel_telemetry(
+        &mut self,
+        dispatch: TelemetryDispatch,
+    ) -> Result<(), ChannelRuntimeError> {
+        let index = self.active_telemetry_index(dispatch)?;
+        self.telemetry[index].in_flight = false;
+        self.active_dispatch = None;
+        Ok(())
+    }
+
     pub fn snapshot(
         &self,
         node_address: u8,
@@ -879,6 +1061,25 @@ impl ChannelRuntime {
         Ok(index)
     }
 
+    fn active_telemetry_index(
+        &self,
+        dispatch: TelemetryDispatch,
+    ) -> Result<usize, ChannelRuntimeError> {
+        if self.active_dispatch != Some(ChannelDispatch::Telemetry(dispatch)) {
+            return Err(ChannelRuntimeError::StaleDispatch);
+        }
+        let index = self
+            .telemetry
+            .iter()
+            .position(|state| state.node_address == dispatch.node_address)
+            .ok_or(ChannelRuntimeError::UnknownNode(dispatch.node_address))?;
+        let state = self.telemetry[index];
+        if !state.in_flight || state.work_id != dispatch.work_id {
+            return Err(ChannelRuntimeError::StaleDispatch);
+        }
+        Ok(index)
+    }
+
     fn allocate_work_id(&mut self) -> Result<u64, ChannelRuntimeError> {
         for _ in 0..=self.max_nodes {
             let candidate = self.next_work_id.max(1);
@@ -886,6 +1087,10 @@ impl ChannelRuntime {
             if !self.nodes.iter().any(|node| node.work_id == candidate)
                 && !self
                     .time_sync
+                    .iter()
+                    .any(|state| state.work_id == candidate)
+                && !self
+                    .telemetry
                     .iter()
                     .any(|state| state.work_id == candidate)
             {
@@ -941,6 +1146,7 @@ pub enum ChannelRuntimeError {
     InvalidNodeAddress(u8),
     DuplicateNode(u8),
     DuplicateTimeSync(u8),
+    DuplicateTelemetry(u8),
     UnknownNode(u8),
     ZeroJournalCapacity,
     InvalidChunkSize,
@@ -949,6 +1155,7 @@ pub enum ChannelRuntimeError {
     InvalidRetryDelays,
     ZeroRetryLimit,
     TimeSyncSlotExceedsInterval,
+    TelemetrySlotExceedsInterval,
     ReceivedAheadOfProduced,
     StreamRegressed,
     RecoveryNotRequired(u8),
@@ -1013,6 +1220,14 @@ mod tests {
             interval: duration(100_000),
             estimated_slot: duration(10_000),
             retry_delay: duration(20_000),
+        }
+    }
+
+    fn telemetry_config() -> TelemetryScheduleConfig {
+        TelemetryScheduleConfig {
+            interval: duration(600_000_000),
+            estimated_slot: duration(10_000),
+            retry_delay: duration(1_000_000),
         }
     }
 
@@ -1435,5 +1650,97 @@ mod tests {
             panic!("second phased sync must become ready later");
         };
         assert_eq!(second.node_address, 2);
+    }
+
+    #[test]
+    fn telemetry_runs_only_at_its_deadline_and_retries_without_blocking_measurement() {
+        let mut runtime = runtime(1);
+        runtime
+            .register_node(config(1), SequenceCursor::ORIGIN, MonotonicMicros::new(0))
+            .unwrap();
+        runtime
+            .configure_telemetry(1, telemetry_config(), MonotonicMicros::new(600_000_000))
+            .unwrap();
+
+        let ChannelDispatch::Measurement(measurement) = runtime
+            .select_work(MonotonicMicros::new(0))
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("measurement must remain available before telemetry is due");
+        };
+        complete_empty(&mut runtime, measurement, 1);
+        let Some(ChannelDispatch::Measurement(next_measurement)) = runtime
+            .select_work(MonotonicMicros::new(599_989_999))
+            .unwrap()
+        else {
+            panic!("measurement must keep running before telemetry is due");
+        };
+        complete_empty(&mut runtime, next_measurement, 599_989_999);
+
+        let Some(ChannelDispatch::Telemetry(first)) = runtime
+            .select_work(MonotonicMicros::new(599_990_000))
+            .unwrap()
+        else {
+            panic!("telemetry must receive its bounded deadline slot");
+        };
+        runtime
+            .fail_telemetry(first, MonotonicMicros::new(599_990_001))
+            .unwrap();
+        let Some(ChannelDispatch::Measurement(retry_window_measurement)) = runtime
+            .select_work(MonotonicMicros::new(600_990_000))
+            .unwrap()
+        else {
+            panic!("telemetry retry delay must leave the channel to measurement");
+        };
+        complete_empty(&mut runtime, retry_window_measurement, 600_990_000);
+        let Some(ChannelDispatch::Telemetry(retry)) = runtime
+            .select_work(MonotonicMicros::new(600_990_001))
+            .unwrap()
+        else {
+            panic!("failed telemetry must retry after its configured delay");
+        };
+        assert_eq!(retry, first);
+        runtime
+            .complete_telemetry(retry, MonotonicMicros::new(600_990_002))
+            .unwrap();
+        let Some(ChannelDispatch::Measurement(next_interval_measurement)) = runtime
+            .select_work(MonotonicMicros::new(1_200_980_001))
+            .unwrap()
+        else {
+            panic!("measurement must keep running between telemetry intervals");
+        };
+        complete_empty(&mut runtime, next_interval_measurement, 1_200_980_001);
+        assert!(matches!(
+            runtime
+                .select_work(MonotonicMicros::new(1_200_980_002))
+                .unwrap(),
+            Some(ChannelDispatch::Telemetry(_))
+        ));
+    }
+
+    #[test]
+    fn telemetry_configuration_is_bounded_and_unique_per_node() {
+        let mut runtime = runtime(1);
+        runtime
+            .register_node(config(1), SequenceCursor::ORIGIN, MonotonicMicros::new(0))
+            .unwrap();
+        let mut invalid = telemetry_config();
+        invalid.estimated_slot = duration(600_000_001);
+        assert_eq!(
+            runtime.configure_telemetry(1, invalid, MonotonicMicros::new(0)),
+            Err(ChannelRuntimeError::TelemetrySlotExceedsInterval)
+        );
+        runtime
+            .configure_telemetry(1, telemetry_config(), MonotonicMicros::new(0))
+            .unwrap();
+        assert_eq!(
+            runtime.configure_telemetry(1, telemetry_config(), MonotonicMicros::new(0)),
+            Err(ChannelRuntimeError::DuplicateTelemetry(1))
+        );
+        assert_eq!(
+            runtime.select_measurement(MonotonicMicros::new(0)),
+            Err(ChannelRuntimeError::UnifiedDispatchRequired)
+        );
     }
 }

@@ -11,6 +11,7 @@ use crate::capture_profile::{CaptureInstallationProfile, CaptureProfileError};
 use crate::capture_window::{CaptureWindowError, CaptureWindowPolicy};
 use crate::persistence_executor::{GroupCommitPolicy, GroupedWriterError};
 use crate::retention_checkpoint::{RetentionCheckpointError, RetentionPolicy};
+use crate::telemetry_profile::{TelemetryPersistenceInstallationProfile, TelemetryProfileError};
 use crate::time_profile::{
     TimePersistenceInstallationProfile, TimeProfileError, TimeSyncInstallationPolicy,
 };
@@ -73,6 +74,7 @@ pub struct InstallationStorageProfile {
     retention: RetentionPolicy,
     time_persistence: TimePersistenceInstallationProfile,
     time_sync: TimeSyncInstallationPolicy,
+    telemetry_persistence: TelemetryPersistenceInstallationProfile,
     analysis: AnalysisExportInstallationProfile,
 }
 
@@ -118,6 +120,12 @@ impl InstallationStorageProfile {
             )?),
         )
         .map_err(InstallationConfigError::GroupCommitPolicy)?;
+        let telemetry_persistence = TelemetryPersistenceInstallationProfile::new(
+            capture_root.join(".telemetry"),
+            64,
+            "telemetry-storage",
+        )
+        .map_err(InstallationConfigError::TelemetryProfile)?;
         let capture = CaptureInstallationProfile::new(
             capture_root,
             window_policy,
@@ -157,6 +165,7 @@ impl InstallationStorageProfile {
             retention,
             time_persistence,
             time_sync,
+            telemetry_persistence,
             analysis,
         })
     }
@@ -183,6 +192,10 @@ impl InstallationStorageProfile {
 
     pub const fn time_sync(&self) -> TimeSyncInstallationPolicy {
         self.time_sync
+    }
+
+    pub const fn telemetry_persistence(&self) -> &TelemetryPersistenceInstallationProfile {
+        &self.telemetry_persistence
     }
 
     pub const fn analysis(&self) -> &AnalysisExportInstallationProfile {
@@ -416,6 +429,7 @@ pub enum InstallationConfigError {
     CaptureProfile(CaptureProfileError),
     RetentionPolicy(RetentionCheckpointError),
     TimeProfile(TimeProfileError),
+    TelemetryProfile(TelemetryProfileError),
 }
 
 impl fmt::Display for InstallationConfigError {
@@ -438,6 +452,7 @@ impl std::error::Error for InstallationConfigError {
             Self::CaptureProfile(error) => Some(error),
             Self::RetentionPolicy(error) => Some(error),
             Self::TimeProfile(error) => Some(error),
+            Self::TelemetryProfile(error) => Some(error),
             _ => None,
         }
     }
@@ -536,6 +551,10 @@ mod tests {
             temp.0.join("var/recordings/time")
         );
         assert_eq!(profile.time_sync().schedule().interval.get(), 10_000_000);
+        assert_eq!(
+            profile.telemetry_persistence().root(),
+            temp.0.join("var/recordings/.telemetry")
+        );
         assert!(profile.analysis().enabled());
         assert_eq!(profile.analysis().root(), temp.0.join("var/analysis"));
         assert_eq!(profile.analysis().scan_interval_seconds(), 60);

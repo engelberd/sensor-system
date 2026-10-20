@@ -61,6 +61,7 @@
     "max_slot_ms": 50,
     "first_time_sync_delay_ms": 1000,
     "time_sync_phase_step_ms": 100,
+    "telemetry_interval_seconds": 600,
     "activation_node_deadline_ms": 5000,
     "shutdown_barrier_deadline_ms": 2000,
     "shutdown_node_deadline_ms": 5000,

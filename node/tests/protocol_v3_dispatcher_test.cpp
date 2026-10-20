@@ -10,6 +10,7 @@
 #include "protocol_v3/lifecycle_handler.h"
 #include "protocol_v3/measurement.h"
 #include "protocol_v3/measurement_handler.h"
+#include "protocol_v3/telemetry.h"
 #include "runtime/operation_mailbox.h"
 
 namespace {
@@ -280,6 +281,33 @@ void test_diagnostics_requires_capability_and_routes_read_only_handler() {
     assert(response.payload[0] == static_cast<uint8_t>(ResponseStatus::Ok));
     assert(response.payload[1] == 0x5a);
 }
+
+void test_telemetry_requires_capability_and_routes_cached_snapshot() {
+    telemetry::SnapshotCache cache;
+    assert(cache.publish({123456, telemetry::kAdxl355TemperatureField, 1885}));
+    TelemetryServiceHandler telemetry_handler(cache);
+    Frame response{};
+    const Frame snapshot_request =
+        request(kTelemetryServiceId, kGetTelemetrySnapshotMessageId);
+
+    ApplicationDispatcher unavailable(
+        identity(), capabilities(), nullptr, nullptr, nullptr, nullptr, nullptr,
+        &telemetry_handler);
+    assert(unavailable.dispatch(snapshot_request, response));
+    assert(response.payload_size == 1);
+    assert(response.payload[0] ==
+           static_cast<uint8_t>(ResponseStatus::UnsupportedService));
+
+    NodeCapabilities caps = capabilities();
+    caps.service_flags |= service_capability_bit(ServiceId::Telemetry);
+    ApplicationDispatcher dispatcher(
+        identity(), caps, nullptr, nullptr, nullptr, nullptr, nullptr,
+        &telemetry_handler);
+    assert(dispatcher.dispatch(snapshot_request, response));
+    assert(response.payload_size == kTelemetrySnapshotResponseBytes);
+    assert(response.payload[0] == static_cast<uint8_t>(ResponseStatus::Ok));
+    assert(response.payload[1] == kTelemetrySchemaVersion);
+}
 }  // namespace
 
 int main() {
@@ -290,5 +318,6 @@ int main() {
     test_measurement_capability_and_handler_must_agree();
     test_lifecycle_request_is_routed_to_mailbox_and_reconciled();
     test_diagnostics_requires_capability_and_routes_read_only_handler();
+    test_telemetry_requires_capability_and_routes_cached_snapshot();
     return 0;
 }

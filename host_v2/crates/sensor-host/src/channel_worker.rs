@@ -55,6 +55,14 @@ use crate::safe_state_group::{
     SafeStateGroupError, SafeStateGroupOperation, SafeStateGroupProgress, SafeStateNodeContract,
 };
 use crate::stream_recovery::ExpectedStreamState;
+use crate::telemetry_persistence::TelemetryObservationSubmitter;
+use crate::telemetry_profile::{
+    DiscoveredTelemetryStream, TelemetryPersistenceInstallationProfile,
+};
+use crate::telemetry_repository::TelemetryStreamKey;
+use crate::telemetry_rollover::{
+    TelemetryRolloverClient, TelemetryRolloverSubmitError, TelemetryRolloverTicket,
+};
 use crate::time_persistence::TimeObservationSubmitter;
 use crate::time_profile::DiscoveredTimeStream;
 use crate::time_profile::TimePersistenceInstallationProfile;
@@ -79,6 +87,8 @@ pub struct ChannelRolloverServices {
     time: TimePersistenceInstallationProfile,
     host_clock_id: HostClockId,
     time_client: TimeRolloverClient,
+    telemetry: TelemetryPersistenceInstallationProfile,
+    telemetry_client: Option<TelemetryRolloverClient>,
 }
 
 impl ChannelRolloverServices {
@@ -88,6 +98,8 @@ impl ChannelRolloverServices {
         time: TimePersistenceInstallationProfile,
         host_clock_id: HostClockId,
         time_client: TimeRolloverClient,
+        telemetry: TelemetryPersistenceInstallationProfile,
+        telemetry_client: Option<TelemetryRolloverClient>,
     ) -> Self {
         Self {
             channel_name: channel_name.into(),
@@ -95,6 +107,8 @@ impl ChannelRolloverServices {
             time,
             host_clock_id,
             time_client,
+            telemetry,
+            telemetry_client,
         }
     }
 }
@@ -195,16 +209,18 @@ struct ResumeRecordingExecution {
     verification: ResumeVerificationGroup,
     activation: Option<SafeStateGroupOperation>,
     reconciled_nodes: usize,
-    pending_time: Option<PendingTimeRollover>,
+    pending_time: Option<PendingEpochRollover>,
     reconciliation_deadline: Option<Instant>,
     completion_result: Option<OperationResult>,
 }
 
-struct PendingTimeRollover {
+struct PendingEpochRollover {
     evidence: crate::channel_resume::ResumeNodeEvidence,
     capture_durable: sensor_core::SequenceCursor,
     expected_time_stream: TimeStreamKey,
-    ticket: TimeRolloverTicket,
+    time_ticket: Option<TimeRolloverTicket>,
+    expected_telemetry_stream: Option<TelemetryStreamKey>,
+    telemetry_ticket: Option<TelemetryRolloverTicket>,
 }
 
 struct ConfigurationExecution {
@@ -1370,41 +1386,64 @@ where
                     return self.fail_stream_reconciliation();
                 }
                 if let Some(pending) = execution.pending_time.take() {
-                    match pending.ticket.try_result() {
-                        Ok(None) => {
-                            execution.pending_time = Some(pending);
-                        }
-                        Ok(Some(Ok(result))) if result.stream == pending.expected_time_stream => {
-                            let evidence = pending.evidence;
-                            if self
-                                .recording
-                                .replace_resume_stream(
-                                    evidence.identity.node_address,
-                                    ExpectedStreamState {
-                                        hardware_id: evidence.identity.hardware_id,
-                                        boot_epoch: evidence.identity.boot_epoch,
-                                        journal_capacity_samples: evidence
-                                            .capabilities
-                                            .journal_capacity_samples,
-                                    },
-                                    pending.capture_durable,
-                                    evidence.stream,
-                                )
-                                .is_err()
+                    let mut pending = pending;
+                    if let Some(ticket) = pending.time_ticket.as_ref() {
+                        match ticket.try_result() {
+                            Ok(None) => {}
+                            Ok(Some(Ok(result)))
+                                if result.stream == pending.expected_time_stream =>
                             {
+                                pending.time_ticket = None;
+                            }
+                            Ok(Some(Ok(_))) | Ok(Some(Err(_))) | Err(_) => {
                                 return self.fail_stream_reconciliation();
                             }
-                            let Some(node) = self.nodes.iter_mut().find(|node| {
-                                node.id.node_address == evidence.identity.node_address
-                            }) else {
-                                return self.fail_stream_reconciliation();
-                            };
-                            node.boot_epoch = evidence.identity.boot_epoch;
-                            execution.reconciled_nodes += 1;
                         }
-                        Ok(Some(Ok(_))) | Ok(Some(Err(_))) | Err(_) => {
+                    }
+                    if let Some(ticket) = pending.telemetry_ticket.as_ref() {
+                        match ticket.try_result() {
+                            Ok(None) => {}
+                            Ok(Some(Ok(result)))
+                                if Some(result.stream) == pending.expected_telemetry_stream =>
+                            {
+                                pending.telemetry_ticket = None;
+                            }
+                            Ok(Some(Ok(_))) | Ok(Some(Err(_))) | Err(_) => {
+                                return self.fail_stream_reconciliation();
+                            }
+                        }
+                    }
+                    if pending.time_ticket.is_none() && pending.telemetry_ticket.is_none() {
+                        let evidence = pending.evidence;
+                        if self
+                            .recording
+                            .replace_resume_stream(
+                                evidence.identity.node_address,
+                                ExpectedStreamState {
+                                    hardware_id: evidence.identity.hardware_id,
+                                    boot_epoch: evidence.identity.boot_epoch,
+                                    journal_capacity_samples: evidence
+                                        .capabilities
+                                        .journal_capacity_samples,
+                                },
+                                pending.capture_durable,
+                                evidence.stream,
+                            )
+                            .is_err()
+                        {
                             return self.fail_stream_reconciliation();
                         }
+                        let Some(node) = self
+                            .nodes
+                            .iter_mut()
+                            .find(|node| node.id.node_address == evidence.identity.node_address)
+                        else {
+                            return self.fail_stream_reconciliation();
+                        };
+                        node.boot_epoch = evidence.identity.boot_epoch;
+                        execution.reconciled_nodes += 1;
+                    } else {
+                        execution.pending_time = Some(pending);
                     }
                 } else if execution.reconciled_nodes == execution.verification.evidence().len() {
                     execution
@@ -1552,7 +1591,7 @@ where
         &self,
         node: ChannelControlNode,
         evidence: crate::channel_resume::ResumeNodeEvidence,
-    ) -> Result<Option<PendingTimeRollover>, ChannelMaintenanceError> {
+    ) -> Result<Option<PendingEpochRollover>, ChannelMaintenanceError> {
         let bootstrap = NodeBootstrapEvidence {
             id: node.id,
             identity: evidence.identity,
@@ -1611,7 +1650,43 @@ where
                 return Err(ChannelMaintenanceError::TimeRolloverDisconnected)
             }
         };
-        Ok(Some(PendingTimeRollover {
+        let telemetry = if evidence
+            .capabilities
+            .supports_service(sensor_protocol::ServiceId::Telemetry)
+        {
+            match self.rollover.telemetry_client.as_ref() {
+                Some(client) => {
+                    let previous = TelemetryStreamKey {
+                        hardware_id: evidence.identity.hardware_id,
+                        node_address: evidence.identity.node_address,
+                        boot_epoch: node.boot_epoch,
+                    };
+                    let next = self
+                        .rollover
+                        .telemetry
+                        .stream_spec(DiscoveredTelemetryStream {
+                            channel_name: self.rollover.channel_name.clone(),
+                            hardware_id: evidence.identity.hardware_id,
+                            node_address: evidence.identity.node_address,
+                            boot_epoch: evidence.identity.boot_epoch,
+                        })
+                        .map_err(ChannelMaintenanceError::TelemetryProfile)?;
+                    let expected = TelemetryStreamKey::from_config(next.config);
+                    let ticket = match client.try_request(previous, next) {
+                        Ok(ticket) => ticket,
+                        Err(TelemetryRolloverSubmitError::QueueFull) => return Ok(None),
+                        Err(TelemetryRolloverSubmitError::Disconnected) => {
+                            return Err(ChannelMaintenanceError::TelemetryRolloverDisconnected)
+                        }
+                    };
+                    (Some(expected), Some(ticket))
+                }
+                None => return Err(ChannelMaintenanceError::TelemetryRolloverDisconnected),
+            }
+        } else {
+            (None, None)
+        };
+        Ok(Some(PendingEpochRollover {
             evidence,
             capture_durable: capture.durable,
             expected_time_stream: TimeStreamKey {
@@ -1619,7 +1694,9 @@ where
                 node_address: evidence.identity.node_address,
                 boot_epoch: evidence.identity.boot_epoch,
             },
-            ticket,
+            time_ticket: Some(ticket),
+            expected_telemetry_stream: telemetry.0,
+            telemetry_ticket: telemetry.1,
         }))
     }
 }
@@ -1742,7 +1819,8 @@ where
     } else {
         Err(ControlledChannelShutdownError::MaintenanceNotQuiescent)
     };
-    let (_endpoint, _measurements, persistence, _time_observations) = recording.into_parts();
+    let (_endpoint, _measurements, persistence, _time_observations, _telemetry_observations) =
+        recording.into_parts();
     let persistence = match persistence.shutdown() {
         Ok(mut shutdown) => {
             if let Err(error) = shutdown.sink.finish_all_streams() {
@@ -1865,6 +1943,8 @@ pub enum ChannelMaintenanceError {
     CaptureRollover(CaptureRolloverError),
     TimeProfile(crate::time_profile::TimeProfileError),
     TimeRolloverDisconnected,
+    TelemetryProfile(crate::telemetry_profile::TelemetryProfileError),
+    TelemetryRolloverDisconnected,
 }
 
 impl fmt::Display for ChannelMaintenanceError {
@@ -1903,7 +1983,8 @@ where
         Ok(policy) => run_controlled_shutdown(recording, nodes, policy),
         Err(error) => (recording, Err(error)),
     };
-    let (_endpoint, _measurements, persistence, _time_observations) = recording.into_parts();
+    let (_endpoint, _measurements, persistence, _time_observations, _telemetry_observations) =
+        recording.into_parts();
     let persistence = match persistence.shutdown() {
         Ok(mut shutdown) => {
             if let Err(error) = shutdown.sink.finish_all_streams() {
@@ -1957,14 +2038,16 @@ where
 
     // Stop needs exclusive access to the endpoint while retaining the same
     // coordinator, persistence executor and Time submitter.
-    let (mut endpoint, measurements, persistence, time_observations) = recording.into_parts();
+    let (mut endpoint, measurements, persistence, time_observations, telemetry_observations) =
+        recording.into_parts();
     let stop_result = stop_recording_nodes(&mut endpoint, nodes, policy.node);
     let mut recording = ThreadedChannelRecordingLoop::new_with_time_observations(
         endpoint,
         measurements,
         persistence,
         time_observations,
-    );
+    )
+    .with_telemetry_observations(telemetry_observations);
     if let Err(error) = stop_result {
         remember_first_shutdown_error(&mut outcome, ControlledChannelShutdownError::Stop(error));
         return (recording, outcome);
@@ -2044,6 +2127,7 @@ pub fn compose_channel_recording<P, C, T>(
     policy: ChannelCompositionPolicy,
     work_id_seed: u64,
     time_observations: T,
+    telemetry_observations: Box<dyn TelemetryObservationSubmitter>,
 ) -> Result<ProductionChannelLoop<P, C, T>, ChannelWorkerError>
 where
     P: Read + Write,
@@ -2154,7 +2238,8 @@ where
         coordinator,
         executor,
         time_observations,
-    );
+    )
+    .with_telemetry_observations(telemetry_observations);
     if !takeover_required {
         return Ok(recording);
     }
@@ -2168,14 +2253,16 @@ where
     let (recording, takeover) =
         run_controlled_shutdown(recording, &activation_targets, policy.takeover);
     if let Err(source) = takeover {
-        let (_endpoint, _measurements, persistence, _time_observations) = recording.into_parts();
+        let (_endpoint, _measurements, persistence, _time_observations, _telemetry_observations) =
+            recording.into_parts();
         return Err(ChannelWorkerError::TakeoverDrain {
             source,
             shutdown: persistence.shutdown().err(),
         });
     }
 
-    let (mut endpoint, measurements, persistence, time_observations) = recording.into_parts();
+    let (mut endpoint, measurements, persistence, time_observations, telemetry_observations) =
+        recording.into_parts();
     if let Err(source) =
         start_recording_nodes(&mut endpoint, &activation_targets, policy.activation)
     {
@@ -2198,9 +2285,11 @@ where
         measurements,
         persistence,
         time_observations,
-    );
+    )
+    .with_telemetry_observations(telemetry_observations);
     if let Err(source) = recording.resume_scheduling() {
-        let (_endpoint, _measurements, persistence, _time_observations) = recording.into_parts();
+        let (_endpoint, _measurements, persistence, _time_observations, _telemetry_observations) =
+            recording.into_parts();
         return Err(ChannelWorkerError::TakeoverResume {
             source,
             shutdown: persistence.shutdown().err(),
@@ -2683,6 +2772,12 @@ mod tests {
                 )
                 .unwrap(),
                 time_sync_transaction_time: duration(4_000),
+                telemetry_schedule: crate::channel_runtime::TelemetryScheduleConfig::new(
+                    duration(600_000_000),
+                    duration(20_000),
+                    duration(5_000_000),
+                )
+                .unwrap(),
             },
         )
         .unwrap();
@@ -2775,6 +2870,7 @@ mod tests {
             },
             100,
             RejectingTimeObservationSubmitter,
+            Box::new(crate::telemetry_persistence::RejectingTelemetryObservationSubmitter),
         )
         .unwrap();
 

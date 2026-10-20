@@ -8,7 +8,8 @@ use sensor_protocol::{ObservabilityProfile, ObservedConfiguration, RuntimeState,
 
 use crate::channel_recovery::RecoveredNode;
 use crate::channel_runtime::{
-    ChannelRuntime, ChannelRuntimeError, NodeScheduleConfig, TimeSyncScheduleConfig,
+    ChannelRuntime, ChannelRuntimeError, NodeScheduleConfig, TelemetryScheduleConfig,
+    TimeSyncScheduleConfig,
 };
 use crate::channel_scheduler::{ChannelScheduler, ChannelSchedulerPolicy};
 use crate::discovery::{DiscoveredNode, DiscoveryInventory, REQUIRED_RECORDING_FEATURES};
@@ -32,6 +33,7 @@ pub struct ChannelStartupPolicy {
     pub time_sync_schedule: TimeSyncScheduleConfig,
     /// Conservative measured cost used only by admission control.
     pub time_sync_transaction_time: DurationMicros,
+    pub telemetry_schedule: TelemetryScheduleConfig,
 }
 
 impl ChannelStartupPolicy {
@@ -49,6 +51,9 @@ impl ChannelStartupPolicy {
         self.time_sync_schedule
             .validate()
             .map_err(ChannelStartupError::Runtime)?;
+        self.telemetry_schedule
+            .validate()
+            .map_err(ChannelStartupError::Runtime)?;
         Ok(self)
     }
 }
@@ -64,6 +69,7 @@ pub struct NodeStartupPlan {
     pub time_sync: TimeSyncScheduleConfig,
     pub configuration: ObservedConfiguration,
     pub output_rate_mask: u16,
+    pub telemetry: Option<TelemetryScheduleConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -292,6 +298,23 @@ pub fn assemble_recording_coordinator(
                 first_deadline,
             )
             .map_err(ChannelAssemblyError::Coordinator)?;
+        if let Some(telemetry) = planned.telemetry {
+            let telemetry_phase = telemetry
+                .estimated_slot
+                .get()
+                .checked_mul(u64::try_from(index).map_err(|_| ChannelAssemblyError::TimeOverflow)?)
+                .and_then(|value| value.checked_add(telemetry.interval.get()))
+                .ok_or(ChannelAssemblyError::TimeOverflow)?;
+            let first_telemetry = now
+                .checked_add(
+                    DurationMicros::new(telemetry_phase)
+                        .map_err(|_| ChannelAssemblyError::TimeOverflow)?,
+                )
+                .ok_or(ChannelAssemblyError::TimeOverflow)?;
+            coordinator
+                .configure_telemetry(planned.discovered.node_address, telemetry, first_telemetry)
+                .map_err(ChannelAssemblyError::Coordinator)?;
+        }
     }
     Ok(coordinator)
 }
@@ -367,6 +390,9 @@ fn node_plan(
         time_sync: policy.time_sync_schedule,
         configuration,
         output_rate_mask: capabilities.output_rate_mask,
+        telemetry: capabilities
+            .supports_service(ServiceId::Telemetry)
+            .then_some(policy.telemetry_schedule),
     })
 }
 
@@ -385,7 +411,10 @@ fn evaluate_plan_admission(
                 transaction_time: policy.time_sync_transaction_time,
                 interval: policy.time_sync_schedule.interval,
             }),
-            health: None,
+            health: node.telemetry.map(|telemetry| PeriodicTraffic {
+                transaction_time: telemetry.estimated_slot,
+                interval: telemetry.interval,
+            }),
         })
         .collect::<Vec<_>>();
     admission
@@ -471,6 +500,12 @@ mod tests {
             )
             .unwrap(),
             time_sync_transaction_time: duration(4_000),
+            telemetry_schedule: TelemetryScheduleConfig::new(
+                duration(600_000_000),
+                duration(20_000),
+                duration(5_000_000),
+            )
+            .unwrap(),
         }
     }
 
@@ -516,7 +551,8 @@ mod tests {
                     | ServiceId::Measurement.capability_bit()
                     | ServiceId::Configuration.capability_bit()
                     | ServiceId::Lifecycle.capability_bit()
-                    | ServiceId::Time.capability_bit(),
+                    | ServiceId::Time.capability_bit()
+                    | ServiceId::Telemetry.capability_bit(),
                 feature_flags: REQUIRED_RECORDING_FEATURES,
                 max_payload_bytes: MAX_PAYLOAD_BYTES as u16,
                 journal_capacity_samples: 2048,
@@ -575,7 +611,7 @@ mod tests {
                 .unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].nodes().len(), 4);
-        assert_eq!(plans[0].admission().required_utilization_ppm, 677_100);
+        assert_eq!(plans[0].admission().required_utilization_ppm, 677_236);
         assert!(plans[0].admission().accepted());
         assert!(plans[0]
             .nodes()
@@ -587,6 +623,7 @@ mod tests {
                 && node.requirements.board_revision == 2
                 && node.requirements.required_output_rate == Some(OutputRateCode::Hz125)
                 && node.requirements.required_services & ServiceId::Time.capability_bit() != 0
+                && node.telemetry.is_some()
         }));
     }
 
@@ -698,6 +735,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(coordinator.runtime().node_count(), 2);
+        assert_eq!(coordinator.runtime().telemetry_schedule_count(), 2);
         for planned in plans[0].nodes() {
             assert_eq!(
                 coordinator

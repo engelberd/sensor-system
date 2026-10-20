@@ -13,6 +13,7 @@ use crate::installation_topology::{
     ChannelInstallationProfile, InstallationTopologyProfile, NodeInstallationProfile,
     TransportBinding,
 };
+use crate::telemetry_profile::DiscoveredTelemetryStream;
 use crate::time_profile::DiscoveredTimeStream;
 
 pub const REQUIRED_RECORDING_FEATURES: u64 = FEATURE_SAMPLE_JOURNAL | FEATURE_DRDY_TIMESTAMPS;
@@ -329,6 +330,17 @@ impl DiscoveredNode {
         }
     }
 
+    pub fn telemetry_stream(&self) -> Option<DiscoveredTelemetryStream> {
+        self.capabilities
+            .supports_service(sensor_protocol::ServiceId::Telemetry)
+            .then(|| DiscoveredTelemetryStream {
+                channel_name: self.channel_name.clone(),
+                hardware_id: self.identity.hardware_id,
+                node_address: self.node_address,
+                boot_epoch: self.identity.boot_epoch,
+            })
+    }
+
     pub const fn capture_stream(
         &self,
         recovered_cursor: SequenceCursor,
@@ -361,6 +373,13 @@ impl DiscoveryInventory {
 
     pub fn time_streams(&self) -> Vec<DiscoveredTimeStream> {
         self.nodes.iter().map(DiscoveredNode::time_stream).collect()
+    }
+
+    pub fn telemetry_streams(&self) -> Vec<DiscoveredTelemetryStream> {
+        self.nodes
+            .iter()
+            .filter_map(DiscoveredNode::telemetry_stream)
+            .collect()
     }
 }
 

@@ -32,7 +32,8 @@ constexpr ProtocolV3::NodeCapabilities make_node_capabilities(
         ProtocolV3::service_capability_bit(ProtocolV3::ServiceId::Time) |
         ProtocolV3::service_capability_bit(ProtocolV3::ServiceId::Configuration) |
         ProtocolV3::service_capability_bit(ProtocolV3::ServiceId::Lifecycle) |
-        ProtocolV3::service_capability_bit(ProtocolV3::ServiceId::Diagnostics);
+        ProtocolV3::service_capability_bit(ProtocolV3::ServiceId::Diagnostics) |
+        ProtocolV3::service_capability_bit(ProtocolV3::ServiceId::Telemetry);
     capabilities.feature_flags = ProtocolV3::kFeatureSampleJournal |
         ProtocolV3::kFeatureAtomicConfig;
     if (drdy_timestamps_enabled) {

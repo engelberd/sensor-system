@@ -25,9 +25,11 @@
 #include "observer/usb_observer_endpoint.h"
 #include "processing/sample_sink_fanout.h"
 #include "protocol_v3/identity.h"
+#include "protocol_v3/telemetry.h"
 #include "runtime/core0_acquisition_loop.h"
 #include "runtime/core_progress_watchdog.h"
 #include "runtime/node_v2_composition.h"
+#include "runtime/telemetry_runtime.h"
 #include "storage/acquisition_buffer.h"
 #include "transport/rs485_port.h"
 
@@ -206,6 +208,11 @@ int main() {
         &diagnostics,
         &data_plane.sink());
     const SensorStatus sensor_status = acquisition.init(config);
+    static telemetry::SnapshotCache telemetry_cache;
+    static runtime::TelemetryRuntime<Acquisition> telemetry_runtime(
+        acquisition, driver, telemetry_cache, time_us_64);
+    static ProtocolV3::TelemetryServiceHandler<telemetry::SnapshotCache>
+        telemetry_service(telemetry_cache);
 
     static Rs485Port rs485_port(
         RS485_UART,
@@ -248,7 +255,8 @@ int main() {
         {node_v2::Profile::kIngressDrainBudgetPerPoll},
         &boot_control,
         &boot_control,
-        &diagnostics_service);
+        &diagnostics_service,
+        &telemetry_service);
 
     const bool protocol_ready =
         rs485_ready && composition.configuration_valid();
@@ -302,6 +310,7 @@ int main() {
             watchdog_update();
         }
         composition.poll_core0();
+        telemetry_runtime.poll();
         if (boot_control.confirmation_required() &&
             now_us >= trial_deadline_us) {
             restart_for_trial_rollback();

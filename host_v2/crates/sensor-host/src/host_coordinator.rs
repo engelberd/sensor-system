@@ -33,6 +33,16 @@ use crate::operations_audit::{OperationsAuditError, OperationsAuditWal};
 use crate::storage_health::{
     StorageHealthObservation, StorageHealthProbe, StorageHealthProbeError,
 };
+use crate::telemetry_persistence::{
+    RejectingTelemetryObservationSubmitter, TelemetryPersistenceExecutorError,
+};
+use crate::telemetry_profile::TelemetryPersistenceInstallationProfile;
+use crate::telemetry_rollover::{
+    telemetry_rollover_mailbox, TelemetryRolloverMailboxError, TelemetryRolloverServer,
+};
+use crate::telemetry_runtime::{
+    TelemetryRuntime, TelemetryRuntimeError, TelemetryRuntimeHealthError,
+};
 use crate::time_health::TimePersistenceHealth;
 use crate::time_persistence::{
     TimeObservationQueueSender, TimePersistenceExecutorError, TimePersistenceRecoveryDisposition,
@@ -178,6 +188,8 @@ where
     channel_operations: Vec<ChannelOperationsHandle>,
     startup_channel_faults: Vec<StartupChannelFault>,
     time: TimeRuntime,
+    telemetry: Option<TelemetryRuntime>,
+    telemetry_rollovers: Option<TelemetryRolloverServer>,
     time_rollovers: TimeRolloverServer,
     lifecycle: HostCoordinatorLifecycle,
     shared_storage_fault: Option<SharedStorageFault>,
@@ -289,6 +301,15 @@ where
                 stop_request_error,
             });
         }
+        if let Some(telemetry) = self.telemetry.as_mut() {
+            if let Err(source) = telemetry.poll_health() {
+                let stop_request_error = self.request_stop().err();
+                return Err(HostSupervisionError::TelemetryHealth {
+                    source,
+                    stop_request_error,
+                });
+            }
+        }
 
         let mut action = match self.time.health().state() {
             crate::time_health::TimePersistenceHealthState::RecoveryRequired => {
@@ -319,6 +340,19 @@ where
                 let succeeded = result.is_ok();
                 let _ = completion.complete(result);
                 action = HostSupervisionAction::TimeRolloverCompleted { succeeded };
+            }
+        }
+        if let (Some(telemetry), Some(rollovers)) =
+            (self.telemetry.as_mut(), self.telemetry_rollovers.as_ref())
+        {
+            if let Ok(Some(request)) = rollovers.try_receive() {
+                let (previous, next, completion) = request.into_parts();
+                let result = telemetry.rollover_stream(previous, next);
+                let succeeded = result.is_ok();
+                let _ = completion.complete(result);
+                if action == HostSupervisionAction::Continue {
+                    action = HostSupervisionAction::TelemetryRolloverCompleted { succeeded };
+                }
             }
         }
         Ok(HostSupervisionReport {
@@ -384,10 +418,12 @@ where
     pub fn shutdown(self) -> HostCoordinatorShutdown<T::StepError, T::Shutdown> {
         let stop_request = self.channels.request_stop_all();
         let channels = self.channels.join_all();
+        let telemetry = self.telemetry.map(TelemetryRuntime::shutdown);
         let time = self.time.shutdown();
         HostCoordinatorShutdown {
             stop_request,
             channels,
+            telemetry,
             time,
         }
     }
@@ -396,6 +432,9 @@ where
 pub struct HostCoordinatorShutdown<E, S> {
     pub stop_request: Result<(), ChannelSupervisorError>,
     pub channels: Vec<ChannelJoinResult<E, S>>,
+    pub telemetry: Option<
+        Result<crate::telemetry_repository::TelemetryRepository, TelemetryPersistenceExecutorError>,
+    >,
     pub time: Result<TimePersistenceShutdown, TimePersistenceExecutorError>,
 }
 
@@ -408,6 +447,7 @@ pub fn start_host_runtime<P, C>(
     blueprint: HostStartupBlueprint<P, C>,
     capture: &CaptureInstallationProfile,
     time_profile: &TimePersistenceInstallationProfile,
+    telemetry_profile: &TelemetryPersistenceInstallationProfile,
     policies: HostChannelRuntimePolicies,
     work_id_seed: u64,
 ) -> Result<HostCoordinatorRuntime<ProductionHostChannelTask<P, C>>, HostRuntimeStartError>
@@ -432,14 +472,49 @@ where
         .map_err(HostRuntimeStartError::MaintenancePolicy)?;
 
     let (inventory, channels, time_config) = blueprint.into_parts();
+    let telemetry_config = telemetry_profile
+        .runtime_config(inventory.telemetry_streams())
+        .map_err(HostRuntimeStartError::TelemetryProfile)?;
     let time = time_config.start().map_err(HostRuntimeStartError::Time)?;
+    let telemetry = match telemetry_config {
+        Some(config) => match config.start() {
+            Ok(runtime) => Some(runtime),
+            Err(source) => {
+                let time_shutdown_error = time.shutdown().err();
+                return Err(HostRuntimeStartError::Telemetry {
+                    source,
+                    time_shutdown_error,
+                });
+            }
+        },
+        None => None,
+    };
+    let (telemetry_rollover, telemetry_rollovers) = if telemetry.is_some() {
+        match telemetry_rollover_mailbox(inventory.nodes().len()) {
+            Ok((client, server)) => (Some(client), Some(server)),
+            Err(source) => {
+                let telemetry_shutdown_error =
+                    telemetry.and_then(|runtime| runtime.shutdown().err());
+                let time_shutdown_error = time.shutdown().err();
+                return Err(HostRuntimeStartError::TelemetryRolloverMailbox {
+                    source,
+                    telemetry_shutdown_error,
+                    time_shutdown_error,
+                });
+            }
+        }
+    } else {
+        (None, None)
+    };
     let host_clock_id = time.host_clock_id();
     let (time_rollover, time_rollovers) = match time_rollover_mailbox(inventory.nodes().len()) {
         Ok(mailbox) => mailbox,
         Err(source) => {
+            let telemetry_shutdown_error = telemetry.and_then(|runtime| runtime.shutdown().err());
             let time_shutdown_error = time.shutdown().err();
             return Err(HostRuntimeStartError::TimeRolloverMailbox {
                 source,
+                telemetry_shutdown_error,
                 time_shutdown_error,
             });
         }
@@ -456,7 +531,7 @@ where
         let time_observations = match time.submitter() {
             Ok(value) => value,
             Err(source) => {
-                let cleanup = cleanup_running_channels(running, time);
+                let cleanup = cleanup_running_channels(running, time, telemetry);
                 return Err(HostRuntimeStartError::TimeSubmitter {
                     channel_id,
                     source,
@@ -464,12 +539,29 @@ where
                 });
             }
         };
+        let telemetry_observations: Box<
+            dyn crate::telemetry_persistence::TelemetryObservationSubmitter,
+        > = match telemetry.as_ref() {
+            Some(runtime) => match runtime.submitter() {
+                Ok(value) => Box::new(value),
+                Err(source) => {
+                    drop(time_observations);
+                    let cleanup = cleanup_running_channels(running, time, telemetry);
+                    return Err(HostRuntimeStartError::TelemetrySubmitter {
+                        channel_id,
+                        source,
+                        cleanup,
+                    });
+                }
+            },
+            None => Box::new(RejectingTelemetryObservationSubmitter),
+        };
         let (startup, bootstrapped) = planned.into_parts();
         let operations_audit = match OperationsAuditWal::open(capture.root(), channel_id) {
             Ok(value) => value,
             Err(source) => {
                 drop(time_observations);
-                let cleanup = cleanup_running_channels(running, time);
+                let cleanup = cleanup_running_channels(running, time, telemetry);
                 return Err(HostRuntimeStartError::OperationsAudit {
                     channel_id,
                     source,
@@ -481,7 +573,7 @@ where
             Some(value) => value,
             None => {
                 drop(time_observations);
-                let cleanup = cleanup_running_channels(running, time);
+                let cleanup = cleanup_running_channels(running, time, telemetry);
                 return Err(HostRuntimeStartError::WorkIdSeedOverflow {
                     channel_id,
                     cleanup,
@@ -499,6 +591,7 @@ where
             },
             channel_seed,
             time_observations,
+            telemetry_observations,
         ) {
             Ok(value) => value,
             Err(
@@ -513,7 +606,7 @@ where
                 continue;
             }
             Err(source) => {
-                let cleanup = cleanup_running_channels(running, time);
+                let cleanup = cleanup_running_channels(running, time, telemetry);
                 return Err(HostRuntimeStartError::Channel {
                     channel_id,
                     source,
@@ -539,13 +632,15 @@ where
                 time_profile.clone(),
                 host_clock_id,
                 time_rollover.clone(),
+                telemetry_profile.clone(),
+                telemetry_rollover.clone(),
             ),
         )
         .expect("channel task policies were validated before channel composition");
         let metrics_reader = task.metrics_reader();
         let node_readers = task.node_metrics_readers();
         if let Err(source) = running.add(ChannelTaskSpec::new(channel_id, channel_name, task)) {
-            let cleanup = cleanup_running_channels(running, time);
+            let cleanup = cleanup_running_channels(running, time, telemetry);
             return Err(HostRuntimeStartError::Supervisor {
                 source,
                 time_shutdown_error: cleanup.time_shutdown_error,
@@ -557,9 +652,11 @@ where
     }
 
     if running.is_empty() {
+        let telemetry_shutdown_error = telemetry.and_then(|runtime| runtime.shutdown().err());
         let time_shutdown_error = time.shutdown().err();
         return Err(HostRuntimeStartError::NoRunnableChannels {
             faults: startup_channel_faults,
+            telemetry_shutdown_error,
             time_shutdown_error,
         });
     }
@@ -572,6 +669,8 @@ where
         channel_operations,
         startup_channel_faults,
         time,
+        telemetry,
+        telemetry_rollovers,
         time_rollovers,
         lifecycle: HostCoordinatorLifecycle::Running,
         shared_storage_fault: None,
@@ -590,6 +689,7 @@ pub enum HostSupervisionAction {
     Continue,
     TimeRecoveryStarted(TimePersistenceRecoveryDisposition),
     TimeRolloverCompleted { succeeded: bool },
+    TelemetryRolloverCompleted { succeeded: bool },
     StopAlreadyRequested,
 }
 
@@ -601,6 +701,10 @@ pub struct HostSupervisionReport {
 
 #[derive(Debug)]
 pub enum HostSupervisionError {
+    TelemetryHealth {
+        source: TelemetryRuntimeHealthError,
+        stop_request_error: Option<ChannelSupervisorError>,
+    },
     TimeHealth {
         source: TimeRuntimeHealthError,
         stop_request_error: Option<ChannelSupervisorError>,
@@ -631,6 +735,7 @@ impl fmt::Display for HostSupervisionError {
 impl std::error::Error for HostSupervisionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::TelemetryHealth { source, .. } => Some(source),
             Self::TimeHealth { source, .. } => Some(source),
             Self::TimeRecovery { source, .. } => Some(source),
             Self::StorageProbe { source, .. } => Some(source),
@@ -644,11 +749,13 @@ pub struct HostStartupCleanup {
     pub channel_shutdown_failures: usize,
     pub capture_shutdown_failures: usize,
     pub time_shutdown_error: Option<TimePersistenceExecutorError>,
+    pub telemetry_shutdown_error: Option<TelemetryPersistenceExecutorError>,
 }
 
 fn cleanup_running_channels<P, C>(
     channels: ChannelSupervisorSet<ProductionHostChannelTask<P, C>>,
     time: TimeRuntime,
+    telemetry: Option<TelemetryRuntime>,
 ) -> HostStartupCleanup
 where
     P: Read + Write + Send + 'static,
@@ -666,6 +773,7 @@ where
             Err(_) => cleanup.channel_shutdown_failures += 1,
         }
     }
+    cleanup.telemetry_shutdown_error = telemetry.and_then(|runtime| runtime.shutdown().err());
     cleanup.time_shutdown_error = time.shutdown().err();
     cleanup
 }
@@ -677,13 +785,29 @@ pub enum HostRuntimeStartError {
     OperationsPolicy(OperationsError),
     MaintenancePolicy(ChannelMaintenanceError),
     Time(TimeRuntimeError),
+    TelemetryProfile(crate::telemetry_profile::TelemetryProfileError),
+    Telemetry {
+        source: TelemetryRuntimeError,
+        time_shutdown_error: Option<TimePersistenceExecutorError>,
+    },
     TimeRolloverMailbox {
         source: TimeRolloverMailboxError,
+        telemetry_shutdown_error: Option<TelemetryPersistenceExecutorError>,
+        time_shutdown_error: Option<TimePersistenceExecutorError>,
+    },
+    TelemetryRolloverMailbox {
+        source: TelemetryRolloverMailboxError,
+        telemetry_shutdown_error: Option<TelemetryPersistenceExecutorError>,
         time_shutdown_error: Option<TimePersistenceExecutorError>,
     },
     TimeSubmitter {
         channel_id: u8,
         source: TimePersistenceExecutorError,
+        cleanup: HostStartupCleanup,
+    },
+    TelemetrySubmitter {
+        channel_id: u8,
+        source: TelemetryPersistenceExecutorError,
         cleanup: HostStartupCleanup,
     },
     WorkIdSeedOverflow {
@@ -702,6 +826,7 @@ pub enum HostRuntimeStartError {
     },
     NoRunnableChannels {
         faults: Vec<StartupChannelFault>,
+        telemetry_shutdown_error: Option<TelemetryPersistenceExecutorError>,
         time_shutdown_error: Option<TimePersistenceExecutorError>,
     },
     Supervisor {
@@ -870,7 +995,8 @@ mod tests {
                 | ServiceId::Measurement.capability_bit()
                 | ServiceId::Lifecycle.capability_bit()
                 | ServiceId::Configuration.capability_bit()
-                | ServiceId::Time.capability_bit(),
+                | ServiceId::Time.capability_bit()
+                | ServiceId::Telemetry.capability_bit(),
             feature_flags: REQUIRED_RECORDING_FEATURES,
             max_payload_bytes: MAX_PAYLOAD_BYTES as u16,
             journal_capacity_samples: 2048,
@@ -950,6 +1076,12 @@ mod tests {
             )
             .unwrap(),
             time_sync_transaction_time: duration(4_000),
+            telemetry_schedule: crate::channel_runtime::TelemetryScheduleConfig::new(
+                duration(600_000_000),
+                duration(20_000),
+                duration(5_000_000),
+            )
+            .unwrap(),
         }
     }
 
@@ -1087,6 +1219,12 @@ mod tests {
             blueprint,
             &capture,
             &time_profile,
+            &TelemetryPersistenceInstallationProfile::new(
+                temp.0.join("telemetry"),
+                8,
+                "telemetry-storage",
+            )
+            .unwrap(),
             HostChannelRuntimePolicies {
                 activation: RecordingActivationPolicy {
                     node_deadline: Duration::from_secs(1),
@@ -1517,6 +1655,17 @@ mod tests {
             shutdown.time.as_ref().unwrap().repository.stream_count(),
             usize::from(channel_count) + usize::from(channel_count == 1),
             "all channels in the matrix case must share one global Time repository"
+        );
+        assert_eq!(
+            shutdown
+                .telemetry
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .stream_count(),
+            usize::from(channel_count) + usize::from(channel_count == 1),
+            "Telemetry must roll to the restarted node epoch before recording resumes"
         );
         assert!(crate::host_process::summarize_shutdown(shutdown).clean());
     }

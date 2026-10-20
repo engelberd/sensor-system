@@ -1149,3 +1149,48 @@ końcowej odpowiedzi AssignAddress. Wersja 0.5.9 uznaje ponowne przypisanie tego
 samego, już zapisanego adresu za idempotentny sukces i po wysłaniu odpowiedzi
 wykonuje wymagany restart. Chroni to commissioning po restarcie procesu hosta
 lub utracie odpowiedzi na przewodzie.
+
+### Telemetry — temperatura ADXL355
+
+Pion jest oznaczony jako firmware **0.5.10**; 0.5.9 pozostaje ostatnią wersją
+bez usługi Telemetry.
+
+Przyjęty kontrakt opisuje
+[TELEMETRY-SERVICE.md](../protocol/TELEMETRY-SERVICE.md). Temperatura jest
+rzadkim, osobnym strumieniem i nie powiększa próbek XYZ. Core 0 docelowo
+odświeża statyczny cache, a protocol 5 zwraca gotowy snapshot o stałym koszcie;
+host odpytuje node co 5–10 minut i rozkłada zapytania w czasie.
+
+Sterownik ADXL355 został utwardzony przed włączeniem usługi: jawnie włącza i
+weryfikuje blok temperatury, odrzuca niefizyczne kody oraz wymaga dwóch
+zgodnych odczytów. Test jednostkowy obejmuje dekodowanie, punkt 25 °C, skrajne
+wartości SPI i kryterium spójności. Pełny zestaw testów logiki node przechodzi.
+
+Stan pionu:
+
+1. **Gotowe:** statyczny snapshot cache i okresowy wykonawca na core 0. Błąd
+   kolejnego odczytu nie zastępuje ostatniej poprawnej wartości.
+2. **Gotowe:** codec oraz handler `Telemetry Service` po obu stronach protocol
+   5. Odpowiedź ma stałe 14 B i nie wykonuje SPI w obsłudze RS485.
+3. **Gotowe i podłączone w production:** kandydat Telemetry korzysta z tego samego
+   arbitra co Measurement i TimeSync. Measurement pracuje pomiędzy terminami,
+   a timeout lub `Busy` zwalnia kanał i planuje odłożoną próbę. Harmonogram
+   powstaje wyłącznie dla node deklarujących usługę Telemetry, jest fazowany
+   per node, a jego koszt wchodzi do admission control kanału.
+4. **Gotowy format, routing, bounded worker, recovery i production runtime:** osobny Telemetry WAL
+   zapisuje 16 B na obserwację (`device_time_us`, surowy kod temperatury,
+   CRC), rozdziela epoki startu node, deduplikuje ten sam cache i ucina
+   wyłącznie niepełny ogon.
+   Repository nie miesza strumieni node, idempotentnie tworzy kolejną epokę,
+   a osobny storage worker przyjmuje dane przez ograniczoną kolejkę, raportuje
+   durable receipt i opróżnia bounded completions podczas shutdownu. Globalny
+   runtime uruchamia go przed workerami kanałów, nadzoruje błędy zapisu i
+   zamyka po kanałach. Restart node wykonuje idempotentny rollover Telemetry na
+   wyłącznym wątku storage przed wznowieniem schedulera.
+5. **Gotowa konfiguracja interwału:** `runtime_v2.telemetry_interval_seconds`
+   ma produktową wartość domyślną 600 s i może być nadpisane przez profil
+   instalacji. Slot wire i retry pozostają wewnętrzną polityką. Pierwszy odczyt
+   następuje po pełnym interwale i jest przesunięty o jeden slot na kolejny node.
+   Pozostało pokazanie wartości temperatury w status/API i dashboardzie,
+   eksport obok okna analitycznego oraz HIL potwierdzający brak wpływu na
+   `samples/s`.

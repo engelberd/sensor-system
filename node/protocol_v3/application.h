@@ -13,6 +13,7 @@ enum class ServiceId : uint8_t {
     Lifecycle = 6,
     Diagnostics = 7,
     Commissioning = 8,
+    Telemetry = 9,
 };
 
 constexpr uint32_t service_capability_bit(ServiceId service) {

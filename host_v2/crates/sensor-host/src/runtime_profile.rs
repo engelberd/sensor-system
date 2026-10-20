@@ -9,6 +9,7 @@ use crate::channel_activation::{
 };
 use crate::channel_admission::AdmissionPolicy;
 use crate::channel_agent::ChannelPolicy;
+use crate::channel_runtime::{ChannelRuntimeError, TelemetryScheduleConfig};
 use crate::channel_scheduler::ChannelSchedulerPolicy;
 use crate::channel_startup::{ChannelStartupError, ChannelStartupPolicy, RecordingAssemblyPolicy};
 use crate::channel_worker::{
@@ -23,7 +24,7 @@ use crate::safe_state::{SafeStatePolicy, SafeStateWirePolicy};
 use crate::time_profile::TimeSyncInstallationPolicy;
 use crate::transaction::DurationMicros;
 
-const RUNTIME_V2_KEYS: [&str; 41] = [
+const RUNTIME_V2_KEYS: [&str; 42] = [
     "supervision_interval_ms",
     "status_interval_ms",
     "metrics_interval_ms",
@@ -49,6 +50,7 @@ const RUNTIME_V2_KEYS: [&str; 41] = [
     "max_slot_ms",
     "first_time_sync_delay_ms",
     "time_sync_phase_step_ms",
+    "telemetry_interval_seconds",
     "activation_node_deadline_ms",
     "shutdown_barrier_deadline_ms",
     "shutdown_node_deadline_ms",
@@ -67,6 +69,9 @@ const RUNTIME_V2_KEYS: [&str; 41] = [
     "resume_node_deadline_ms",
 ];
 
+const TELEMETRY_ESTIMATED_SLOT_US: u64 = 20_000;
+const TELEMETRY_RETRY_DELAY_US: u64 = 5_000_000;
+
 /// Tunable process policy for host v2.
 ///
 /// This profile owns timing and bounded-capacity choices only. Physical
@@ -81,6 +86,7 @@ pub struct HostRuntimeInstallationProfile {
     startup_base: ChannelStartupBasePolicy,
     recording_activation: RecordingActivationPolicy,
     recording_assembly: RecordingAssemblyPolicy,
+    telemetry_schedule: TelemetryScheduleConfig,
     controlled_shutdown: ControlledChannelShutdownPolicy,
     operations: ChannelOperationsPolicy,
     maintenance: ChannelMaintenancePolicy,
@@ -161,6 +167,14 @@ impl HostRuntimeInstallationProfile {
             .validate()
             .map_err(RuntimeProfileError::Activation)?;
 
+        let telemetry_schedule = TelemetryScheduleConfig::new(
+            duration_micros_from_seconds(runtime, "telemetry_interval_seconds")?,
+            DurationMicros::new(TELEMETRY_ESTIMATED_SLOT_US)
+                .expect("fixed telemetry slot is nonzero"),
+            DurationMicros::new(TELEMETRY_RETRY_DELAY_US)
+                .expect("fixed telemetry retry is nonzero"),
+        )
+        .map_err(RuntimeProfileError::TelemetrySchedule)?;
         let recording_assembly = RecordingAssemblyPolicy {
             scheduler: ChannelSchedulerPolicy {
                 overflow_guard: duration_micros_from_ms(runtime, "overflow_guard_ms")?,
@@ -222,6 +236,7 @@ impl HostRuntimeInstallationProfile {
             startup_base,
             recording_activation,
             recording_assembly,
+            telemetry_schedule,
             controlled_shutdown,
             operations,
             maintenance,
@@ -260,6 +275,7 @@ impl HostRuntimeInstallationProfile {
             offline_probe_interval: self.startup_base.offline_probe_interval,
             time_sync_schedule: time_sync.schedule(),
             time_sync_transaction_time: self.startup_base.time_sync_transaction_time,
+            telemetry_schedule: self.telemetry_schedule,
         };
         policy.validate().map_err(RuntimeProfileError::Startup)
     }
@@ -270,6 +286,10 @@ impl HostRuntimeInstallationProfile {
 
     pub const fn recording_assembly(&self) -> RecordingAssemblyPolicy {
         self.recording_assembly
+    }
+
+    pub const fn telemetry_schedule(&self) -> TelemetryScheduleConfig {
+        self.telemetry_schedule
     }
 
     pub const fn controlled_shutdown(&self) -> ControlledChannelShutdownPolicy {
@@ -364,6 +384,16 @@ fn duration_micros_from_ms(
     DurationMicros::new(micros).map_err(|_| RuntimeProfileError::ZeroField(key))
 }
 
+fn duration_micros_from_seconds(
+    object: &Map<String, Value>,
+    key: &'static str,
+) -> Result<DurationMicros, RuntimeProfileError> {
+    let micros = nonzero_unsigned_field(object, key)?
+        .checked_mul(1_000_000)
+        .ok_or(RuntimeProfileError::FieldOverflow(key))?;
+    DurationMicros::new(micros).map_err(|_| RuntimeProfileError::ZeroField(key))
+}
+
 fn duration_from_ms(
     object: &Map<String, Value>,
     key: &'static str,
@@ -391,6 +421,7 @@ pub enum RuntimeProfileError {
     InvalidRelation(&'static str),
     SerialBootstrap(SerialChannelBootstrapError),
     Startup(ChannelStartupError),
+    TelemetrySchedule(ChannelRuntimeError),
     Activation(RecordingActivationError),
     ControlledShutdown(ControlledChannelShutdownError),
     Operations(crate::operations::OperationsError),
@@ -443,6 +474,9 @@ mod tests {
             Duration::from_secs(5)
         );
         assert_eq!(profile.maintenance().wire.action_deadline.get(), 1_000_000);
+        assert_eq!(profile.telemetry_schedule().interval.get(), 600_000_000);
+        assert_eq!(profile.telemetry_schedule().estimated_slot.get(), 20_000);
+        assert_eq!(profile.telemetry_schedule().retry_delay.get(), 5_000_000);
     }
 
     #[test]
@@ -469,5 +503,17 @@ mod tests {
                 ChannelStartupError::TransactionExceedsSlot
             ))
         ));
+
+        let mut document = valid_document();
+        document["runtime_v2"]["telemetry_interval_seconds"] = Value::from(0);
+        assert!(matches!(
+            HostRuntimeInstallationProfile::from_document(&document),
+            Err(RuntimeProfileError::ZeroField("telemetry_interval_seconds"))
+        ));
+
+        let mut document = valid_document();
+        document["runtime_v2"]["telemetry_interval_seconds"] = Value::from(300);
+        let profile = HostRuntimeInstallationProfile::from_document(&document).unwrap();
+        assert_eq!(profile.telemetry_schedule().interval.get(), 300_000_000);
     }
 }

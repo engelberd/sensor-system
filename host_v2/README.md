@@ -131,9 +131,15 @@ skonfigurowany port są zajęte. Kontrakt raportu opisuje
 
 Parametry wykonania są zebrane w `runtime_v2` w `host/configs/common.json`.
 Obejmują timeouty wire, quarantine, admission, rozmiar chunku, retry, fazowanie
-TimeSync i deadline shutdownu. Są walidowane jako jeden kontrakt. Wartości
-kosztów transmisji są konserwatywnym punktem startowym i należy je dostroić z
-pomiarów HIL 1/4/8 kanałów, bez zmiany logiki domenowej.
+TimeSync, `telemetry_interval_seconds` i deadline shutdownu. Są walidowane jako
+jeden kontrakt. Wartości kosztów transmisji są konserwatywnym punktem startowym
+i należy je dostroić z pomiarów HIL 1/4/8 kanałów, bez zmiany logiki domenowej.
+
+Wolna telemetria jest zapisywana kompaktowo pod
+`<storage.root_dir>/.telemetry/<channel>/<hardware_id>/boot-...wal`. Ścieżka,
+pojemność kolejki i worker są wewnętrzną polityką hosta; operator ustawia tylko
+`runtime_v2.telemetry_interval_seconds`. Starszy node bez capability Telemetry
+nie dostaje zapytań i nie blokuje startu kanału.
 
 Proces wypisuje konfigurowalne, okresowe snapshoty per kanał. Liczniki RS485,
 retry, TimeSync i backpressure oraz maksimum czasu kroku są atomowe i nie

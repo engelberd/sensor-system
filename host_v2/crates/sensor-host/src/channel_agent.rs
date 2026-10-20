@@ -3,11 +3,12 @@ use std::collections::VecDeque;
 
 use sensor_core::{BootEpoch, ClockObservation, ClockObservationError};
 use sensor_protocol::{
-    decode_stream_state_success, decode_time_response, ConfigOperationRequest, Frame,
-    MeasurementConfiguration, MeasurementWireError, NodeCapabilities, NodeIdentity,
-    ObservabilityProfile, ResponseStatus, RuntimeCommand, RuntimeOperation, RuntimeResult,
-    ServiceId, StreamState, TimeWireError, GET_STREAM_STATE_MESSAGE_ID, OBSERVE_CLOCK_MESSAGE_ID,
-    TIME_SERVICE_ID,
+    decode_stream_state_success, decode_telemetry_snapshot, decode_time_response,
+    ConfigOperationRequest, Frame, MeasurementConfiguration, MeasurementWireError,
+    NodeCapabilities, NodeIdentity, ObservabilityProfile, ResponseStatus, RuntimeCommand,
+    RuntimeOperation, RuntimeResult, ServiceId, StreamState, TelemetrySnapshot, TelemetryWireError,
+    TimeWireError, GET_STREAM_STATE_MESSAGE_ID, GET_TELEMETRY_SNAPSHOT_MESSAGE_ID,
+    OBSERVE_CLOCK_MESSAGE_ID, TELEMETRY_SERVICE_ID, TIME_SERVICE_ID,
 };
 
 use crate::commissioning::{
@@ -112,6 +113,16 @@ pub enum ChannelEvent {
     TimeSyncNotAccepted {
         node_address: u8,
     },
+    TelemetrySnapshot {
+        node_address: u8,
+        snapshot: TelemetrySnapshot,
+    },
+    TelemetryTimedOut {
+        node_address: u8,
+    },
+    TelemetryNotAccepted {
+        node_address: u8,
+    },
     MeasurementHandoffPending {
         node_address: u8,
     },
@@ -210,6 +221,7 @@ enum PendingWork {
     Commissioning(CommissioningOperation),
     Measurement(Box<MeasurementTransfer>),
     TimeSync(TimeSyncAttempt),
+    Telemetry { node_address: u8 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -229,6 +241,7 @@ impl PendingWork {
             Self::Commissioning(_) => sensor_protocol::COMMISSIONING_ADDRESS,
             Self::Measurement(transfer) => transfer.node_address(),
             Self::TimeSync(attempt) => attempt.node_address,
+            Self::Telemetry { node_address } => *node_address,
         }
     }
 
@@ -501,6 +514,18 @@ impl ChannelAgent {
         Ok(())
     }
 
+    pub fn submit_telemetry(&mut self, node_address: u8) -> Result<(), ChannelAgentError> {
+        self.ensure_queue_capacity()?;
+        if node_address == sensor_protocol::HOST_ADDRESS
+            || node_address == sensor_protocol::BROADCAST_ADDRESS
+        {
+            return Err(ChannelAgentError::InvalidTelemetryNodeAddress(node_address));
+        }
+        self.pending
+            .push_back(PendingWork::Telemetry { node_address });
+        Ok(())
+    }
+
     pub fn try_submit_measurement(
         &mut self,
         transfer: MeasurementTransfer,
@@ -583,6 +608,9 @@ impl ChannelAgent {
                     PendingWork::TimeSync(attempt) => ChannelEvent::TimeSyncTimedOut {
                         node_address: attempt.node_address,
                     },
+                    PendingWork::Telemetry { node_address } => ChannelEvent::TelemetryTimedOut {
+                        node_address: *node_address,
+                    },
                 };
                 active.retry_not_before = now
                     .checked_add(self.policy.retry_delay)
@@ -591,7 +619,10 @@ impl ChannelAgent {
                     let node_address = self.handoff_active_measurement()?;
                     return Ok(ChannelEvent::MeasurementAttemptsExhausted { node_address });
                 }
-                if matches!(&active.work, PendingWork::TimeSync(_)) {
+                if matches!(
+                    &active.work,
+                    PendingWork::TimeSync(_) | PendingWork::Telemetry { .. }
+                ) {
                     self.active = None;
                 }
                 return Ok(timeout_event);
@@ -699,6 +730,17 @@ impl ChannelAgent {
                     })?
                     .request_frame(&[])?
             }
+            PendingWork::Telemetry { node_address } => self
+                .transactions
+                .prepare(crate::transaction::RequestSpec {
+                    node_address: *node_address,
+                    service: TELEMETRY_SERVICE_ID,
+                    request_message: GET_TELEMETRY_SNAPSHOT_MESSAGE_ID,
+                    response_message: GET_TELEMETRY_SNAPSHOT_MESSAGE_ID,
+                    timeout: self.policy.transaction_timeout,
+                    timeout_recovery: crate::transaction::TimeoutRecovery::RetrySafe,
+                })?
+                .request_frame(&[])?,
         };
         self.outbound = Some(frame);
         Ok(ChannelEvent::TransmitReady)
@@ -746,6 +788,7 @@ impl ChannelAgent {
             PendingWork::Handshake(_) => {}
             PendingWork::StreamState { .. } => {}
             PendingWork::TimeSync(_) => {}
+            PendingWork::Telemetry { .. } => {}
         }
         active.retry_not_before = now
             .checked_add(self.policy.retry_delay)
@@ -757,7 +800,10 @@ impl ChannelAgent {
             return Ok(ChannelEvent::MeasurementAttemptsExhausted { node_address });
         }
         let node_address = active.work.node_address();
-        if matches!(&active.work, PendingWork::TimeSync(_)) {
+        if matches!(
+            &active.work,
+            PendingWork::TimeSync(_) | PendingWork::Telemetry { .. }
+        ) {
             self.active = None;
         }
         Ok(ChannelEvent::WireAttemptFailed { node_address })
@@ -985,6 +1031,26 @@ impl ChannelAgent {
                     observation,
                 })
             }
+            PendingWork::Telemetry { node_address } => {
+                let node_address = *node_address;
+                match decode_telemetry_snapshot(frame.payload()) {
+                    Ok(snapshot) => {
+                        self.active = None;
+                        Ok(ChannelEvent::TelemetrySnapshot {
+                            node_address,
+                            snapshot,
+                        })
+                    }
+                    Err(TelemetryWireError::Remote(_)) => {
+                        self.active = None;
+                        Ok(ChannelEvent::TelemetryNotAccepted { node_address })
+                    }
+                    Err(error) => {
+                        self.active = None;
+                        Err(error.into())
+                    }
+                }
+            }
         }
     }
 
@@ -1114,9 +1180,11 @@ pub enum ChannelAgentError {
     Measurement(MeasurementTransferError),
     StreamStateWire(MeasurementWireError),
     TimeWire(TimeWireError),
+    TelemetryWire(TelemetryWireError),
     TimeObservation(ClockObservationError),
     Frame(sensor_protocol::FrameError),
     InvalidTimeNodeAddress(u8),
+    InvalidTelemetryNodeAddress(u8),
     InvalidStreamStateNodeAddress(u8),
     ZeroTimeBootEpoch,
     ControlAttemptInFlight(ControlWorkKey),
@@ -1165,6 +1233,11 @@ impl From<TimeWireError> for ChannelAgentError {
         Self::TimeWire(value)
     }
 }
+impl From<TelemetryWireError> for ChannelAgentError {
+    fn from(value: TelemetryWireError) -> Self {
+        Self::TelemetryWire(value)
+    }
+}
 impl From<ClockObservationError> for ChannelAgentError {
     fn from(value: ClockObservationError) -> Self {
         Self::TimeObservation(value)
@@ -1199,9 +1272,10 @@ mod tests {
         encode_lifecycle_response, encode_pull_response, encode_stream_state_success,
         encode_time_success, FirmwareVersion, FrameRole, PullResponse, ResponseStatus,
         RuntimeResultCode, RuntimeState, SampleChunk, SampleChunkHeader, SensorStatusCode,
-        ServiceId, StreamState, TimeExchangeResponse, TimingEvidence, CAPABILITIES_SCHEMA_VERSION,
-        FEATURE_SAMPLE_JOURNAL, GET_CAPABILITIES_MESSAGE_ID, GET_IDENTITY_MESSAGE_ID, HOST_ADDRESS,
-        LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES, TIMING_VALID,
+        ServiceId, StreamState, TimeExchangeResponse, TimingEvidence, ADXL355_TEMPERATURE_FIELD,
+        CAPABILITIES_SCHEMA_VERSION, FEATURE_SAMPLE_JOURNAL, GET_CAPABILITIES_MESSAGE_ID,
+        GET_IDENTITY_MESSAGE_ID, HOST_ADDRESS, LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES,
+        TELEMETRY_SCHEMA_VERSION, TELEMETRY_SNAPSHOT_RESPONSE_BYTES, TIMING_VALID,
     };
 
     const HARDWARE_ID: HardwareId = HardwareId::from_bytes([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -1285,6 +1359,75 @@ mod tests {
                 )
                 .unwrap(),
             ChannelEvent::TimeSyncNotAccepted { node_address: 7 }
+        );
+        assert_eq!(agent.queued_work_items(), 0);
+    }
+
+    #[test]
+    fn telemetry_uses_the_shared_transaction_owner_and_returns_validated_snapshot() {
+        let mut agent = ChannelAgent::new(10, 100, duration(50), policy()).unwrap();
+        agent.submit_telemetry(7).unwrap();
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let request = take_transmit(&mut agent, 1);
+        assert_eq!(request.destination, 7);
+        assert_eq!(request.service, TELEMETRY_SERVICE_ID);
+        assert_eq!(request.message, GET_TELEMETRY_SNAPSHOT_MESSAGE_ID);
+        assert!(request.payload().is_empty());
+
+        let mut payload = [0u8; TELEMETRY_SNAPSHOT_RESPONSE_BYTES];
+        payload[0] = ResponseStatus::Ok as u8;
+        payload[1] = TELEMETRY_SCHEMA_VERSION;
+        payload[2..10].copy_from_slice(&123_456u64.to_le_bytes());
+        payload[10..12].copy_from_slice(&ADXL355_TEMPERATURE_FIELD.to_le_bytes());
+        payload[12..14].copy_from_slice(&1885u16.to_le_bytes());
+        let event = agent
+            .receive(MonotonicMicros::new(2), &wire_response(&request, &payload))
+            .unwrap();
+        let ChannelEvent::TelemetrySnapshot {
+            node_address,
+            snapshot,
+        } = event
+        else {
+            panic!("expected telemetry snapshot");
+        };
+        assert_eq!(node_address, 7);
+        assert_eq!(snapshot.captured_device_time_us, 123_456);
+        assert_eq!(snapshot.adxl355_temperature.get(), 1885);
+        assert_eq!(agent.queued_work_items(), 0);
+    }
+
+    #[test]
+    fn telemetry_busy_and_timeout_release_the_transaction_owner() {
+        let mut agent = ChannelAgent::new(10, 100, duration(50), policy()).unwrap();
+        agent.submit_telemetry(7).unwrap();
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let request = take_transmit(&mut agent, 0);
+        assert_eq!(
+            agent
+                .receive(
+                    MonotonicMicros::new(1),
+                    &wire_response(&request, &[ResponseStatus::Busy as u8]),
+                )
+                .unwrap(),
+            ChannelEvent::TelemetryNotAccepted { node_address: 7 }
+        );
+        assert_eq!(agent.queued_work_items(), 0);
+
+        agent.submit_telemetry(7).unwrap();
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(2)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let _request = take_transmit(&mut agent, 2);
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(103)).unwrap(),
+            ChannelEvent::TelemetryTimedOut { node_address: 7 }
         );
         assert_eq!(agent.queued_work_items(), 0);
     }

@@ -365,7 +365,7 @@ fn runtime_phase(observation: &HostRuntimeObservation) -> RuntimeProcessPhase {
 fn print_runtime_metrics(process: &LinuxHostProcess) {
     for metrics in process.channel_metrics() {
         println!(
-            "channel metrics: id={} tx={} decode_errors={} disconnects={} timeouts={} wire_failures={} late={} unrelated={} unsolicited={} persisted={} no_data={} measurement_retries={} recoveries={} persistence_submitted={} persistence_backpressure={} time_sync={} time_sync_retries={} time_sync_backpressure={} max_step_us={} storage_groups={} storage_records={} storage_failures={} storage_max_persist_us={} storage_max_group_records={} storage_queue_high_water={}",
+            "channel metrics: id={} tx={} decode_errors={} disconnects={} timeouts={} wire_failures={} late={} unrelated={} unsolicited={} persisted={} no_data={} measurement_retries={} recoveries={} persistence_submitted={} persistence_backpressure={} time_sync={} time_sync_retries={} time_sync_backpressure={} telemetry={} telemetry_retries={} telemetry_backpressure={} max_step_us={} storage_groups={} storage_records={} storage_failures={} storage_max_persist_us={} storage_max_group_records={} storage_queue_high_water={}",
             metrics.channel_id,
             metrics.transmissions,
             metrics.decode_errors,
@@ -384,6 +384,9 @@ fn print_runtime_metrics(process: &LinuxHostProcess) {
             metrics.time_sync_submitted,
             metrics.time_sync_retries,
             metrics.time_sync_backpressure,
+            metrics.telemetry_snapshots,
+            metrics.telemetry_retries,
+            metrics.telemetry_backpressure,
             metrics.maximum_step_us,
             metrics.storage_committed_groups,
             metrics.storage_committed_records,
@@ -397,10 +400,11 @@ fn print_runtime_metrics(process: &LinuxHostProcess) {
 
 fn print_shutdown_summary(summary: &HostProcessShutdownSummary) {
     println!(
-        "host shutdown: clean={} channels={} stop_request_failed={} time_shutdown_failed={}",
+        "host shutdown: clean={} channels={} stop_request_failed={} telemetry_shutdown_failed={} time_shutdown_failed={}",
         summary.clean(),
         summary.channels.len(),
         summary.stop_request_failed,
+        summary.telemetry_shutdown_failed,
         summary.time_shutdown_failed
     );
     for channel in &summary.channels {
@@ -919,6 +923,7 @@ mod tests {
         let mut health = running_health();
         let summary = HostProcessShutdownSummary {
             stop_request_failed: false,
+            telemetry_shutdown_failed: false,
             channels: vec![
                 shutdown_channel(Some(1), Some(11), None),
                 shutdown_channel(Some(2), Some(21), None),
@@ -941,6 +946,7 @@ mod tests {
         let mut health = running_health();
         let summary = HostProcessShutdownSummary {
             stop_request_failed: false,
+            telemetry_shutdown_failed: false,
             channels: vec![shutdown_channel(Some(1), Some(12), Some("wire fault"))],
             time_shutdown_failed: false,
         };

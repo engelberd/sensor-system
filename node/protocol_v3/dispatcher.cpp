@@ -7,6 +7,7 @@
 #include "protocol_v3/configuration_handler.h"
 #include "protocol_v3/commissioning_handler.h"
 #include "protocol_v3/time_service.h"
+#include "protocol_v3/telemetry.h"
 
 namespace ProtocolV3 {
 
@@ -52,9 +53,34 @@ DispatchResult ApplicationDispatcher::dispatch_at(
     if (request.service == kConfigurationServiceId) {
         return dispatch_configuration(request, response);
     }
+    if (request.service == kTelemetryServiceId) {
+        return dispatch_telemetry(request, response);
+    }
 
     set_error(ResponseStatus::UnsupportedService, response);
     return {true, {}};
+}
+
+DispatchResult ApplicationDispatcher::dispatch_telemetry(
+    const Frame& request, Frame& response) {
+    if (!capabilities_.supports_service(ServiceId::Telemetry)) {
+        set_error(ResponseStatus::UnsupportedService, response);
+        return {true, {}, {}};
+    }
+    if (telemetry_handler_ == nullptr) {
+        set_error(ResponseStatus::InternalError, response);
+        return {true, {}, {}};
+    }
+    const TelemetryHandlerResult handled = telemetry_handler_->handle(
+        request.message, request.payload, request.payload_size,
+        response.payload, sizeof(response.payload));
+    if (handled.payload_size == 0 ||
+        handled.payload_size > sizeof(response.payload)) {
+        set_error(ResponseStatus::InternalError, response);
+        return {true, {}, {}};
+    }
+    response.payload_size = handled.payload_size;
+    return {true, {}, {}};
 }
 
 DispatchResult ApplicationDispatcher::dispatch_commissioning(

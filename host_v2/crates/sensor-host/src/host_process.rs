@@ -94,6 +94,7 @@ impl LinuxHostProcess {
             blueprint,
             profile.storage().capture(),
             profile.storage().time_persistence(),
+            profile.storage().telemetry_persistence(),
             HostChannelRuntimePolicies {
                 activation: profile.runtime().recording_activation(),
                 assembly: profile.runtime().recording_assembly(),
@@ -198,6 +199,7 @@ impl LinuxHostProcess {
 pub struct HostProcessShutdownSummary {
     pub stop_request_failed: bool,
     pub channels: Vec<ChannelProcessShutdownSummary>,
+    pub telemetry_shutdown_failed: bool,
     pub time_shutdown_failed: bool,
 }
 
@@ -205,6 +207,7 @@ impl HostProcessShutdownSummary {
     pub fn clean(&self) -> bool {
         !self.stop_request_failed
             && !self.time_shutdown_failed
+            && !self.telemetry_shutdown_failed
             && self
                 .channels
                 .iter()
@@ -275,6 +278,7 @@ where
     HostProcessShutdownSummary {
         stop_request_failed: shutdown.stop_request.is_err(),
         channels,
+        telemetry_shutdown_failed: shutdown.telemetry.is_some_and(|result| result.is_err()),
         time_shutdown_failed: shutdown.time.is_err(),
     }
 }

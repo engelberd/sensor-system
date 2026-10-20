@@ -22,7 +22,7 @@ constexpr uint16_t kKnownOutputRateMask = 0x07ffu;
 // pipeline always decimates by two, so Measurement Service can emit exactly
 // 2000, 1000, 500, 250, 125 or 62.5 samples/s.
 constexpr uint16_t kImplementedOutputRateMask = 0x007eu;
-constexpr uint32_t kKnownServiceFlags = 0x000000ffu;
+constexpr uint32_t kKnownServiceFlags = 0x000001ffu;
 
 constexpr uint64_t kFeatureSampleJournal = 1ull << 0u;
 constexpr uint64_t kFeatureDrdyTimestamps = 1ull << 1u;

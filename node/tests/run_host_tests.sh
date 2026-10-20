@@ -38,6 +38,8 @@ compile_and_run() {
 }
 
 compile_and_run tests/decimating_filter_test.cpp
+compile_and_run tests/adxl355_temperature_test.cpp
+compile_and_run tests/telemetry_runtime_test.cpp
 compile_and_run tests/drdy_timestamp_ring_test.cpp
 compile_and_run tests/packet_queue_test.cpp
 compile_and_run tests/data_plane_test.cpp
@@ -74,6 +76,7 @@ compile_and_run tests/protocol_v3_commissioning_handler_test.cpp \
     protocol_v3/lifecycle.cpp \
     protocol_v3/measurement.cpp
 compile_and_run tests/protocol_v3_time_test.cpp protocol_v3/time.cpp
+compile_and_run tests/protocol_v3_telemetry_test.cpp
 compile_and_run tests/protocol_v3_diagnostics_handler_test.cpp
 compile_and_run tests/node_v2_capabilities_test.cpp protocol_v3/identity.cpp
 compile_and_run tests/protocol_v3_lifecycle_test.cpp protocol_v3/lifecycle.cpp

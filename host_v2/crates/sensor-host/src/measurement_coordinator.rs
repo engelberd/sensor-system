@@ -10,7 +10,8 @@ use crate::bounded_writer::{
 use crate::channel_agent::{ChannelAgent, ChannelAgentError, ChannelEvent};
 use crate::channel_runtime::{
     ChannelDispatch, ChannelRuntime, ChannelRuntimeError, MeasurementDispatch, MeasurementProgress,
-    NodeScheduleConfig, TimeSyncDispatch, TimeSyncScheduleConfig,
+    NodeScheduleConfig, TelemetryDispatch, TelemetryScheduleConfig, TimeSyncDispatch,
+    TimeSyncScheduleConfig,
 };
 use crate::measurement_persistence::{persist_pending, DurableMeasurementSink, PersistenceError};
 use crate::measurement_transfer::{MeasurementTransfer, MeasurementTransferError, PersistenceKind};
@@ -21,6 +22,10 @@ use crate::stream_recovery::{
     reconcile_existing_capture, CaptureRecoveryEvidence, ExpectedStreamState, RecoveryContinuity,
     StreamRecoveryError,
 };
+use crate::telemetry_persistence::{
+    TelemetryObservationSubmitErrorKind, TelemetryObservationSubmitter,
+};
+use crate::telemetry_repository::{TelemetryObservationRecord, TelemetryObservationRecordError};
 use crate::time_persistence::{
     TimeObservationRecord, TimeObservationRecordError, TimeObservationSubmitErrorKind,
     TimeObservationSubmitter,
@@ -60,6 +65,20 @@ pub enum TimeSyncSettlement {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TelemetrySettlement {
+    Submitted {
+        node_address: u8,
+    },
+    RetryScheduled {
+        node_address: u8,
+    },
+    Backpressured {
+        node_address: u8,
+        reason: TelemetryObservationSubmitErrorKind,
+    },
+}
+
 struct ManagedSession {
     node_address: u8,
     session: Option<NodeSession>,
@@ -88,6 +107,7 @@ pub struct ChannelWorkCoordinator {
     sessions: Vec<ManagedSession>,
     active_dispatch: Option<MeasurementDispatch>,
     active_time_sync: Option<TimeSyncDispatch>,
+    active_telemetry: Option<TelemetryDispatch>,
     pending_completion: Option<PendingCompletion>,
     in_flight_writes: Vec<InFlightWrite>,
     quiescing: bool,
@@ -103,6 +123,7 @@ impl ChannelWorkCoordinator {
             sessions: Vec::with_capacity(capacity),
             active_dispatch: None,
             active_time_sync: None,
+            active_telemetry: None,
             pending_completion: None,
             in_flight_writes: Vec::with_capacity(capacity),
             quiescing: false,
@@ -118,6 +139,17 @@ impl ChannelWorkCoordinator {
     ) -> Result<(), MeasurementCoordinatorError> {
         self.runtime
             .configure_time_sync(node_address, config, first_deadline)
+            .map_err(MeasurementCoordinatorError::Runtime)
+    }
+
+    pub fn configure_telemetry(
+        &mut self,
+        node_address: u8,
+        config: TelemetryScheduleConfig,
+        first_deadline: MonotonicMicros,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        self.runtime
+            .configure_telemetry(node_address, config, first_deadline)
             .map_err(MeasurementCoordinatorError::Runtime)
     }
 
@@ -185,6 +217,15 @@ impl ChannelWorkCoordinator {
                     return Err(MeasurementCoordinatorError::Agent(error));
                 }
                 self.active_time_sync = Some(sync);
+            }
+            ChannelDispatch::Telemetry(telemetry) => {
+                if let Err(error) = agent.submit_telemetry(telemetry.node_address) {
+                    self.runtime
+                        .cancel_telemetry(telemetry)
+                        .map_err(MeasurementCoordinatorError::Runtime)?;
+                    return Err(MeasurementCoordinatorError::Agent(error));
+                }
+                self.active_telemetry = Some(telemetry);
             }
         }
         Ok(Some(dispatch))
@@ -359,6 +400,67 @@ impl ChannelWorkCoordinator {
             TimeSyncSettlement::RetryScheduled { node_address }
         };
         self.active_time_sync = None;
+        Ok(Some(settlement))
+    }
+
+    pub fn settle_telemetry_event<T>(
+        &mut self,
+        event: &ChannelEvent,
+        observations: &mut T,
+        now: MonotonicMicros,
+    ) -> Result<Option<TelemetrySettlement>, MeasurementCoordinatorError>
+    where
+        T: TelemetryObservationSubmitter + ?Sized,
+    {
+        let Some(dispatch) = self.active_telemetry else {
+            return Ok(None);
+        };
+        let node_address = match event {
+            ChannelEvent::TelemetrySnapshot { node_address, .. }
+            | ChannelEvent::TelemetryTimedOut { node_address }
+            | ChannelEvent::TelemetryNotAccepted { node_address }
+            | ChannelEvent::WireAttemptFailed { node_address } => *node_address,
+            _ => return Ok(None),
+        };
+        if node_address != dispatch.node_address {
+            return Err(MeasurementCoordinatorError::WrongCompletedNode);
+        }
+        let settlement = if let ChannelEvent::TelemetrySnapshot { snapshot, .. } = event {
+            let session = self.managed_session(node_address)?.session.as_ref().ok_or(
+                MeasurementCoordinatorError::SessionUnavailable(node_address),
+            )?;
+            let record = TelemetryObservationRecord::new(
+                session.hardware_id(),
+                node_address,
+                session.boot_epoch(),
+                *snapshot,
+            )
+            .map_err(MeasurementCoordinatorError::TelemetryRecord)?;
+            match observations.try_submit(record) {
+                Ok(()) => {
+                    self.runtime
+                        .complete_telemetry(dispatch, now)
+                        .map_err(MeasurementCoordinatorError::Runtime)?;
+                    TelemetrySettlement::Submitted { node_address }
+                }
+                Err(error) => {
+                    let reason = error.kind();
+                    self.runtime
+                        .fail_telemetry(dispatch, now)
+                        .map_err(MeasurementCoordinatorError::Runtime)?;
+                    TelemetrySettlement::Backpressured {
+                        node_address,
+                        reason,
+                    }
+                }
+            }
+        } else {
+            self.runtime
+                .fail_telemetry(dispatch, now)
+                .map_err(MeasurementCoordinatorError::Runtime)?;
+            TelemetrySettlement::RetryScheduled { node_address }
+        };
+        self.active_telemetry = None;
         Ok(Some(settlement))
     }
 
@@ -800,7 +902,9 @@ impl ChannelWorkCoordinator {
     }
 
     pub const fn has_active_dispatch(&self) -> bool {
-        self.active_dispatch.is_some() || self.active_time_sync.is_some()
+        self.active_dispatch.is_some()
+            || self.active_time_sync.is_some()
+            || self.active_telemetry.is_some()
     }
 
     pub const fn has_pending_completion(&self) -> bool {
@@ -1032,6 +1136,7 @@ pub enum MeasurementCoordinatorError {
     Agent(ChannelAgentError),
     Transfer(MeasurementTransferError),
     TimeRecord(TimeObservationRecordError),
+    TelemetryRecord(TelemetryObservationRecordError),
     ShutdownDrainNotReady,
     ShutdownDrainNotActive,
     ShutdownDrainIncomplete,
@@ -1099,9 +1204,10 @@ mod tests {
     use crate::bounded_writer::BoundedPersistenceWorker;
     use sensor_core::{BootEpoch, HardwareId, SampleAxes, SampleAxis, SampleRate, SequenceCursor};
     use sensor_protocol::{
-        encode_pull_response, encode_time_success, Frame, FrameRole, ObservabilityProfile,
-        PullResponse, SampleChunk, SampleChunkHeader, StreamState, TimeExchangeResponse,
-        TimingEvidence, HOST_ADDRESS, MAX_PAYLOAD_BYTES, TIMING_VALID,
+        encode_pull_response, encode_time_success, Adxl355TemperatureCode, Frame, FrameRole,
+        ObservabilityProfile, PullResponse, SampleChunk, SampleChunkHeader, StreamState,
+        TelemetrySnapshot, TimeExchangeResponse, TimingEvidence, HOST_ADDRESS, MAX_PAYLOAD_BYTES,
+        TIMING_VALID,
     };
 
     use crate::channel_agent::{ChannelEvent, ChannelPolicy};
@@ -1242,6 +1348,135 @@ mod tests {
             payload,
         )
         .unwrap()
+    }
+
+    fn settle_initial_empty_measurement(
+        coordinator: &mut MeasurementCoordinator,
+        agent: &mut ChannelAgent,
+    ) {
+        assert!(matches!(
+            coordinator
+                .dispatch_next_work(agent, MonotonicMicros::new(0))
+                .unwrap(),
+            Some(ChannelDispatch::Measurement(_))
+        ));
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let request = agent.take_outbound().unwrap();
+        agent.transmit_completed(MonotonicMicros::new(0)).unwrap();
+        let state = StreamState {
+            boot_epoch: BootEpoch::new(9),
+            retained_from: SequenceCursor::ORIGIN,
+            produced: SequenceCursor::ORIGIN,
+            released: SequenceCursor::ORIGIN,
+            capacity_samples: 2_048,
+            overwritten_samples: 0,
+        };
+        let mut payload = [0; MAX_PAYLOAD_BYTES];
+        let len = encode_pull_response(&PullResponse::NoData(state), &mut payload).unwrap();
+        agent
+            .receive(
+                MonotonicMicros::new(1),
+                &response(&request, &payload[..len]),
+            )
+            .unwrap();
+        coordinator
+            .settle_completed(
+                agent,
+                &mut Sink {
+                    failures_remaining: 0,
+                    chunk_calls: 0,
+                },
+                MonotonicMicros::new(1),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn telemetry_completion_requires_bounded_persistence_handoff() {
+        let mut coordinator = coordinator();
+        coordinator
+            .configure_telemetry(
+                7,
+                TelemetryScheduleConfig {
+                    interval: duration(600_000_000),
+                    estimated_slot: duration(20_000),
+                    retry_delay: duration(5_000_000),
+                },
+                MonotonicMicros::new(0),
+            )
+            .unwrap();
+        let mut agent = agent();
+        settle_initial_empty_measurement(&mut coordinator, &mut agent);
+        assert!(matches!(
+            coordinator
+                .dispatch_next_work(&mut agent, MonotonicMicros::new(1))
+                .unwrap(),
+            Some(ChannelDispatch::Telemetry(_))
+        ));
+        let snapshot = TelemetrySnapshot {
+            captured_device_time_us: 123_456,
+            adxl355_temperature: Adxl355TemperatureCode::new(1885).unwrap(),
+        };
+        let event = ChannelEvent::TelemetrySnapshot {
+            node_address: 7,
+            snapshot,
+        };
+        let (mut sender, receiver) =
+            crate::telemetry_persistence::telemetry_observation_queue(1).unwrap();
+        assert_eq!(
+            coordinator
+                .settle_telemetry_event(&event, &mut sender, MonotonicMicros::new(2))
+                .unwrap(),
+            Some(TelemetrySettlement::Submitted { node_address: 7 })
+        );
+        let record = receiver.try_receive().unwrap().unwrap();
+        assert_eq!(record.hardware_id, HARDWARE_ID);
+        assert_eq!(record.node_address, 7);
+        assert_eq!(record.boot_epoch, BootEpoch::new(9));
+        assert_eq!(record.snapshot, snapshot);
+    }
+
+    #[test]
+    fn telemetry_backpressure_schedules_retry_and_releases_channel() {
+        let mut coordinator = coordinator();
+        coordinator
+            .configure_telemetry(
+                7,
+                TelemetryScheduleConfig {
+                    interval: duration(600_000_000),
+                    estimated_slot: duration(20_000),
+                    retry_delay: duration(5_000_000),
+                },
+                MonotonicMicros::new(0),
+            )
+            .unwrap();
+        let mut agent = agent();
+        settle_initial_empty_measurement(&mut coordinator, &mut agent);
+        coordinator
+            .dispatch_next_work(&mut agent, MonotonicMicros::new(1))
+            .unwrap();
+        let event = ChannelEvent::TelemetrySnapshot {
+            node_address: 7,
+            snapshot: TelemetrySnapshot {
+                captured_device_time_us: 123_456,
+                adxl355_temperature: Adxl355TemperatureCode::new(1885).unwrap(),
+            },
+        };
+        let mut rejecting = crate::telemetry_persistence::RejectingTelemetryObservationSubmitter;
+        assert_eq!(
+            coordinator
+                .settle_telemetry_event(&event, &mut rejecting, MonotonicMicros::new(2))
+                .unwrap(),
+            Some(TelemetrySettlement::Backpressured {
+                node_address: 7,
+                reason:
+                    crate::telemetry_persistence::TelemetryObservationSubmitErrorKind::Disconnected,
+            })
+        );
+        assert!(!coordinator.has_active_dispatch());
     }
 
     #[test]

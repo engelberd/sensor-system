@@ -14,6 +14,7 @@ pub enum TrafficClass {
     Measurement,
     TimeSync,
     Health,
+    Telemetry,
     Diagnostics,
 }
 
@@ -124,7 +125,10 @@ impl ChannelScheduler {
                     return Err(SchedulerError::MissingOverflowEstimate(candidate.work_id));
                 }
             }
-            TrafficClass::Control | TrafficClass::TimeSync | TrafficClass::Health => {
+            TrafficClass::Control
+            | TrafficClass::TimeSync
+            | TrafficClass::Health
+            | TrafficClass::Telemetry => {
                 if candidate.deadline.is_none() {
                     return Err(SchedulerError::MissingDeadline(candidate.work_id));
                 }
@@ -192,7 +196,7 @@ impl ChannelScheduler {
             TrafficClass::Diagnostics => {
                 Some(Rank::new(4, candidate.queued_at.get(), 0, candidate))
             }
-            TrafficClass::TimeSync | TrafficClass::Health => None,
+            TrafficClass::TimeSync | TrafficClass::Health | TrafficClass::Telemetry => None,
         }
     }
 }
@@ -203,7 +207,8 @@ const fn class_order(class: TrafficClass) -> u64 {
         TrafficClass::Measurement => 1,
         TrafficClass::TimeSync => 2,
         TrafficClass::Health => 3,
-        TrafficClass::Diagnostics => 4,
+        TrafficClass::Telemetry => 4,
+        TrafficClass::Diagnostics => 5,
     }
 }
 
@@ -347,6 +352,31 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        assert_eq!(selected.work_id, 2);
+    }
+
+    #[test]
+    fn telemetry_waits_for_its_deadline_then_gets_one_bounded_slot() {
+        let measurement = candidate(1, 1, TrafficClass::Measurement);
+        let telemetry = candidate(2, 2, TrafficClass::Telemetry);
+        let selected = scheduler()
+            .select(
+                context(ObservabilityProfile::Production, 0),
+                &[measurement, telemetry],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.work_id, 1);
+
+        let mut due = telemetry;
+        due.deadline = Some(MonotonicMicros::new(1_000_500));
+        let selected = scheduler()
+            .select(
+                context(ObservabilityProfile::Production, 0),
+                &[measurement, due],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(selected.work_id, 2);
     }
 

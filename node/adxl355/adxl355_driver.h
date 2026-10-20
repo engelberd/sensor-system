@@ -129,6 +129,7 @@ private:
     SensorStatus set_odr_internal(uint8_t odr_bits);
     SensorStatus set_int1_active_high_internal();
     SensorStatus set_drdy_enabled_internal(bool enabled);
+    SensorStatus set_temperature_enabled_internal();
     SensorStatus set_hpf_disabled();
     SensorStatus set_hpf_corner_internal(uint8_t high_pass_corner);
     SensorStatus write_offset_axis(uint8_t reg_h, uint8_t reg_l, int32_t value_16bit);

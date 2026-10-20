@@ -468,6 +468,12 @@ mod tests {
             )
             .unwrap(),
             time_sync_transaction_time: DurationMicros::new(4_000).unwrap(),
+            telemetry_schedule: crate::channel_runtime::TelemetryScheduleConfig::new(
+                DurationMicros::new(600_000_000).unwrap(),
+                DurationMicros::new(20_000).unwrap(),
+                DurationMicros::new(5_000_000).unwrap(),
+            )
+            .unwrap(),
         }
     }
 

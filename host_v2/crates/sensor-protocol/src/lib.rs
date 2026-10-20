@@ -10,10 +10,14 @@ pub mod identity;
 pub mod lifecycle_wire;
 pub mod measurement;
 pub mod measurement_wire;
+pub mod telemetry_wire;
 pub mod time_wire;
 pub mod version;
 
-pub use adxl355::{Adxl355Odr, Adxl355SampleCode, Adxl355SampleCodeError};
+pub use adxl355::{
+    Adxl355Odr, Adxl355SampleCode, Adxl355SampleCodeError, Adxl355TemperatureCode,
+    Adxl355TemperatureCodeError,
+};
 pub use application::{ApplicationContractError, ResponseStatus, ServiceId};
 pub use commissioning_wire::*;
 pub use configuration_wire::*;
@@ -38,5 +42,6 @@ pub use measurement::{
     SAMPLE_CHUNK_FIELDS_BYTES, SAMPLE_CHUNK_SUCCESS_HEADER_BYTES, XYZ_I24_WIRE_SAMPLE_BYTES,
 };
 pub use measurement_wire::*;
+pub use telemetry_wire::*;
 pub use time_wire::*;
 pub use version::{ProtocolMismatch, ProtocolVersion, LOCAL_PROTOCOL_VERSION};
