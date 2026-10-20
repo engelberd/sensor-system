@@ -136,6 +136,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class V2DashboardRepository:
     read_only = True
     supports_v2_operations = True
@@ -767,6 +774,7 @@ class V2DashboardRepository:
                 cursors = node.get("cursors") if isinstance(node, dict) else None
                 measurement_age_ms = node.get("last_measurement_age_ms") if isinstance(node, dict) else None
                 time_sync_age_ms = node.get("last_time_sync_age_ms") if isinstance(node, dict) else None
+                telemetry_age_ms = node.get("last_telemetry_age_ms") if isinstance(node, dict) else None
                 online = bool(node is not None and not status_stale)
                 measurement_fresh = bool(
                     running
@@ -860,6 +868,20 @@ class V2DashboardRepository:
                         "release_backlog": max(0, durable - released),
                         "last_measurement_age_ms": measurement_age_ms,
                         "last_time_sync_age_ms": time_sync_age_ms,
+                        "last_telemetry_age_ms": telemetry_age_ms,
+                        "telemetry_device_time_us": (
+                            _safe_int(node.get("telemetry_device_time_us"))
+                            if isinstance(node, dict) and node.get("telemetry_device_time_us") is not None
+                            else None
+                        ),
+                        "temperature_raw": (
+                            _safe_int(node.get("temperature_raw"))
+                            if isinstance(node, dict) and node.get("temperature_raw") is not None
+                            else None
+                        ),
+                        "temperature_c": (
+                            _safe_float(node.get("temperature_c")) if isinstance(node, dict) else None
+                        ),
                         "alerts": alerts,
                     }
                 )

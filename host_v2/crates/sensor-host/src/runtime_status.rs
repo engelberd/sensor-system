@@ -277,6 +277,14 @@ fn nodes_json(observation: &HostRuntimeObservation, now_us: u64) -> Vec<Value> {
                 .and_then(|metrics| metrics.output_rate_code)
                 .and_then(sensor_protocol::OutputRateCode::from_wire)
                 .unwrap_or_else(|| node.output_rate());
+            let telemetry = metrics.and_then(|metrics| metrics.latest_telemetry);
+            let temperature_c = telemetry.map(|telemetry| {
+                sensor_protocol::Adxl355TemperatureCode::new(
+                    telemetry.adxl355_temperature_raw,
+                )
+                .expect("node metrics only accepts validated telemetry")
+                .celsius()
+            });
             json!({
                 "channel_id": node.channel_id(),
                 "channel_name": node.channel_name(),
@@ -303,6 +311,11 @@ fn nodes_json(observation: &HostRuntimeObservation, now_us: u64) -> Vec<Value> {
                 "last_measurement_age_ms": metrics.and_then(|metrics| age_ms(now_us, metrics.last_measurement_monotonic_us)),
                 "last_time_sync_monotonic_us": metrics.and_then(|metrics| metrics.last_time_sync_monotonic_us),
                 "last_time_sync_age_ms": metrics.and_then(|metrics| age_ms(now_us, metrics.last_time_sync_monotonic_us)),
+                "last_telemetry_monotonic_us": telemetry.map(|telemetry| telemetry.observed_monotonic_us),
+                "last_telemetry_age_ms": telemetry.and_then(|telemetry| age_ms(now_us, Some(telemetry.observed_monotonic_us))),
+                "telemetry_device_time_us": telemetry.map(|telemetry| telemetry.captured_device_time_us),
+                "temperature_raw": telemetry.map(|telemetry| telemetry.adxl355_temperature_raw),
+                "temperature_c": temperature_c,
                 "persisted_sample_count": metrics.map(|metrics| metrics.persisted_sample_count),
                 "gap_count": metrics.map(|metrics| metrics.gap_count),
                 "missing_sample_count": metrics.map(|metrics| metrics.missing_sample_count),

@@ -23,6 +23,14 @@ pub struct NodeMetricsSnapshot {
     pub gap_count: u64,
     pub missing_sample_count: u64,
     pub continuity_break_count: u64,
+    pub latest_telemetry: Option<NodeTelemetryMetricsSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeTelemetryMetricsSnapshot {
+    pub observed_monotonic_us: u64,
+    pub captured_device_time_us: u64,
+    pub adxl355_temperature_raw: u16,
 }
 
 #[derive(Default)]
@@ -43,6 +51,10 @@ struct NodeMetricsAtomic {
     gap_count: AtomicU64,
     missing_sample_count: AtomicU64,
     continuity_break_count: AtomicU64,
+    telemetry_generation: AtomicU64,
+    telemetry_observed_monotonic_us: AtomicU64,
+    telemetry_captured_device_time_us: AtomicU64,
+    telemetry_adxl355_temperature_raw: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -87,7 +99,43 @@ impl NodeMetricsReader {
             gap_count: load(&self.metrics.gap_count),
             missing_sample_count: load(&self.metrics.missing_sample_count),
             continuity_break_count: load(&self.metrics.continuity_break_count),
+            latest_telemetry: self.latest_telemetry(),
         }
+    }
+
+    fn latest_telemetry(&self) -> Option<NodeTelemetryMetricsSnapshot> {
+        // The channel worker is the only writer. A bounded seqlock read keeps
+        // status publication non-blocking while preventing mixed snapshots.
+        for _ in 0..3 {
+            let before = self.metrics.telemetry_generation.load(Ordering::Acquire);
+            if before == 0 {
+                return None;
+            }
+            if before & 1 != 0 {
+                continue;
+            }
+            let snapshot = NodeTelemetryMetricsSnapshot {
+                observed_monotonic_us: self
+                    .metrics
+                    .telemetry_observed_monotonic_us
+                    .load(Ordering::Relaxed),
+                captured_device_time_us: self
+                    .metrics
+                    .telemetry_captured_device_time_us
+                    .load(Ordering::Relaxed),
+                adxl355_temperature_raw: self
+                    .metrics
+                    .telemetry_adxl355_temperature_raw
+                    .load(Ordering::Relaxed)
+                    .try_into()
+                    .expect("telemetry temperature originates as u16"),
+            };
+            let after = self.metrics.telemetry_generation.load(Ordering::Acquire);
+            if before == after {
+                return Some(snapshot);
+            }
+        }
+        None
     }
 }
 
@@ -142,6 +190,29 @@ impl NodeMetricsPublisher {
             .last_time_sync_monotonic_us
             .store(now.get(), Ordering::Relaxed);
         self.metrics.has_time_sync.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn observe_telemetry(
+        &self,
+        snapshot: sensor_protocol::TelemetrySnapshot,
+        now: MonotonicMicros,
+    ) {
+        self.metrics
+            .telemetry_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.metrics
+            .telemetry_observed_monotonic_us
+            .store(now.get(), Ordering::Relaxed);
+        self.metrics
+            .telemetry_captured_device_time_us
+            .store(snapshot.captured_device_time_us, Ordering::Relaxed);
+        self.metrics.telemetry_adxl355_temperature_raw.store(
+            u64::from(snapshot.adxl355_temperature.get()),
+            Ordering::Relaxed,
+        );
+        self.metrics
+            .telemetry_generation
+            .fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn observe_persistence(&self, kind: PersistenceKind) {
@@ -247,7 +318,31 @@ mod tests {
                 gap_count: 0,
                 missing_sample_count: 0,
                 continuity_break_count: 0,
+                latest_telemetry: None,
             }
+        );
+    }
+
+    #[test]
+    fn publishes_a_coherent_temperature_snapshot_without_locks() {
+        let (publisher, reader) = NodeMetricsPublisher::new(2, 7, DeliveryCursors::empty());
+        assert_eq!(reader.snapshot().latest_telemetry, None);
+
+        publisher.observe_telemetry(
+            sensor_protocol::TelemetrySnapshot {
+                captured_device_time_us: 123_456,
+                adxl355_temperature: sensor_protocol::Adxl355TemperatureCode::new(1885).unwrap(),
+            },
+            MonotonicMicros::new(987_654),
+        );
+
+        assert_eq!(
+            reader.snapshot().latest_telemetry,
+            Some(NodeTelemetryMetricsSnapshot {
+                observed_monotonic_us: 987_654,
+                captured_device_time_us: 123_456,
+                adxl355_temperature_raw: 1885,
+            })
         );
     }
 

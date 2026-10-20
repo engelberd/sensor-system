@@ -438,6 +438,9 @@ impl ChannelWorkCoordinator {
             .map_err(MeasurementCoordinatorError::TelemetryRecord)?;
             match observations.try_submit(record) {
                 Ok(()) => {
+                    self.managed_session(node_address)?
+                        .metrics
+                        .observe_telemetry(*snapshot, now);
                     self.runtime
                         .complete_telemetry(dispatch, now)
                         .map_err(MeasurementCoordinatorError::Runtime)?;
@@ -1437,6 +1440,15 @@ mod tests {
         assert_eq!(record.node_address, 7);
         assert_eq!(record.boot_epoch, BootEpoch::new(9));
         assert_eq!(record.snapshot, snapshot);
+        let metrics = coordinator.node_metrics_readers()[0].snapshot();
+        assert_eq!(
+            metrics.latest_telemetry.unwrap().adxl355_temperature_raw,
+            1885
+        );
+        assert_eq!(
+            metrics.latest_telemetry.unwrap().captured_device_time_us,
+            123_456
+        );
     }
 
     #[test]
@@ -1477,6 +1489,12 @@ mod tests {
             })
         );
         assert!(!coordinator.has_active_dispatch());
+        assert_eq!(
+            coordinator.node_metrics_readers()[0]
+                .snapshot()
+                .latest_telemetry,
+            None
+        );
     }
 
     #[test]

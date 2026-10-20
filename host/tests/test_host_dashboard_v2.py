@@ -166,6 +166,10 @@ class V2DashboardRepositoryTests(unittest.TestCase):
                             "continuity_break_count": 1,
                             "last_measurement_age_ms": 40,
                             "last_time_sync_age_ms": 900,
+                            "last_telemetry_age_ms": 12_000,
+                            "telemetry_device_time_us": 123_456,
+                            "temperature_raw": 1885,
+                            "temperature_c": 25.0,
                             "cursors": {
                                 "received": 1040,
                                 "durable": 1040,
@@ -225,6 +229,9 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertEqual(node["samples_written"], 1000)
             self.assertEqual(node["gaps_detected"], 2)
             self.assertEqual(node["missing_sample_count"], 17)
+            self.assertEqual(node["temperature_c"], 25.0)
+            self.assertEqual(node["temperature_raw"], 1885)
+            self.assertEqual(node["last_telemetry_age_ms"], 12_000)
             self.assertIsNone(node["instant_samples_per_second_5s"])
             disabled = payload["channels"][1]
             self.assertFalse(disabled["enabled"])

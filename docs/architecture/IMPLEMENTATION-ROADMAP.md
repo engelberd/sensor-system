@@ -1191,6 +1191,9 @@ Stan pionu:
    ma produktową wartość domyślną 600 s i może być nadpisane przez profil
    instalacji. Slot wire i retry pozostają wewnętrzną polityką. Pierwszy odczyt
    następuje po pełnym interwale i jest przesunięty o jeden slot na kolejny node.
-   Pozostało pokazanie wartości temperatury w status/API i dashboardzie,
-   eksport obok okna analitycznego oraz HIL potwierdzający brak wpływu na
-   `samples/s`.
+   Runtime Status i dashboard pokazują ostatnią temperaturę, wiek odczytu oraz
+   rozróżniają oczekiwanie na pierwszy snapshot od firmware bez capability
+   Telemetry; odświeżanie UI nie generuje ruchu RS485. HIL na node B z firmware
+   0.5.10 potwierdził poprawne wartości około 25,9 °C oraz brak timeoutów,
+   retry, backpressure, gapów i wpływu na ciągłość próbek. Pozostał eksport
+   temperatury obok okna analitycznego.

@@ -1218,6 +1218,13 @@ INDEX_HTML = """<!doctype html>
         return days > 0 ? `${days} d ${hours} h` : hours > 0 ? `${hours} h ${minutes} min` : `${minutes} min`;
       }
 
+      function formatAgeMs(value) {
+        if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+        if (value < 1000) return "<1 s";
+        if (value < 60000) return `${Math.floor(value / 1000)} s`;
+        return formatDurationMs(value);
+      }
+
       function basenamePath(value) {
         const text = String(value || "").trim();
         if (!text) {
@@ -1422,6 +1429,13 @@ INDEX_HTML = """<!doctype html>
           || ["faulted", "offline"].includes(node.channel_mode);
         const canRestart = channelEnabled && node.enabled
           && (rescueRestart || !node.channel_active_operation);
+        const telemetrySupported = Boolean((Number(node.service_flags) || 0) & 0x100);
+        const temperatureValue = node.temperature_c == null
+          ? (telemetrySupported ? "oczekiwanie" : "niedostępna")
+          : `${formatFloat(node.temperature_c, 1)} °C`;
+        const temperatureDetails = node.temperature_c == null
+          ? (telemetrySupported ? "pierwszy odczyt po interwale" : "firmware bez Telemetry")
+          : `odczyt ${formatAgeMs(node.last_telemetry_age_ms)} temu · raw ${formatNumber(node.temperature_raw)}`;
         return `
           <tr>
             <td data-label="Węzeł">
@@ -1461,6 +1475,10 @@ INDEX_HTML = """<!doctype html>
             <td data-label="Backlog">
               <span class="mono">node ${escapeHtml(formatNumber(node.node_backlog))} · zapis ${escapeHtml(formatNumber(node.persistence_backlog))}</span>
               <div class="node-meta">release ${escapeHtml(formatNumber(node.release_backlog))}</div>
+            </td>
+            <td data-label="Temperatura">
+              <span class="mono">${escapeHtml(temperatureValue)}</span>
+              <div class="node-meta">${escapeHtml(temperatureDetails)}</div>
             </td>
             <td data-label="Świeżość">
               <span class="mono">measurement ${escapeHtml(node.last_measurement_age_ms == null ? "-" : `${formatNumber(node.last_measurement_age_ms)} ms`)}</span>
@@ -1520,8 +1538,8 @@ INDEX_HTML = """<!doctype html>
               `).join("")}
             </div>
             <table>
-              <thead><tr><th>Węzeł</th><th>Stan</th><th>Output ODR</th><th>Próbki i ciągłość</th><th>Backlog</th><th>Świeżość</th></tr></thead>
-              <tbody>${nodes.length ? nodes.map((node) => renderV2NodeRow(node, channel.enabled)).join("") : `<tr><td colspan="6"><div class="empty">Brak skonfigurowanych węzłów.</div></td></tr>`}</tbody>
+              <thead><tr><th>Węzeł</th><th>Stan</th><th>Output ODR</th><th>Próbki i ciągłość</th><th>Backlog</th><th>Temperatura</th><th>Świeżość</th></tr></thead>
+              <tbody>${nodes.length ? nodes.map((node) => renderV2NodeRow(node, channel.enabled)).join("") : `<tr><td colspan="7"><div class="empty">Brak skonfigurowanych węzłów.</div></td></tr>`}</tbody>
             </table>
           </article>
         `;

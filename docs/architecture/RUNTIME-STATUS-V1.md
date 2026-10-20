@@ -104,5 +104,12 @@ workera RS485.
 7. traktować brak pola, `null` lub nieznany enum fail-closed dla funkcji
    sterujących.
 
+Pola telemetrii node są opcjonalne. Po pierwszym poprawnym i przyjętym do
+bounded persistence odczycie zawierają `temperature_c`, `temperature_raw`,
+`telemetry_device_time_us`, `last_telemetry_monotonic_us` i wyliczony w tej
+samej osi `last_telemetry_age_ms`. Brak tych pól oznacza brak capability
+Telemetry albo oczekiwanie na pierwszy odczyt. Status czyta nieblokującą kopię;
+nie odpytuje RS485 i nie zastępuje Telemetry WAL jako trwałego źródła.
+
 Snapshot jest podstawą obserwacji. Historia zdarzeń pozostaje w journald, a
-trwałe dane pomiarowe w Capture i Time WAL.
+trwałe dane pomiarowe w Capture, Time WAL i Telemetry WAL.
