@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import secrets
@@ -6070,12 +6071,35 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         *,
         status: HTTPStatus = HTTPStatus.OK,
     ) -> None:
+        content_encoding = None
+        if len(payload) >= 1024 and self._accepts_gzip():
+            payload = gzip.compress(payload, compresslevel=6, mtime=0)
+            content_encoding = "gzip"
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if content_encoding is not None:
+            self.send_header("Content-Encoding", content_encoding)
         self.end_headers()
         self.wfile.write(payload)
+
+    def _accepts_gzip(self) -> bool:
+        for item in self.headers.get("Accept-Encoding", "").split(","):
+            parts = [part.strip().lower() for part in item.split(";")]
+            if not parts or parts[0] not in {"gzip", "*"}:
+                continue
+            quality = 1.0
+            for parameter in parts[1:]:
+                if parameter.startswith("q="):
+                    try:
+                        quality = float(parameter[2:])
+                    except ValueError:
+                        quality = 0.0
+            if quality > 0:
+                return True
+        return False
 
     def _write_file_response(
         self,

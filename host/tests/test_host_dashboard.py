@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import http.client
 import json
 import tempfile
@@ -1024,10 +1025,16 @@ class DashboardServerRoutesTests(unittest.TestCase):
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
 
-    def request(self, method: str, path: str, body: dict[str, object] | None = None) -> tuple[int, bytes, dict[str, str]]:
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+        request_headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes, dict[str, str]]:
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
         payload = None
-        headers: dict[str, str] = {}
+        headers = dict(request_headers or {})
         if body is not None:
             payload = json.dumps(body)
             headers["Content-Type"] = "application/json"
@@ -1037,6 +1044,16 @@ class DashboardServerRoutesTests(unittest.TestCase):
         response_headers = {key: value for key, value in response.getheaders()}
         connection.close()
         return response.status, raw, response_headers
+
+    def test_dashboard_compresses_large_text_responses_when_requested(self) -> None:
+        status, body, headers = self.request(
+            "GET", "/", request_headers={"Accept-Encoding": "gzip"}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Encoding"], "gzip")
+        self.assertEqual(headers["Vary"], "Accept-Encoding")
+        self.assertIn("Sekcja data", gzip.decompress(body).decode("utf-8"))
 
     def test_dashboard_serves_data_routes(self) -> None:
         status, body, _headers = self.request("GET", "/")
