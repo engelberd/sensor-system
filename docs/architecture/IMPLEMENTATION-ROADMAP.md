@@ -195,13 +195,13 @@ Interfejs operatorski nie wystawia już tych implementacji jako poleceń
 produkcyjnych. `hostctl` obsługuje wyłącznie V2; zakres i jawne braki opisuje
 [HOSTCTL-V2.md](HOSTCTL-V2.md). Produkcyjny Capture V2 ma własną walidację i
 eksport. Configuration, Commissioning i RestartNode protocol 5 są podłączone do
-Operations API i `hostctl` przez jedynego właściciela RS485. HIL firmware 0.5.8
-potwierdził Configuration, pusty skan, restart i Resume; panel Commissioning
-jest gotowy lokalnie, a do zamknięcia pozostaje HIL Scan/Assign z
-nieprzypisanym node. Archive, kompresja i uploader są świadomie odłożone poza
-MVP. Automatyczne pliki
-`Analysis CSV v2` jest obecnym formatem gotowym do podstawowej analizy drgań;
-Capture WAL pozostaje
+Operations API i `hostctl` przez jedynego właściciela RS485. Pięć aktywnych
+node działa na firmware 0.5.10. HIL potwierdził Configuration, pusty skan,
+restart i Resume; panel Commissioning jest podłączony, a do zamknięcia
+pozostaje HIL Scan/Assign z nieprzypisanym node. Telemetry temperatury ma pełny
+pion node → scheduler → WAL → status/dashboard → Analysis CSV. Archive,
+kompresja i uploader są świadomie odłożone poza MVP. `Analysis CSV v2` jest
+obecnym formatem gotowym do podstawowej analizy drgań; Capture WAL pozostaje
 źródłem prawdy.
 
 Nowy host ma konkretny adapter serial/RS485 i zaliczony pion HIL jednej linii.
@@ -310,11 +310,11 @@ wielu node w etapie 4 → produkcyjny Capture w etapie 7 → czas, koordynację
 | 1. Framing v3 | codeki, integracja i HIL jednej linii gotowe | benchmark RP2350, szum i soak |
 | 2. Discovery | runtime oraz fizyczny fail-closed handshake gotowe | inventory i testy wielu node |
 | 3. Transfer/`NodeSession` | fizyczny wire-to-durable pion oraz produkcyjny Capture gotowe | recovery po utracie procesu/zasilania w HIL |
-| 4. Scheduler/`ChannelRuntime` | pełny pion Measurement, TimeSync i symulacja wielu node gotowe | wykonawcy Health/Diagnostic i HIL wielu node |
-| 5. Firmware protocol 5 | Configuration, restart i pusty skan potwierdzone HIL 0.5.8; Commissioning, obrazy A/B, rollback, migracja i confirm gotowe w kodzie | HIL AssignAddress, soak i pomiary granic pojemności |
+| 4. Scheduler/`ChannelRuntime` | pełny pion Measurement, TimeSync, Telemetry i symulacja wielu node gotowe | HIL wielu node i strojenie fizycznych budżetów |
+| 5. Firmware protocol 5 | Configuration, restart, telemetria i pusty skan potwierdzone HIL 0.5.10; Commissioning, obrazy A/B, rollback, migracja i confirm gotowe w kodzie | HIL AssignAddress, soak i pomiary granic pojemności |
 | 6. Adapter RS485/HIL | handshake, update i pełny transfer jednej linii gotowe | wiele node, długi przewód, zakłócenia i restart hosta |
-| 7. Capture | WAL, recovery, segmenty, bounded handoff, group commit, fault injection, walidacja, CSV i rollover podłączony do Resume gotowe | benchmark, process-kill matrix i dane rzeczywiste |
-| 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja, HIL jednego node i koordynowany rollover gotowe | UTC, długi pomiar dryfu i wiele node |
+| 7. Capture | WAL, recovery, segmenty, bounded handoff, group commit, fault injection, walidacja, CSV i rollover podłączony do Resume gotowe | power-loss matrix i benchmark docelowego SSD |
+| 8. Czas | model, wire, endpoint, scheduler, persistence, startup/config/health, symulacja, HIL jednego node i koordynowany rollover gotowe | długi pomiar dryfu, wiele node i fizyczna kwalifikacja odrzucania outlierów |
 | 9. Skala 1–16 | runtime i symulacja 1/4/8 gotowe | fizyczny test macierzy i wiele node na kanał |
 | 10. Operations | bounded command path, IPC, trwały audit oraz wykonanie Maintenance/Resume/Configuration/Commissioning/Restart gotowe | operacje grupowe i HIL AssignAddress |
 | 11. Migracja | eksport CSV gotowy | canary, rollback, procedura operacyjna i usunięcie legacy |

@@ -8,10 +8,10 @@ Raspberry Pi i nadzorować zdalnie.
 ## 1. Punkt wyjścia
 
 Rdzeń akwizycji działa obecnie na pięciu fizycznych liniach B/C/D/G/H z
-firmware `0.5.8`; C pracuje z output ODR 250 Hz, a pozostałe z 125 Hz. A jest
-lokalnie wyłączona: pozostaje na 0.5.6 w stanie `Faulted` i wymaga jednorazowego
-restartu zasilania przed dalszą obsługą po RS485. E i F nie są podłączone.
-Recorder oraz automatyczny eksport CSV działają jako usługi systemd.
+firmware `0.5.10`; B/D/G pracują z output ODR 125 Hz, a C/H z 250 Hz. A jest
+lokalnie wyłączona, E i F nie są podłączone. Recorder,
+automatyczny eksport CSV, dashboard i wąski helper sterowania usługą działają
+jako włączone usługi systemd.
 
 Krótki baseline był czysty, lecz późniejszy restart procesu ujawnił prawdziwy
 błąd takeover pełnego journala C. Capture zachował 114181 brakujących numerów
@@ -31,9 +31,10 @@ Gotowe są:
 - lokalny profil systemu Raspberry Pi ze stabilnymi nazwami portów;
 - wdrożone usługi systemd dla rejestratora i automatycznego eksportu CSV.
 
-Warstwa operatora korzysta już z natywnego `hostctl` v2, Runtime Status v1 i
-Operations API. Dashboard nadal czyta stare pliki statusu i HDF5, dlatego jest
-odłożony do czasu zbudowania go jako cienkiego klienta gotowego API.
+Warstwa operatora korzysta z natywnego `hostctl` v2, Runtime Status v1,
+Operations API i cienkiego dashboardu. Dashboard nie otwiera RS485; wszystkie
+operacje per channel/per node przekazuje do właściciela runtime, a sterowanie
+usługą do ograniczonego helpera.
 
 Aktualizacja 2026-10-13: główny `hostctl` został odcięty od runtime legacy.
 Udostępnia tylko recorder, dane, serwis node i systemd dla V2. Stare komendy
@@ -483,17 +484,17 @@ testu 24/7:
 ## 6. Decyzja o najbliższej pracy
 
 Status runtime, `doctor`, systemd, spójny `hostctl` V2, Operations IPC,
-Configuration, Commissioning, RestartNode i trwały audyt operacji są gotowe.
-HIL kanału B na firmware 0.5.8 potwierdził Get/Apply/Reset, pusty skan
-commissioning, zdalny restart, rollover po zmianie epoki i powrót do Recording.
-AssignAddress nadal wymaga rzeczywistego nieprzypisanego node, ale nie blokuje
-testu ciągłego obecnej topologii.
+Configuration, Commissioning, RestartNode, Telemetry, dashboard i trwały audyt
+operacji są gotowe. HIL potwierdził Get/Apply/Reset, pusty skan commissioning,
+zdalny restart, rollover po zmianie epoki i powrót do Recording. AssignAddress
+nadal wymaga rzeczywistego nieprzypisanego node, ale nie blokuje ciągłego testu
+obecnej topologii.
 
-Najbliższa praca to kwalifikacja Etapu 7: najpierw godzinny przebieg pięciu
-linii, walidacja wszystkich zamkniętych Capture i Time WAL, zgodność CSV,
-pomiar przyrostu storage, CPU, RSS, I/O wait oraz fsync latency. Po analizie
-wyniku test rośnie do 6 i 24 godzin. Osobnymi obowiązkowymi próbami pozostają
-kill procesu, restart całego Raspberry Pi, odłączenie i powrót jednego node
-oraz utrata całego konwertera. Dashboard i Archive pozostają poza MVP zgodnie
-z bieżącą decyzją produktu; nie tworzymy dla nich drugiego modelu stanu ani
-osobnej ścieżki RS485.
+Najbliższa praca to domknięcie bramki opisanej w
+[CORE-READINESS-AUDIT.md](CORE-READINESS-AUDIT.md): wdrożenie poprawki
+odrzucania wadliwej obserwacji TimeSync, ukończenie 24-godzinnego soak,
+walidacja Capture oraz próby restartu procesu i Raspberry Pi. Osobno pozostają
+odłączenie i powrót node, utrata konwertera, wiele node na jednej magistrali,
+Scan/Assign i długi przewód. Archive pozostaje poza MVP; w okresie przejściowym
+operator musi monitorować miejsce i wynosić Capture/Analysis przed progiem
+rezerwy.

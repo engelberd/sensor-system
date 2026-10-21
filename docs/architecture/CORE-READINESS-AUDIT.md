@@ -1,82 +1,91 @@
 # Audyt gotowości rdzenia host v2 i node v2
 
-- Status: obowiązujący przegląd ryzyk i parametrów
-- Ostatnia aktualizacja: 2026-10-16
+- Status: kandydat MVP stanowiskowego; otwarte bramki kwalifikacji produktu
+- Ostatnia aktualizacja: 2026-10-21
 - Zakres: firmware node protocol 5, host v2 1–16 kanałów i RS485 115200 bit/s
 
 ## Ocena
 
-Rdzeń protokołu, tożsamości, lifecycle, journala, retransmisji i trwałego
-potwierdzania ma poprawne granice odpowiedzialności. Fizyczny pion jednej linii
-potwierdził update A/B, rollback, trial confirm i dziesięciominutowy cykl
-Measurement bez gap. `sensor-host` składa produkcyjny proces 1–16 kanałów:
-waliduje profil, wykonuje fail-closed discovery i admission, odzyskuje Capture
-oraz Time WAL, uruchamia niezależne workery i zamyka je kontrolowanie po
-`SIGINT`/`SIGTERM`. Symulacja 1/4/8 oraz fizyczna macierz pięciu aktywnych linii
-na Raspberry Pi przechodzą. Capabilities schema 2 odpowiada faktycznym output
-rates i rodzajowi obrazu. Configuration, Commissioning i RestartNode mają już
-zgodne codeki, bounded wykonanie oraz publiczną ścieżkę Operations API przez
-jedynego właściciela RS485. HIL na Raspberry Pi z firmware 0.5.8 potwierdził
-Get/Apply/Reset Configuration, pusty ScanUnassigned, RestartNode, zmianę
-`boot_epoch`, rollover Capture + Time i powrót do Recording. AssignAddress nadal
-wymaga rzeczywistego nieprzypisanego node.
+Architektura i implementacja tworzą spójny recorder v2. Droga próbki ma jednego
+właściciela RS485, bounded kolejki, trwały Capture przed `Release`, dokładne
+gapy i recovery po restarcie. TimeSync, Telemetry i operacje korzystają z tego
+samego schedulera kanału, więc nie tworzą bocznych właścicieli magistrali.
+Konfiguracja, commissioning, restart node, dashboard, runtime status, Doctor,
+systemd i strumieniowy Analysis CSV są podłączone do tego samego modelu.
 
-## Blokery rdzenia
+Stanowisko Raspberry Pi z pięcioma aktywnymi liniami B/C/D/G/H i firmware
+`0.5.10` jest kandydatem do długiego testu MVP przy B/D/G = 125 Hz oraz C/H =
+250 Hz. Doctor zwrócił 34 OK, zero ostrzeżeń i błędów. Wszystkie kanały były
+`running`, a liczniki timeoutów, błędów dekodowania, disconnectów, wire
+failures, retry, backpressure i błędów storage pozostały równe zero.
+Automatyczny eksporter publikuje okna razem z JSON, Events CSV i Telemetry CSV.
 
-1. Host ma wewnętrzny bounded command path, idempotentny ledger w pamięci,
-   snapshoty statusu per channel i wykonawcę kontrolowanego
-   Recording → Maintenance oraz Resume także po zmianie `boot_epoch`.
-   Capture i Time są otwierane przez swoich właścicieli, a bounded broker
-   koordynatora blokuje wymianę sesji i Start do czasu obu trwałych wyników.
-   Bounded lokalne IPC wystawia już status, Maintenance i Resume przez
-   `hostctl` bez otwierania RS485. Get/Validate/Apply/Reset Configuration są
-   osiągalne przez Operations API; mutacje aktualizują admission, scheduler i
-   trwałą historię konfiguracji. Commissioning i RestartNode są osiągalne tym
-   samym IPC. Każde przejście operacji jest zapisywane w osobnym per-channel
-   WAL z CRC przed wykonaniem i po wyniku.
-2. Configuration i ratunkowy restart przeszły fizyczny HIL firmware 0.5.8.
-   Commissioning ma potwierdzony pusty skan; nadal wymaga HIL discovery,
-   przypisania adresu i końcowego handshake z rzeczywistym nieprzypisanym node.
-   Test restartu zanotował pojedynczy timeout i decode error w czasie zmiany
-   epoki, po czym kanał ustabilizował się bez gapów i kolejnych błędów. Ten
-   kontrolowany transient trzeba jeszcze objąć testem powtarzalnym.
-3. Production/Diagnostic zmienia dziś stan lifecycle, lecz nie steruje jeszcze
-   kompletną, budżetowaną telemetrią po RS485. Diagnostics jest read-only;
-   osobna polityka kompaktowego Health nadal wymaga implementacji.
-4. Fizycznie potwierdzono pięć równoległych linii z jednym node na linii.
-   Kontrolowany restart procesu ma już bezpieczny takeover zastanego
-   `Recording`, ale wymaga jeszcze powtarzalnej kwalifikacji i testu utraty
-   zasilania. Nadal trzeba zmierzyć wiele node na kanale, pełną macierz 1/4/8
-   portów, długi przewód i kontrolowane zakłócenia.
-5. MVP używa kompaktowego Capture WAL i gotowego strumieniowego eksportu CSV.
-   Trzeba potwierdzić eksport na długim nagraniu oraz wykonać benchmark na
-   docelowym SSD. Archive, kompresja i uploader nie blokują MVP.
+To wystarcza do MVP stanowiskowego z jednym node na każdej z pięciu linii.
+Nie zamyka jeszcze docelowego MVP produktu opisanego przez wymagania: nie ma
+fizycznego dowodu wielu node na jednej magistrali, pracy na przewodzie
+400–800 m, recovery po nagłej utracie zasilania ani commissioning
+`AssignAddress` rzeczywistego niezarejestrowanego node. Archive pozostaje poza
+tym audytem zgodnie z decyzją produktową.
 
-Rollout Raspberry Pi 2026-10-15 uruchomił B/C/D/G/H na firmware 0.5.8 i hoście
-z trwałym audytem. Fizyczny gate pięciu kanałów miał 34 wyniki Doctor OK oraz
-zero timeoutów, decode errors, retry i storage failures. A pozostaje na 0.5.6
-w `Faulted`; ta wersja powstała przed ratunkowym PrepareUpdate/Restart z tego
-stanu i wymaga jednorazowego restartu zasilania przed aktualizacją po RS485.
-Lokalny override wyłącza wyłącznie A. E i F nie są fizycznie podłączone.
+## Wynik audytu 2026-10-21
 
-Rollout automatycznego Analysis CSV 2026-10-16 ujawnił błąd takeover po
-restarcie procesu. Linia C przy 250 Hz startowała z pełną retencją 2048 próbek;
-priorytet ochrony Measurement słusznie nie oddawał wtedy slotu TimeSync, ale
-ciągła akwizycja nie pozwalała odrobić ogona. Okno 66 zachowało dokładny skutek:
-2083 próbki i 114181 brakujących numerów oznaczonych `JournalOverflow`.
-Ręczne Maintenance → Resume zatrzymało produkcję, wydrenowało ogon i
-natychmiast przywróciło TimeSync, co rozdzieliło błąd startu od wydajności
-stałej kanału.
+| Obszar | Stan | Wniosek |
+| --- | --- | --- |
+| Framing, protocol 5, identity i capabilities | gotowe | wersje są sprawdzane fail-closed; wszystkie aktywne node mają 0.5.10 |
+| Measurement i retransmisja | gotowe | małe błędy mają bounded retry; utrata z retencji daje jawny gap |
+| Capture i recovery | gotowe funkcjonalnie | WAL, CRC, manifest, kursory i rollover są połączone; pozostaje kwalifikacja power-loss |
+| TimeSync | poprawione po audycie | pojedyncza fizycznie błędna obserwacja jest odrzucana i planowana ponownie, bez kończenia workera |
+| Telemetry | gotowe dla MVP | temperatura ma walidację w node, cache, rzadki harmonogram, WAL, status, dashboard i CSV |
+| Operations | gotowe dla znanych node | Maintenance, Resume, konfiguracja i restart działają przez właściciela kanału |
+| Commissioning | częściowe HIL | skan pustej magistrali działa; `AssignAddress` wymaga fizycznego testu |
+| Dashboard i systemd | gotowe dla stanowiska | wszystkie cztery usługi są włączone i aktywne; dashboard pozostaje narzędziem zaufanej sieci |
+| Analysis CSV | gotowe tymczasowo | eksport jest automatyczny i niezależny od hot path; brak automatycznej retencji CSV |
+| Skala fizyczna | niezamknięta | pięć równoległych kanałów działa; wiele node na jednym kanale i 8/16 kanałów nie mają fizycznego gate |
 
-Host od commitu `277dc14` stosuje tę samą regułę automatycznie. Jeżeli bootstrap
-zastaje node w `Recording`, najpierw odtwarza trwałe sesje Capture, następnie
-wykonuje `Stop`, drenuje zatrzymany ogon do durable cursor, wykonuje `Start` i
-dopiero wtedy wznawia scheduler. Fizyczny restart pięciu linii po wdrożeniu
-dał 34 wyniki Doctor OK, zero ostrzeżeń, świeży TimeSync na każdym node i brak
-timeoutów, decode errors, retry oraz storage failures. Zamknięte przy restarcie
-okno C nr 67 ma 141965 próbek, zero brakujących próbek i jeden jawny
-`ProcessingReset`. To zamyka znalezioną usterkę, lecz nie zastępuje soak ani
-testu nagłej utraty zasilania.
+Audyt znalazł realny błąd w przebiegu z 2026-10-20: odpowiedź Time Service z
+`ProcessingExceedsRoundTrip` kończyła worker linii B, a kontrolowany shutdown
+kończył cały proces kodem 1. Błąd nie dotyczył próbek ani storage. Poprawka
+klasyfikuje taki wynik jako `TimeSyncInvalidObservation`, zwalnia właściciela
+transakcji i stosuje istniejący bounded retry. Test regresyjny, pełne testy
+workspace, `clippy -D warnings` i bramka symulacyjna przechodzą.
+
+Drugim ryzykiem operacyjnym jest pojemność. Bieżące katalogi na karcie SD mają
+około 6,2 GB Capture i 13 GB Analysis przy około 18 GB wolnego miejsca. Host
+pilnuje rezerwy i zatrzyma się bezpiecznie zamiast pisać w pełny filesystem,
+ale bez Archive albo jawnej polityki wynoszenia/usuwania danych nie jest to
+instalacja bezobsługowa na dowolnie długi czas. Docelowy SSD zwiększy horyzont,
+lecz nadal wymaga monitorowania pojemności.
+
+Audyt obciążenia wykazał również, że 500 Hz na linii H nie jest stabilne z
+obecną kartą SD i polityką trwałości. Przed kontrolą H miał pełny backlog 2048
+oraz 112881 jawnie brakujących próbek. Pełna walidacja 6,2 GB Capture wykonana
+równolegle z recording zwiększyła presję I/O; po jej przerwaniu 500 Hz nadal
+nie odrabiało ogona, a licznik wzrósł do 153033. Po kontrolowanym Apply do
+250 Hz host wydrenował backlog do zera, TimeSync wrócił do około 3–8 sekund, a
+liczniki strat przestały rosnąć. Pełnej walidacji całego drzewa nie wolno
+uruchamiać online na tym nośniku; Doctor powinien sprawdzać tylko ograniczony
+ogon, a pełny audyt wykonywać w Maintenance albo na kopii danych.
+
+## Bramka finalnego MVP produktu
+
+1. Wdrożyć poprawkę odrzucania błędnej obserwacji czasu i wykonać kontrolowany
+   restart z potwierdzeniem `clean=true` oraz ponownego takeover wszystkich
+   aktywnych linii.
+2. Zakończyć co najmniej 24-godzinny soak pięciu linii i zweryfikować wszystkie
+   zamknięte Capture: zero ukrytych dziur, poprawne jawne eventy i świeże Time
+   oraz Telemetry.
+3. Wykonać restart procesu oraz zimny restart Raspberry Pi. Test odcięcia
+   zasilania wymaga kontrolowanego stanowiska i późniejszej walidacji WAL.
+4. Podłączyć co najmniej dwa node do jednej magistrali i potwierdzić fairness,
+   recovery jednego node oraz brak wpływu na drugi.
+5. Wykonać Scan/Assign/handshake na rzeczywistym nieprzypisanym node.
+6. Zmierzyć docelowy przewód lub reprezentatywny tor zakłóceń przy 115200 i
+   ustalić dopuszczalne ODR na kanał z fizycznych wyników.
+7. Ustalić dla okresu bez Archive prostą procedurę monitorowania i wynoszenia
+   Capture/Analysis przed osiągnięciem rezerwy filesystemu.
+8. Dodać do admission profil zmierzonej przepustowości persistence albo
+   zoptymalizować group commit; 500 Hz pozostaje niedopuszczone na bieżącej
+   karcie SD mimo wystarczającego teoretycznego budżetu RS485.
 
 ## Przepustowość nowego Measurement Service
 
