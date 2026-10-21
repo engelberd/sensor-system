@@ -20,6 +20,12 @@ EXPECTED_EVENT_COLUMNS = [
     "count",
     "reason",
 ]
+EXPECTED_TELEMETRY_COLUMNS = [
+    "captured_device_time_us",
+    "time_from_first_sample_s",
+    "adxl355_temperature_c",
+    "adxl355_temperature_raw",
+]
 
 
 def load_window(csv_path: str | Path) -> dict:
@@ -94,6 +100,57 @@ def load_window(csv_path: str | Path) -> dict:
     if len(continuity_breaks) != metadata.get("continuity_break_count"):
         raise ValueError("events and JSON disagree about continuity breaks")
 
+    telemetry = np.empty((0, len(EXPECTED_TELEMETRY_COLUMNS)), dtype=np.float64)
+    telemetry_file = metadata.get("telemetry_file")
+    if telemetry_file is not None:
+        telemetry_path = csv_path.with_name(telemetry_file)
+        with telemetry_path.open(encoding="utf-8", newline="") as file:
+            reader = csv.DictReader(file)
+            if reader.fieldnames != EXPECTED_TELEMETRY_COLUMNS:
+                raise ValueError(
+                    f"expected telemetry columns: {EXPECTED_TELEMETRY_COLUMNS}"
+                )
+            raw_telemetry = list(reader)
+        try:
+            telemetry = np.asarray(
+                [
+                    [
+                        int(row["captured_device_time_us"]),
+                        float(row["time_from_first_sample_s"]),
+                        float(row["adxl355_temperature_c"]),
+                        int(row["adxl355_temperature_raw"]),
+                    ]
+                    for row in raw_telemetry
+                ],
+                dtype=np.float64,
+            ).reshape((-1, len(EXPECTED_TELEMETRY_COLUMNS)))
+        except (KeyError, ValueError) as error:
+            raise ValueError("telemetry CSV contains an invalid row") from error
+        if not np.isfinite(telemetry).all():
+            raise ValueError("telemetry CSV contains NaN or infinite values")
+        if len(telemetry) != metadata.get("telemetry_record_count"):
+            raise ValueError("telemetry CSV and JSON disagree about record count")
+        if len(telemetry):
+            captured = telemetry[:, 0]
+            offsets = telemetry[:, 1]
+            temperatures = telemetry[:, 2]
+            raw_codes = telemetry[:, 3]
+            expected_offsets = (
+                captured - float(metadata["first_device_time_us"])
+            ) / 1_000_000.0
+            if np.any(np.diff(captured) <= 0):
+                raise ValueError("telemetry timestamps are not strictly increasing")
+            if not np.allclose(offsets, expected_offsets, rtol=0.0, atol=0.5e-6):
+                raise ValueError("telemetry offsets disagree with device timestamps")
+            if np.any(offsets < 0):
+                raise ValueError("telemetry precedes the analysis window")
+            if np.any(captured > float(metadata["last_device_time_us"])):
+                raise ValueError("telemetry follows the analysis window")
+            if np.any((temperatures < -55.0) | (temperatures > 125.0)):
+                raise ValueError("telemetry temperature is outside the supported range")
+            if np.any((raw_codes < 0) | (raw_codes > 4095)):
+                raise ValueError("telemetry raw code is outside the 12-bit range")
+
     odr_hz = metadata.get("estimated_odr_hz") or metadata.get("configured_odr_hz")
     if not odr_hz or odr_hz <= 0:
         raise ValueError("no usable ODR in JSON")
@@ -111,6 +168,8 @@ def load_window(csv_path: str | Path) -> dict:
         "odr_hz": float(odr_hz),
         "missing_samples": missing_samples,
         "continuity_breaks": len(continuity_breaks),
+        "telemetry": telemetry,
+        "telemetry_columns": EXPECTED_TELEMETRY_COLUMNS.copy(),
         "is_continuous": missing_samples == 0 and not continuity_breaks,
     }
 
@@ -140,6 +199,7 @@ def main() -> int:
         f"missing samples: {window['missing_samples']}, "
         f"continuity breaks: {window['continuity_breaks']}"
     )
+    print(f"telemetry snapshots: {len(window['telemetry'])}")
     print("continuous: YES" if window["is_continuous"] else "continuous: NO")
     return 0 if window["is_continuous"] else 2
 

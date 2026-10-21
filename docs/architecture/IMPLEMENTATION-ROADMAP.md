@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-18
+- Ostatnia aktualizacja: 2026-10-21
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -163,7 +163,8 @@ uzasadnią ją pomiary lub testy awarii.
 - automatyczny, idempotentny `Analysis CSV v2` per zamknięte okno Capture:
   tylko osie XYZ w `m/s²`, uproszczona nazwa z czasem pierwszej próbki,
   ustawiony i wyznaczony ODR oraz pełne znaczenie czasu i konwersji w JSON,
-  osobne zdarzenia jakości oraz timer systemd poza gorącą ścieżką RS485;
+  osobne zdarzenia jakości, rzadki `telemetry.csv` dopasowany czasem urządzenia
+  oraz timer systemd poza gorącą ścieżką RS485;
   pierwszy przebieg ma ograniczony backfill i nie rozwija całej historycznej
   bazy do tekstu;
 

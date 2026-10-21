@@ -14,6 +14,7 @@ use crate::capture_segments::{
 };
 use crate::capture_wal::{CaptureRecord, CaptureWalError, CaptureWalReader};
 use crate::configuration_history::ConfigurationSnapshot;
+use crate::telemetry_wal::{TelemetryWalError, TelemetryWalReader};
 
 const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 
@@ -42,6 +43,7 @@ pub fn export_analysis_window(
     stream_directory: &Path,
     output_directory: &Path,
     time_root: &Path,
+    telemetry_wal_path: &Path,
     ordinal: u64,
     identity: AnalysisWindowIdentity<'_>,
     configurations: &[ConfigurationSnapshot],
@@ -90,6 +92,7 @@ pub fn export_analysis_window(
     let stem = unique_product_stem(output_directory, &base_stem, ordinal);
     let csv_path = output_directory.join(format!("{stem}.csv"));
     let events_path = output_directory.join(format!("{stem}.events.csv"));
+    let telemetry_path = output_directory.join(format!("{stem}.telemetry.csv"));
     let metadata_path = output_directory.join(format!("{stem}.json"));
     let nonce = format!(
         "{}-{}",
@@ -101,13 +104,16 @@ pub fn export_analysis_window(
     );
     let csv_temp = output_directory.join(format!(".{stem}.{nonce}.csv.tmp"));
     let events_temp = output_directory.join(format!(".{stem}.{nonce}.events.tmp"));
+    let telemetry_temp = output_directory.join(format!(".{stem}.{nonce}.telemetry.tmp"));
     let metadata_temp = output_directory.join(format!(".{stem}.{nonce}.json.tmp"));
 
     let result = write_window(
         &paths.wal,
         &csv_temp,
         &events_temp,
+        &telemetry_temp,
         &metadata_temp,
+        telemetry_wal_path,
         identity,
         manifest.hardware_id,
         manifest.boot_epoch,
@@ -117,19 +123,23 @@ pub fn export_analysis_window(
         manifest.continuity_break_count,
         configurations,
         &first_sample_timestamp,
+        last_device_time_us,
         &format!("{stem}.csv"),
+        &format!("{stem}.telemetry.csv"),
     );
     let written = match result {
         Ok(value) => value,
         Err(error) => {
             let _ = fs::remove_file(&csv_temp);
             let _ = fs::remove_file(&events_temp);
+            let _ = fs::remove_file(&telemetry_temp);
             let _ = fs::remove_file(&metadata_temp);
             return Err(error);
         }
     };
 
     fs::rename(&events_temp, &events_path).map_err(AnalysisExportError::Io)?;
+    fs::rename(&telemetry_temp, &telemetry_path).map_err(AnalysisExportError::Io)?;
     fs::rename(&metadata_temp, &metadata_path).map_err(AnalysisExportError::Io)?;
     // The primary CSV is the completion marker and is therefore published last.
     fs::rename(&csv_temp, &csv_path).map_err(AnalysisExportError::Io)?;
@@ -156,7 +166,9 @@ fn write_window(
     wal_path: &Path,
     csv_path: &Path,
     events_path: &Path,
+    telemetry_path: &Path,
     metadata_path: &Path,
+    telemetry_wal_path: &Path,
     identity: AnalysisWindowIdentity<'_>,
     hardware_id: HardwareId,
     boot_epoch: BootEpoch,
@@ -166,7 +178,9 @@ fn write_window(
     continuity_breaks: u64,
     configurations: &[ConfigurationSnapshot],
     first_sample_timestamp: &AnalysisTimestamp,
+    last_device_time_us: u64,
     csv_file_name: &str,
+    telemetry_file_name: &str,
 ) -> Result<WrittenWindow, AnalysisExportError> {
     let mut samples = create_writer(csv_path)?;
     let mut events = create_writer(events_path)?;
@@ -278,9 +292,20 @@ fn write_window(
     samples.get_ref().sync_all()?;
     events.get_ref().sync_all()?;
 
+    let telemetry_record_count = write_telemetry_window(
+        telemetry_wal_path,
+        telemetry_path,
+        hardware_id,
+        identity.node_address,
+        boot_epoch,
+        first_device_time_us,
+        last_device_time_us,
+    )?;
+
     let metadata = json!({
         "schema": "sensor-system-analysis-csv-v2",
         "data_file": csv_file_name,
+        "telemetry_file": telemetry_file_name,
         "channel_name": identity.channel_name,
         "channel_id": identity.channel_id,
         "node_address": identity.node_address,
@@ -288,6 +313,7 @@ fn write_window(
         "boot_epoch": boot_epoch.get(),
         "window_ordinal": ordinal,
         "first_device_time_us": first_device_time_us,
+        "last_device_time_us": last_device_time_us,
         "first_sample_time_utc": first_sample_timestamp.utc,
         "first_sample_time_local": first_sample_timestamp.local,
         "first_sample_unix_time_us": first_sample_timestamp.unix_time_us,
@@ -296,6 +322,14 @@ fn write_window(
         "sample_count": sample_count,
         "missing_sample_count": missing_samples,
         "continuity_break_count": continuity_breaks,
+        "telemetry_record_count": telemetry_record_count,
+        "telemetry_columns": [
+            "captured_device_time_us",
+            "time_from_first_sample_s",
+            "adxl355_temperature_c",
+            "adxl355_temperature_raw"
+        ],
+        "telemetry_window_policy": "captured_device_time_us within inclusive sample time bounds",
         "estimated_odr_hz": estimated_odr_hz,
         "estimated_odr_method": "mean interval between adjacent, consecutive samples",
         "configured_odr_hz": analysis_configuration.output_rate_hz(),
@@ -325,6 +359,59 @@ fn write_window(
         first_device_time_us,
         estimated_odr_hz,
     })
+}
+
+fn write_telemetry_window(
+    wal_path: &Path,
+    output_path: &Path,
+    hardware_id: HardwareId,
+    node_address: u8,
+    boot_epoch: BootEpoch,
+    first_device_time_us: u64,
+    last_device_time_us: u64,
+) -> Result<u64, AnalysisExportError> {
+    let mut reader =
+        TelemetryWalReader::open(wal_path).map_err(AnalysisExportError::TelemetryWal)?;
+    let config = reader.config();
+    if config.hardware_id != hardware_id
+        || config.node_address != node_address
+        || config.boot_epoch != boot_epoch
+    {
+        return Err(AnalysisExportError::TelemetryIdentityMismatch);
+    }
+    let mut output = create_writer(output_path)?;
+    writeln!(
+        output,
+        "captured_device_time_us,time_from_first_sample_s,adxl355_temperature_c,adxl355_temperature_raw"
+    )?;
+    let mut count = 0_u64;
+    while let Some(snapshot) = reader
+        .next_snapshot()
+        .map_err(AnalysisExportError::TelemetryWal)?
+    {
+        if snapshot.captured_device_time_us < first_device_time_us {
+            continue;
+        }
+        if snapshot.captured_device_time_us > last_device_time_us {
+            break;
+        }
+        let offset_seconds =
+            (snapshot.captured_device_time_us - first_device_time_us) as f64 / 1_000_000.0;
+        writeln!(
+            output,
+            "{},{:.6},{:.6},{}",
+            snapshot.captured_device_time_us,
+            offset_seconds,
+            snapshot.adxl355_temperature.celsius(),
+            snapshot.adxl355_temperature.get(),
+        )?;
+        count = count
+            .checked_add(1)
+            .ok_or(AnalysisExportError::CounterOverflow)?;
+    }
+    output.flush()?;
+    output.get_ref().sync_all()?;
+    Ok(count)
 }
 
 fn configuration_for_chunk(
@@ -447,7 +534,11 @@ fn existing_product_path(
             .and_then(|value| value.as_str())
             .map(|name| output_directory.join(name))
             .unwrap_or_else(|| path.with_extension("csv"));
-        if csv_path.is_file() {
+        let telemetry_path = metadata
+            .get("telemetry_file")
+            .and_then(|value| value.as_str())
+            .map(|name| output_directory.join(name));
+        if csv_path.is_file() && telemetry_path.is_some_and(|path| path.is_file()) {
             return Ok(Some(csv_path));
         }
     }
@@ -508,6 +599,8 @@ pub enum AnalysisExportError {
     Json(serde_json::Error),
     Segment(CaptureSegmentError),
     Wal(CaptureWalError),
+    TelemetryWal(TelemetryWalError),
+    TelemetryIdentityMismatch,
     Time(AnalysisTimeError),
     WindowWithoutSamples,
     InvalidTiming,
@@ -547,14 +640,16 @@ mod tests {
     use super::*;
     use sensor_core::{SampleAxes, SampleAxis, SequenceCursor};
     use sensor_protocol::{
-        Adxl355Odr, DecimationFilterProfile, MeasurementConfiguration, ObservedConfiguration,
-        OutputRateCode, SampleChunk, SampleChunkHeader, TimingEvidence, TIMING_VALID,
+        Adxl355Odr, Adxl355TemperatureCode, DecimationFilterProfile, MeasurementConfiguration,
+        ObservedConfiguration, OutputRateCode, SampleChunk, SampleChunkHeader, TelemetrySnapshot,
+        TimingEvidence, TIMING_VALID,
     };
 
     use crate::capture_segments::CaptureSegmentStream;
     use crate::capture_wal::CaptureWalConfig;
     use crate::capture_window::CaptureWindowPolicy;
     use crate::measurement_persistence::DurableMeasurementSink;
+    use crate::telemetry_wal::{TelemetryWalConfig, TelemetryWalSink};
 
     struct TempDirectory(PathBuf);
 
@@ -657,6 +752,26 @@ mod tests {
             )
             .unwrap();
         stream.finish_window().unwrap().unwrap();
+        let telemetry_path = temp.0.join("telemetry.wal");
+        let mut telemetry = TelemetryWalSink::open(
+            &telemetry_path,
+            TelemetryWalConfig {
+                hardware_id: HARDWARE,
+                node_address: 1,
+                boot_epoch: BOOT,
+            },
+        )
+        .unwrap();
+        for (captured_device_time_us, raw) in
+            [(999_000, 1884), (1_004_000, 1885), (1_009_000, 1886)]
+        {
+            telemetry
+                .append(TelemetrySnapshot {
+                    captured_device_time_us,
+                    adxl355_temperature: Adxl355TemperatureCode::new(raw).unwrap(),
+                })
+                .unwrap();
+        }
 
         let identity = AnalysisWindowIdentity {
             channel_name: "line-b",
@@ -667,6 +782,7 @@ mod tests {
             &stream_dir,
             &output_dir,
             &temp.0.join("time"),
+            &telemetry_path,
             0,
             identity,
             &[configuration()],
@@ -691,11 +807,22 @@ mod tests {
         assert!(metadata.contains("\"configured_odr_hz\": 125.0"));
         assert!(metadata.contains("\"range_g\": 2"));
         assert!(metadata.contains("\"axis_unit\": \"m/s^2\""));
+        assert!(metadata.contains("\"telemetry_record_count\": 1"));
+        let telemetry_csv = fs::read_to_string(first.csv_path.with_file_name(format!(
+            "{}.telemetry.csv",
+            first.csv_path.file_stem().unwrap().to_string_lossy()
+        )))
+        .unwrap();
+        assert_eq!(
+            telemetry_csv,
+            "captured_device_time_us,time_from_first_sample_s,adxl355_temperature_c,adxl355_temperature_raw\n1004000,0.004000,25.000000,1885\n"
+        );
 
         let repeated = export_analysis_window(
             &stream_dir,
             &output_dir,
             &temp.0.join("time"),
+            &telemetry_path,
             0,
             identity,
             &[configuration()],

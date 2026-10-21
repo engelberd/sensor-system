@@ -8,6 +8,7 @@ use sensor_core::HardwareId;
 use sensor_host::analysis_export::{export_analysis_window, AnalysisWindowIdentity};
 use sensor_host::configuration_history::read_configuration_snapshots;
 use sensor_host::installation_topology::HostInstallationProfile;
+use sensor_host::telemetry_profile::DiscoveredTelemetryStream;
 
 fn main() -> ExitCode {
     let arguments = match parse_arguments(env::args_os().skip(1).collect()) {
@@ -126,6 +127,14 @@ fn export_new(arguments: Arguments) -> Result<Summary, Box<dyn std::error::Error
                 current.boot_epoch,
             )?;
             let output = analysis.root().join(channel.name());
+            let telemetry = profile.storage().telemetry_persistence().stream_spec(
+                DiscoveredTelemetryStream {
+                    channel_name: channel.name().to_owned(),
+                    hardware_id: node.hardware_id(),
+                    node_address: node.node_address(),
+                    boot_epoch: current.boot_epoch,
+                },
+            )?;
             let ordinals = pending_ordinals(
                 &output,
                 node.hardware_id(),
@@ -138,6 +147,7 @@ fn export_new(arguments: Arguments) -> Result<Summary, Box<dyn std::error::Error
                     &stream,
                     &output,
                     profile.storage().time_persistence().root(),
+                    &telemetry.path,
                     ordinal,
                     AnalysisWindowIdentity {
                         channel_name: channel.name(),
@@ -240,7 +250,11 @@ fn pending_ordinals(
                 == Some("sensor-system-analysis-csv-v2")
                 && metadata.get("hardware_id").and_then(|value| value.as_str())
                     == Some(hardware_id_hex(hardware_id).as_str())
-                && metadata.get("boot_epoch").and_then(|value| value.as_u64()) == Some(boot_epoch);
+                && metadata.get("boot_epoch").and_then(|value| value.as_u64()) == Some(boot_epoch)
+                && metadata
+                    .get("telemetry_file")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|name| output_directory.join(name).is_file());
             if !same_stream {
                 continue;
             }
@@ -290,19 +304,40 @@ mod tests {
     }
 
     #[test]
-    fn existing_product_is_a_monotonic_export_cursor() {
+    fn telemetry_complete_product_is_a_monotonic_export_cursor() {
         let root =
             std::env::temp_dir().join(format!("analysis-export-cursor-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("window.telemetry.csv"), b"header\n").unwrap();
         fs::write(
             root.join("line_b-node_1-11:10-16.10.2026.json"),
-            br#"{"schema":"sensor-system-analysis-csv-v2","hardware_id":"0102030405060708","boot_epoch":9,"window_ordinal":2}"#,
+            br#"{"schema":"sensor-system-analysis-csv-v2","hardware_id":"0102030405060708","boot_epoch":9,"window_ordinal":2,"telemetry_file":"window.telemetry.csv"}"#,
         )
         .unwrap();
         assert_eq!(
             pending_ordinals(&root, HARDWARE, 9, vec![0, 1, 2, 3, 4], 1).unwrap(),
             vec![3, 4]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pre_telemetry_product_does_not_hide_the_latest_window() {
+        let root = std::env::temp_dir().join(format!(
+            "analysis-export-telemetry-migration-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("old.json"),
+            br#"{"schema":"sensor-system-analysis-csv-v2","hardware_id":"0102030405060708","boot_epoch":9,"window_ordinal":2}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pending_ordinals(&root, HARDWARE, 9, vec![0, 1, 2, 3, 4], 1).unwrap(),
+            vec![4]
         );
         fs::remove_dir_all(root).unwrap();
     }

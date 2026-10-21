@@ -17,11 +17,12 @@ więc okno może być nieznacznie dłuższe. Nie wyrównujemy go do pełnej minu
 
 ## Publikowane pliki
 
-Dla każdego zamkniętego okna powstają trzy pliki o wspólnym rdzeniu:
+Dla każdego zamkniętego okna powstają cztery pliki o wspólnym rdzeniu:
 
 ```text
 line_b-node_1-11:10-16.10.2026.csv
 line_b-node_1-11:10-16.10.2026.events.csv
+line_b-node_1-11:10-16.10.2026.telemetry.csv
 line_b-node_1-11:10-16.10.2026.json
 ```
 
@@ -73,6 +74,20 @@ Plik `.events.csv` zachowuje luki i continuity breaks. Ponieważ główny CSV ni
 ma numeru próbki, zdarzenie zawiera `row_index` wskazujący miejsce w tablicy
 danych oraz `source_sample_number` służący do audytu Capture.
 
+Plik `.telemetry.csv` jest rzadkim szeregiem obserwacji przypisanych do tego
+samego okna. Nie powiela temperatury w każdym wierszu danych XYZ. Zawiera:
+
+```text
+captured_device_time_us,time_from_first_sample_s,adxl355_temperature_c,adxl355_temperature_raw
+```
+
+Eksporter bierze z walidowanego Telemetry WAL wyłącznie snapshoty, których
+`captured_device_time_us` mieści się w domkniętym zakresie czasu pierwszej i
+ostatniej próbki. Plik może zawierać sam nagłówek, jeżeli w danym oknie nie
+powstał snapshot. JSON wskazuje jego nazwę, kolumny, regułę doboru oraz liczbę
+rekordów. Kod źródłowy pozostaje dowodem pomiaru, a stopnie Celsjusza są gotową
+wartością analityczną wyznaczoną wersjonowanym modelem ADXL355.
+
 ## Automatyzacja i konfiguracja
 
 `analysis-export` skanuje tylko skonfigurowane, aktywne tożsamości. Najpierw
@@ -100,8 +115,9 @@ interwał. Ręczne wykonanie tej samej operacji:
 ```
 
 Moduł `host_v2/analysis/load_analysis_window.py` jest małym elementem używanym
-przez notebooki analityczne. Znajduje trzy pliki na podstawie ścieżki głównego
-CSV, sprawdza ich zgodność oraz tworzy wektor czasu z wyznaczonego ODR. Można
+przez notebooki analityczne. Znajduje pliki okna na podstawie ścieżki głównego
+CSV, sprawdza ich zgodność, wczytuje rzadką telemetrię oraz tworzy wektor czasu
+z wyznaczonego ODR. Można
 go również uruchomić bezpośrednio do szybkiej kontroli okna:
 
 ```bash
@@ -120,6 +136,7 @@ window = load_window("line_b-node_1-11:36-16.10.2026.csv")
 acceleration = window["samples"]  # NumPy array: columns x, y, z [m/s²]
 time_s = window["time_s"]
 metadata = window["metadata"]
+telemetry = window["telemetry"]  # kolumny opisuje window["telemetry_columns"]
 assert window["is_continuous"]
 ```
 
