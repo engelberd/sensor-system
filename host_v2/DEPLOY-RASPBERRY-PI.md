@@ -7,7 +7,8 @@ nie mogą jednocześnie posiadać tych samych portów.
 
 ## 1. Warunki wejściowe
 
-- 64-bit Raspberry Pi OS z działającym `/proc/sys/kernel/random/boot_id`;
+- 64-bit Raspberry Pi OS z Pythonem 3.11+ i działającym
+  `/proc/sys/kernel/random/boot_id`;
 - Rust zgodny z `host_v2/rust-toolchain.toml` oraz GNU `timeout`; pakiet GNU
   `time` jest zalecany do pomiaru RSS i CPU;
 - użytkownik procesu należy do grupy mającej dostęp do portów szeregowych;
@@ -18,6 +19,65 @@ nie mogą jednocześnie posiadać tych samych portów.
   rezerwę miejsca;
 - wszystkie node używają protocol 5, a ich board revision została fizycznie
   potwierdzona.
+
+### Granica Git i lokalnego hosta
+
+Repozytorium zawiera kod hosta i node, domyślne parametry produktu, profil
+tożsamości instalacji, szablony systemd oraz instalator checksummowanych
+release. Świeży host odtwarzamy z `main`, a nie przez kopiowanie `/opt` lub
+aktywnych unitów ze starego Raspberry Pi.
+
+Celowo poza Git pozostają:
+
+- `host/system_config.json` z lokalnymi ścieżkami, endpointami i czasowymi
+  wyłączeniami kanałów;
+- aktywne unity w `/etc/systemd/system` i release w `/opt/sensor-system`;
+- reguła udev zależna od fizycznego egzemplarza konwertera;
+- sterownik kernela CH9344;
+- stan i dane uwierzytelniające Tailscale;
+- Capture, Analysis, logi oraz pliki runtime.
+
+Na świeżym Raspberry Pi po instalacji Pythona z `venv`, Rust i zależności
+kompilatora uruchamiamy:
+
+```bash
+git clone <repozytorium> sensor-system
+cd sensor-system
+host/tools/setup_host.sh rpi-sanok
+```
+
+Skrypt tworzy lekkie środowisko Python wymagane przez dashboard, generuje
+ignorowany lokalny overlay, buduje host v2, tworzy katalogi danych i wykonuje
+walidację bez otwierania RS485. Nie instaluje sterownika kernela, reguł udev,
+Tailscale ani usług systemd, ponieważ wymagają one wiedzy o konkretnym hoście.
+
+### Tailscale
+
+Tailscale jest transportem administracyjnym, a nie częścią recordera. Instaluj
+go według [oficjalnej instrukcji dla Linux/Raspberry Pi OS](https://tailscale.com/docs/install/linux),
+następnie zarejestruj maszynę i jawnie włącz usługę przy boot:
+
+```bash
+sudo systemctl enable --now tailscaled
+sudo tailscale up
+tailscale status
+systemctl is-enabled tailscaled
+systemctl is-active tailscaled
+```
+
+Klucza rejestracyjnego ani `/var/lib/tailscale/tailscaled.state` nie wolno
+commitować ani kopiować między hostami. Każde Raspberry Pi otrzymuje własną
+tożsamość i adres. Przed instalacją dashboardu odczytaj ten adres przez
+`tailscale ip -4` i przekaż go jako `SENSOR_HOST_DASHBOARD_HOST`.
+
+Po restarcie hosta bramka zdalnego dostępu wygląda tak:
+
+```bash
+systemctl is-active tailscaled
+tailscale status
+systemctl is-active sensor-host-v2 sensor-host-dashboard-v2
+./hostctl doctor
+```
 
 Przed dotknięciem RS485 uruchamiamy pełne testy i bramkę symulacyjną:
 
@@ -175,6 +235,12 @@ tylko stałe akcje `status/start/stop/restart` dla recordera i timera. Jego kod
 jest checksummowaną, root-owned częścią release; dashboard nie otrzymuje sudo i
 nie może przekazać nazwy jednostki ani polecenia powłoki. Jednostka
 `sensor-host-dashboard-v2.service` działa jako zwykły użytkownik instalacji.
+
+Jeżeli dashboard wiąże się z adresem Tailscale, może wystartować dopiero po
+pojawieniu się tego interfejsu. Jego jednostka ma `Restart=on-failure`, więc
+ponowi bind, ale niedziałający lub niewłączony `tailscaled` pozostanie osobną
+awarią hosta. Dlatego status Tailscale jest obowiązkowym elementem testu po
+reboocie.
 
 Przełączenie wykonujemy w oknie serwisowym: zatrzymujemy legacy host, upewniamy
 się, że zwolnił wszystkie porty, uruchamiamy v2 i sprawdzamy discovery oraz
