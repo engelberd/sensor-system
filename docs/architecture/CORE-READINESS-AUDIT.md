@@ -19,6 +19,9 @@ Stanowisko Raspberry Pi z pięcioma aktywnymi liniami B/C/D/G/H i firmware
 `running`, a liczniki timeoutów, błędów dekodowania, disconnectów, wire
 failures, retry, backpressure i błędów storage pozostały równe zero.
 Automatyczny eksporter publikuje okna razem z JSON, Events CSV i Telemetry CSV.
+Poprawiony release został wdrożony 2026-10-21. Kontrolowany restart zakończył
+poprzedni proces z `clean=true` dla wszystkich pięciu kanałów, a nowy proces
+przejął B/C/D/G/H bez gapów, brakujących próbek, timeoutów i backpressure.
 
 To wystarcza do MVP stanowiskowego z jednym node na każdej z pięciu linii.
 Nie zamyka jeszcze docelowego MVP produktu opisanego przez wymagania: nie ma
@@ -68,9 +71,9 @@ ogon, a pełny audyt wykonywać w Maintenance albo na kopii danych.
 
 ## Bramka finalnego MVP produktu
 
-1. Wdrożyć poprawkę odrzucania błędnej obserwacji czasu i wykonać kontrolowany
-   restart z potwierdzeniem `clean=true` oraz ponownego takeover wszystkich
-   aktywnych linii.
+1. **Zamknięte 2026-10-21:** wdrożono poprawkę odrzucania błędnej obserwacji
+   czasu; kontrolowany restart potwierdził `clean=true` i ponowne takeover
+   wszystkich aktywnych linii.
 2. Zakończyć co najmniej 24-godzinny soak pięciu linii i zweryfikować wszystkie
    zamknięte Capture: zero ukrytych dziur, poprawne jawne eventy i świeże Time
    oraz Telemetry.
@@ -83,9 +86,9 @@ ogon, a pełny audyt wykonywać w Maintenance albo na kopii danych.
    ustalić dopuszczalne ODR na kanał z fizycznych wyników.
 7. Ustalić dla okresu bez Archive prostą procedurę monitorowania i wynoszenia
    Capture/Analysis przed osiągnięciem rezerwy filesystemu.
-8. Dodać do admission profil zmierzonej przepustowości persistence albo
-   zoptymalizować group commit; 500 Hz pozostaje niedopuszczone na bieżącej
-   karcie SD mimo wystarczającego teoretycznego budżetu RS485.
+8. Po montażu docelowego SSD wykonać osobną kwalifikację persistence i group
+   commit dla skrajnego profilu 500 Hz. Profil ten pozostaje dostępny w
+   capabilities, ale nie jest częścią podstawowej bramki MVP 125–250 Hz.
 
 ## Przepustowość nowego Measurement Service
 

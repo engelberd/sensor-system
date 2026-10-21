@@ -478,6 +478,8 @@ testu 24/7:
 - uploader Archive na zewnętrzny serwer i stan publikacji w dashboardzie;
 - miesięczna retencja po potwierdzeniu checkpointów pokrycia;
 - migracja danych na M.2 SSD i ponowny benchmark;
+- osobna kwalifikacja skrajnego profilu 500 Hz po migracji na SSD; podstawowy
+  profil MVP pozostaje w zakresie 125–250 Hz;
 - alerty o awarii, braku miejsca i długim offline;
 - test wielu node na jednej magistrali i pełny gate ośmiu kanałów.
 
@@ -490,10 +492,11 @@ zdalny restart, rollover po zmianie epoki i powrót do Recording. AssignAddress
 nadal wymaga rzeczywistego nieprzypisanego node, ale nie blokuje ciągłego testu
 obecnej topologii.
 
-Najbliższa praca to domknięcie bramki opisanej w
-[CORE-READINESS-AUDIT.md](CORE-READINESS-AUDIT.md): wdrożenie poprawki
-odrzucania wadliwej obserwacji TimeSync, ukończenie 24-godzinnego soak,
-walidacja Capture oraz próby restartu procesu i Raspberry Pi. Osobno pozostają
+Poprawka odrzucania wadliwej obserwacji TimeSync jest wdrożona. Kontrolowany
+restart zakończył wszystkie kanały z `clean=true`, a nowy proces przejął pięć
+linii bez nowych gapów, brakujących próbek ani błędów transportu. Najbliższa
+praca to ukończenie 24-godzinnego soak, walidacja zamkniętych Capture oraz
+zimny restart Raspberry Pi. Osobno pozostają
 odłączenie i powrót node, utrata konwertera, wiele node na jednej magistrali,
 Scan/Assign i długi przewód. Archive pozostaje poza MVP; w okresie przejściowym
 operator musi monitorować miejsce i wynosić Capture/Analysis przed progiem
