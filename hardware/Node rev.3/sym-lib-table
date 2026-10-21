@@ -1,0 +1,5 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "adxl") (type "KiCad") (uri "/Users/anone/DEVV/Pico/KiCad/node/symbols.kicad_sym") (options "") (descr ""))
+	(lib (name "Symbols") (type "KiCad") (uri "/Users/anone/Documents/KiCad/10.0/symbols/Symbols.kicad_sym") (options "") (descr ""))
+)

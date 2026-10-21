@@ -63,3 +63,17 @@ fp-lib-table-bak
 *.lck
 *.tmp
 .history/
+
+# Node rev.3 manufacturing/review exports stay in release artifacts. The
+# KiCad project, shared symbols and footprint libraries remain tracked.
+/hardware/Node rev.3/Output/
+/hardware/Node rev.3/.step
+/hardware/Node rev.3/3d_model.step
+/hardware/Node rev.3/*.gbr
+/hardware/Node rev.3/*.gbrjob
+/hardware/Node rev.3/*.drl
+/hardware/Node rev.3/*.csv
+/hardware/Node rev.3/*.numbers
+/hardware/Node rev.3/*.pdf
+/hardware/Node rev.3/*.dxf
+/hardware/symbols.bak
