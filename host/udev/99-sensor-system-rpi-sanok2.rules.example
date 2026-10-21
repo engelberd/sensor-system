@@ -1,0 +1,9 @@
+# Stable names for the WCH USB Quad Serial converter installed on rpi-sanok2.
+# Copy to /etc/udev/rules.d/99-sensor-system-rs485.rules, then run:
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=tty
+#
+# Interfaces 00 and 02 are the first two RS485 channels used by this system.
+
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1a86", ENV{ID_MODEL_ID}=="55d5", ENV{ID_SERIAL}=="WCH.CN_USB_Quad_Serial_BD265DABCD", ENV{ID_USB_INTERFACE_NUM}=="00", SYMLINK+="sensor-system-line-a", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1a86", ENV{ID_MODEL_ID}=="55d5", ENV{ID_SERIAL}=="WCH.CN_USB_Quad_Serial_BD265DABCD", ENV{ID_USB_INTERFACE_NUM}=="02", SYMLINK+="sensor-system-line-b", MODE="0660", GROUP="dialout"
