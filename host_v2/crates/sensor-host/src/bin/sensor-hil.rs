@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use sensor_core::{ClockObservation, ContinuityBreak, Gap, HardwareId, SequenceCursor};
+use sensor_core::{
+    ClockObservation, ClockObservationError, ContinuityBreak, Gap, HardwareId, SequenceCursor,
+};
 use sensor_host::capture_segments::{
     capture_segment_paths, validate_capture_segment, CaptureSegmentStream,
 };
@@ -564,6 +566,10 @@ fn run_time_probe(
                 ChannelEndpointEvent::Agent(ChannelEvent::TimeSyncNotAccepted { .. }) => {
                     return Err(HilError::TimeProbeNotAccepted);
                 }
+                ChannelEndpointEvent::Agent(ChannelEvent::TimeSyncInvalidObservation {
+                    error,
+                    ..
+                }) => return Err(HilError::InvalidClockObservation(error)),
                 ChannelEndpointEvent::DecodeError(_) => {
                     decode_errors = decode_errors.saturating_add(1);
                 }
@@ -2346,6 +2352,7 @@ enum HilError {
     TimeProbeHandshakeTimedOut,
     TimeProbeObservationTimedOut(u16),
     TimeProbeNotAccepted,
+    InvalidClockObservation(ClockObservationError),
     TimeProbeInvariant,
     TimeProbeLinkErrors {
         decode_errors: u32,
@@ -2481,6 +2488,9 @@ impl fmt::Display for HilError {
             ),
             Self::TimeProbeNotAccepted => {
                 formatter.write_str("node did not accept the Time Service request")
+            }
+            Self::InvalidClockObservation(error) => {
+                write!(formatter, "node returned an invalid clock observation: {error}")
             }
             Self::TimeProbeInvariant => {
                 formatter.write_str("time-probe produced no usable observations")

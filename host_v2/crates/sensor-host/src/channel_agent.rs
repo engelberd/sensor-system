@@ -113,6 +113,13 @@ pub enum ChannelEvent {
     TimeSyncNotAccepted {
         node_address: u8,
     },
+    /// The response was correlated and decoded, but its four timestamps did
+    /// not form a physically valid clock observation. This rejects one probe
+    /// without faulting the channel or blocking Measurement.
+    TimeSyncInvalidObservation {
+        node_address: u8,
+        error: ClockObservationError,
+    },
     TelemetrySnapshot {
         node_address: u8,
         snapshot: TelemetrySnapshot,
@@ -1022,7 +1029,10 @@ impl ChannelAgent {
                     Ok(value) => value,
                     Err(error) => {
                         self.active = None;
-                        return Err(error.into());
+                        return Ok(ChannelEvent::TimeSyncInvalidObservation {
+                            node_address,
+                            error,
+                        });
                     }
                 };
                 self.active = None;
@@ -1181,7 +1191,6 @@ pub enum ChannelAgentError {
     StreamStateWire(MeasurementWireError),
     TimeWire(TimeWireError),
     TelemetryWire(TelemetryWireError),
-    TimeObservation(ClockObservationError),
     Frame(sensor_protocol::FrameError),
     InvalidTimeNodeAddress(u8),
     InvalidTelemetryNodeAddress(u8),
@@ -1236,11 +1245,6 @@ impl From<TimeWireError> for ChannelAgentError {
 impl From<TelemetryWireError> for ChannelAgentError {
     fn from(value: TelemetryWireError) -> Self {
         Self::TelemetryWire(value)
-    }
-}
-impl From<ClockObservationError> for ChannelAgentError {
-    fn from(value: ClockObservationError) -> Self {
-        Self::TimeObservation(value)
     }
 }
 impl From<sensor_protocol::FrameError> for ChannelAgentError {
@@ -1359,6 +1363,37 @@ mod tests {
                 )
                 .unwrap(),
             ChannelEvent::TimeSyncNotAccepted { node_address: 7 }
+        );
+        assert_eq!(agent.queued_work_items(), 0);
+    }
+
+    #[test]
+    fn invalid_time_observation_yields_channel_instead_of_faulting_it() {
+        let mut agent = ChannelAgent::new(10, 100, duration(50), policy()).unwrap();
+        agent.submit_time_sync(7, BootEpoch::new(77)).unwrap();
+        assert_eq!(
+            agent.poll(MonotonicMicros::new(0)).unwrap(),
+            ChannelEvent::TransmitReady
+        );
+        let request = take_transmit(&mut agent, 100);
+        let payload = encode_time_success(TimeExchangeResponse {
+            boot_epoch: BootEpoch::new(77),
+            node_receive_us: 1_000,
+            node_send_us: 1_100,
+        })
+        .unwrap();
+
+        assert_eq!(
+            agent
+                .receive(
+                    MonotonicMicros::new(140),
+                    &wire_response(&request, &payload),
+                )
+                .unwrap(),
+            ChannelEvent::TimeSyncInvalidObservation {
+                node_address: 7,
+                error: ClockObservationError::ProcessingExceedsRoundTrip,
+            }
         );
         assert_eq!(agent.queued_work_items(), 0);
     }

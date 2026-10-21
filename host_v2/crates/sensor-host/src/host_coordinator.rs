@@ -535,7 +535,7 @@ where
                 return Err(HostRuntimeStartError::TimeSubmitter {
                     channel_id,
                     source,
-                    cleanup,
+                    cleanup: Box::new(cleanup),
                 });
             }
         };
@@ -550,7 +550,7 @@ where
                     return Err(HostRuntimeStartError::TelemetrySubmitter {
                         channel_id,
                         source,
-                        cleanup,
+                        cleanup: Box::new(cleanup),
                     });
                 }
             },
@@ -565,7 +565,7 @@ where
                 return Err(HostRuntimeStartError::OperationsAudit {
                     channel_id,
                     source,
-                    cleanup,
+                    cleanup: Box::new(cleanup),
                 });
             }
         };
@@ -576,7 +576,7 @@ where
                 let cleanup = cleanup_running_channels(running, time, telemetry);
                 return Err(HostRuntimeStartError::WorkIdSeedOverflow {
                     channel_id,
-                    cleanup,
+                    cleanup: Box::new(cleanup),
                 });
             }
         };
@@ -610,7 +610,7 @@ where
                 return Err(HostRuntimeStartError::Channel {
                     channel_id,
                     source,
-                    cleanup,
+                    cleanup: Box::new(cleanup),
                 });
             }
         };
@@ -803,26 +803,26 @@ pub enum HostRuntimeStartError {
     TimeSubmitter {
         channel_id: u8,
         source: TimePersistenceExecutorError,
-        cleanup: HostStartupCleanup,
+        cleanup: Box<HostStartupCleanup>,
     },
     TelemetrySubmitter {
         channel_id: u8,
         source: TelemetryPersistenceExecutorError,
-        cleanup: HostStartupCleanup,
+        cleanup: Box<HostStartupCleanup>,
     },
     WorkIdSeedOverflow {
         channel_id: u8,
-        cleanup: HostStartupCleanup,
+        cleanup: Box<HostStartupCleanup>,
     },
     OperationsAudit {
         channel_id: u8,
         source: OperationsAuditError,
-        cleanup: HostStartupCleanup,
+        cleanup: Box<HostStartupCleanup>,
     },
     Channel {
         channel_id: u8,
         source: ChannelWorkerError,
-        cleanup: HostStartupCleanup,
+        cleanup: Box<HostStartupCleanup>,
     },
     NoRunnableChannels {
         faults: Vec<StartupChannelFault>,

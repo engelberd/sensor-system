@@ -355,6 +355,7 @@ impl ChannelWorkCoordinator {
             ChannelEvent::TimeObservation { node_address, .. }
             | ChannelEvent::TimeSyncTimedOut { node_address }
             | ChannelEvent::TimeSyncNotAccepted { node_address }
+            | ChannelEvent::TimeSyncInvalidObservation { node_address, .. }
             | ChannelEvent::WireAttemptFailed { node_address } => *node_address,
             _ => return Ok(None),
         };

@@ -713,7 +713,10 @@ mod tests {
         assert_eq!(profile.enabled_channels().count(), 2);
         assert_eq!(profile.channels()[0].transport().device_id(), "usb-rs485-1");
         assert_eq!(profile.channels()[1].transport().device_id(), "usb-rs485-1");
-        assert_eq!(profile.channels()[0].nodes()[0].display_name(), Some("North bearing"));
+        assert_eq!(
+            profile.channels()[0].nodes()[0].display_name(),
+            Some("North bearing")
+        );
         assert_eq!(
             profile.channels()[1].nodes()[0].output_rate(),
             OutputRateCode::Hz62_5
