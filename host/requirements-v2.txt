@@ -1,0 +1,3 @@
+# Python dependency used by the protocol-2 A/B bootloader uploader.
+# The recorder, analysis exporter and protocol-5 control plane are native Rust.
+pyserial>=3.5,<4

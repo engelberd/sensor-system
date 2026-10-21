@@ -32,10 +32,14 @@ if [[ ! -f "${PROFILE_PATH}" ]]; then
     exit 2
 fi
 
-echo "[1/5] Przygotowanie środowiska Python dla dashboardu: ${VENV_DIR}"
+echo "[1/6] Przygotowanie środowiska Python dla dashboardu i aktualizacji firmware: ${VENV_DIR}"
 "${PYTHON_BIN}" -m venv "${VENV_DIR}"
 
-echo "[2/5] Przygotowanie lokalnej konfiguracji"
+echo "[2/6] Instalacja lekkich zależności serwisowych"
+"${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check \
+    -r "${ROOT_DIR}/host/requirements-v2.txt"
+
+echo "[3/6] Przygotowanie lokalnej konfiguracji"
 if [[ -e "${CONFIG_PATH}" ]]; then
     echo "[OK] Zachowano istniejącą konfigurację: ${CONFIG_PATH}"
 else
@@ -45,13 +49,13 @@ else
     echo "[OK] Utworzono lokalną konfigurację dla profilu ${SYSTEM_PROFILE}: ${CONFIG_PATH}"
 fi
 
-echo "[3/5] Budowanie binariów host v2"
+echo "[4/6] Budowanie binariów host v2"
 "${ROOT_DIR}/hostctl" build
 
-echo "[4/5] Tworzenie katalogów danych z efektywnego profilu"
+echo "[5/6] Tworzenie katalogów danych z efektywnego profilu"
 "${ROOT_DIR}/hostctl" paths --init
 
-echo "[5/5] Walidacja konfiguracji bez otwierania RS485"
+echo "[6/6] Walidacja konfiguracji bez otwierania RS485"
 "${ROOT_DIR}/hostctl" validate
 
 echo

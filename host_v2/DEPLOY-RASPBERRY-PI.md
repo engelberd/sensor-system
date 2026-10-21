@@ -46,10 +46,11 @@ cd sensor-system
 host/tools/setup_host.sh rpi-sanok
 ```
 
-Skrypt tworzy lekkie środowisko Python wymagane przez dashboard, generuje
-ignorowany lokalny overlay, buduje host v2, tworzy katalogi danych i wykonuje
-walidację bez otwierania RS485. Nie instaluje sterownika kernela, reguł udev,
-Tailscale ani usług systemd, ponieważ wymagają one wiedzy o konkretnym hoście.
+Skrypt tworzy lekkie środowisko Python wymagane przez dashboard i uploader
+firmware po RS485, instaluje `pyserial`, generuje ignorowany lokalny overlay,
+buduje host v2, tworzy katalogi danych i wykonuje walidację bez otwierania
+RS485. Nie instaluje sterownika kernela, reguł udev, Tailscale ani usług
+systemd, ponieważ wymagają one wiedzy o konkretnym hoście.
 
 ### Tailscale
 
