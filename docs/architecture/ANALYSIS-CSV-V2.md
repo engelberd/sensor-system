@@ -154,9 +154,11 @@ python -m jupyter lab analysis_window.ipynb
 W PowerShell polecenie aktywacji ma postać
 `.venv\Scripts\Activate.ps1`, a pozostałe polecenia pozostają takie same.
 
-Skrypt wymaga tylko `numpy`. Kończy się kodem `0` dla ciągłego okna, `2` dla
-jawnej luki lub continuity break oraz `1` dla niespójnych plików. Wektor czasu
-uwzględnia brakujące próbki opisane przez zdarzenia `gap`.
+Sam loader wymaga tylko `numpy`; notebook startowy używa również `plotly` i
+`scipy`, ujętych w `host_v2/analysis/requirements.txt`. Skrypt kończy się kodem
+`0` dla ciągłego okna, `2` dla jawnej luki lub continuity break oraz `1` dla
+niespójnych plików. Wektor czasu uwzględnia brakujące próbki opisane przez
+zdarzenia `gap`.
 
 Przy pierwszym uruchomieniu eksporter bierze tylko skonfigurowaną liczbę
 najnowszych zamkniętych okien bieżącego `boot_epoch`. Capture z poprzednich
