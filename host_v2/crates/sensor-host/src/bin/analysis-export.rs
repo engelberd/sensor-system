@@ -311,7 +311,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("window.telemetry.csv"), b"header\n").unwrap();
         fs::write(
-            root.join("line_b-node_1-11:10-16.10.2026.json"),
+            root.join("line_b-node_1-11_10-16_10_2026.json"),
             br#"{"schema":"sensor-system-analysis-csv-v2","hardware_id":"0102030405060708","boot_epoch":9,"window_ordinal":2,"telemetry_file":"window.telemetry.csv"}"#,
         )
         .unwrap();

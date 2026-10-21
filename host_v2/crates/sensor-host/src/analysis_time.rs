@@ -258,7 +258,7 @@ fn format_unix_time(unix_time_us: u64, local: bool) -> Result<(String, String), 
         let value = utc.with_timezone(&Local);
         Ok((
             value.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string(),
-            value.format("%H:%M-%d.%m.%Y").to_string(),
+            value.format("%H_%M-%d_%m_%Y").to_string(),
         ))
     } else {
         Ok((
@@ -314,5 +314,17 @@ mod tests {
             interpolate_host_time(&observations, 1_000).unwrap(),
             Some((1_510, 10))
         );
+    }
+
+    #[test]
+    fn analysis_filename_minute_is_portable() {
+        let (_, label) = format_unix_time(1_799_000_040_000_000, true).unwrap();
+        assert_eq!(label.len(), 16);
+        assert_eq!(label.as_bytes()[2], b'_');
+        assert_eq!(label.as_bytes()[5], b'-');
+        assert_eq!(label.as_bytes()[8], b'_');
+        assert_eq!(label.as_bytes()[11], b'_');
+        assert!(!label.contains(':'));
+        assert!(!label.contains('.'));
     }
 }

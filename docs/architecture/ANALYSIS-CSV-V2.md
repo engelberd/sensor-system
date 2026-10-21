@@ -20,10 +20,10 @@ więc okno może być nieznacznie dłuższe. Nie wyrównujemy go do pełnej minu
 Dla każdego zamkniętego okna powstają cztery pliki o wspólnym rdzeniu:
 
 ```text
-line_b-node_1-11:10-16.10.2026.csv
-line_b-node_1-11:10-16.10.2026.events.csv
-line_b-node_1-11:10-16.10.2026.telemetry.csv
-line_b-node_1-11:10-16.10.2026.json
+line_b-node_1-11_10-16_10_2026.csv
+line_b-node_1-11_10-16_10_2026.events.csv
+line_b-node_1-11_10-16_10_2026.telemetry.csv
+line_b-node_1-11_10-16_10_2026.json
 ```
 
 Czas w nazwie jest lokalnym, minutowym przybliżeniem czasu pierwszej próbki.
@@ -122,7 +122,7 @@ go również uruchomić bezpośrednio do szybkiej kontroli okna:
 
 ```bash
 python host_v2/analysis/load_analysis_window.py \
-  'var/analysis/line-b/line_b-node_1-11:36-16.10.2026.csv'
+  'var/analysis/line-b/line_b-node_1-11_36-16_10_2026.csv'
 ```
 
 Minimalny notebook startowy znajduje się w
@@ -132,7 +132,7 @@ bez kopiowania logiki formatu plików:
 ```python
 from host_v2.analysis.load_analysis_window import load_window
 
-window = load_window("line_b-node_1-11:36-16.10.2026.csv")
+window = load_window("line_b-node_1-11_36-16_10_2026.csv")
 acceleration = window["samples"]  # NumPy array: columns x, y, z [m/s²]
 time_s = window["time_s"]
 metadata = window["metadata"]
@@ -176,7 +176,7 @@ najnowsze zamknięte okno każdej aktywnej linii w nowym formacie.
 
 Wdrożenie na Raspberry Pi 2026-10-16 opublikowało po jednym najnowszym oknie
 B/C/D/G/H, łącznie pięć produktów v2. Każde miało zero brakujących próbek.
-Przykładowe okno B ma nazwę `line_b-node_1-11:36-16.10.2026.csv`, 75273
+Przykładowe okno B ma nazwę `line_b-node_1-11_36-16_10_2026.csv`, 75273
 próbki, ustawione 125 Hz, wyznaczone 125.440668 Hz oraz czas pierwszej próbki
 `2026-10-16T11:36:53.332153+02:00` z oszacowaną niepewnością 2593 µs.
 Pierwsze wiersze miały fizycznie poprawny rząd wartości, w tym około
