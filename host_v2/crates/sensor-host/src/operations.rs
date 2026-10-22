@@ -82,6 +82,9 @@ pub enum OperationKind {
     ResetConfiguration {
         expected_revision: u32,
     },
+    SetTelemetryInterval {
+        interval_seconds: u32,
+    },
     RestartNode,
     ScanUnassigned {
         round_nonce: u64,
@@ -124,6 +127,11 @@ impl OperationRequest {
             OperationKind::ResetConfiguration { expected_revision } => {
                 if *expected_revision == 0 {
                     return Err(OperationsError::ZeroExpectedRevision);
+                }
+            }
+            OperationKind::SetTelemetryInterval { interval_seconds } => {
+                if !(60..=86_400).contains(interval_seconds) {
+                    return Err(OperationsError::InvalidTelemetryInterval(*interval_seconds));
                 }
             }
             OperationKind::ScanUnassigned {
@@ -177,6 +185,7 @@ pub fn admit_operation(
         | OperationKind::ValidateConfiguration { .. }
         | OperationKind::ApplyConfiguration { .. }
         | OperationKind::ResetConfiguration { .. }
+        | OperationKind::SetTelemetryInterval { .. }
             if matches!(
                 mode,
                 ChannelOperatingMode::Recording
@@ -230,6 +239,10 @@ fn validate_scope(target: OperationTarget, kind: &OperationKind) -> Result<(), O
             | (
                 OperationTarget::Node { .. },
                 OperationKind::ResetConfiguration { .. }
+            )
+            | (
+                OperationTarget::Node { .. },
+                OperationKind::SetTelemetryInterval { .. }
             )
             | (OperationTarget::Node { .. }, OperationKind::RestartNode)
             | (
@@ -302,6 +315,10 @@ pub enum OperationResult {
     AddressAssigned(sensor_protocol::AssignAddressResponse),
     NodeRestartRequested {
         node_address: u8,
+    },
+    TelemetryIntervalApplied {
+        node_address: u8,
+        interval_seconds: u32,
     },
 }
 
@@ -804,6 +821,7 @@ pub enum OperationsError {
     InvalidChannelId(u8),
     InvalidNodeAddress(u8),
     InvalidConfiguration,
+    InvalidTelemetryInterval(u32),
     ZeroExpectedRevision,
     ZeroRoundNonce,
     InvalidSlotCount(u16),
@@ -859,6 +877,12 @@ impl fmt::Display for OperationsError {
             Self::InvalidChannelId(value) => write!(formatter, "invalid channel ID {value}"),
             Self::InvalidNodeAddress(value) => write!(formatter, "invalid node address {value}"),
             Self::InvalidConfiguration => formatter.write_str("invalid measurement configuration"),
+            Self::InvalidTelemetryInterval(value) => {
+                write!(
+                    formatter,
+                    "invalid telemetry interval {value}; expected 60..86400 seconds"
+                )
+            }
             Self::ZeroExpectedRevision => formatter.write_str("expected revision must be non-zero"),
             Self::ZeroRoundNonce => formatter.write_str("commissioning nonce must be non-zero"),
             Self::InvalidSlotCount(value) => write!(formatter, "invalid slot count {value}"),
@@ -1053,6 +1077,31 @@ mod tests {
         assert_eq!(
             request.validate(),
             Err(OperationsError::ZeroExpectedRevision)
+        );
+    }
+
+    #[test]
+    fn telemetry_interval_is_node_scoped_and_bounded() {
+        let mut request = OperationRequest {
+            operation_id: id(4),
+            target: OperationTarget::Node {
+                channel_id: 1,
+                node_address: 1,
+            },
+            kind: OperationKind::SetTelemetryInterval {
+                interval_seconds: 60,
+            },
+        };
+        assert_eq!(
+            admit_operation(&request, ChannelOperatingMode::Recording),
+            Ok(())
+        );
+        request.kind = OperationKind::SetTelemetryInterval {
+            interval_seconds: 30,
+        };
+        assert_eq!(
+            request.validate(),
+            Err(OperationsError::InvalidTelemetryInterval(30))
         );
     }
 

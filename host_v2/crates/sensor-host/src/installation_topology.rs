@@ -14,6 +14,9 @@ use crate::runtime_profile::{HostRuntimeInstallationProfile, RuntimeProfileError
 pub const MAX_HOST_CHANNELS: usize = 16;
 pub const MAX_NODES_PER_CHANNEL: usize = 253;
 pub const PRODUCTION_RS485_BAUD_RATE: u32 = 115_200;
+pub const DEFAULT_TELEMETRY_INTERVAL_SECONDS: u32 = 600;
+pub const MIN_TELEMETRY_INTERVAL_SECONDS: u32 = 60;
+pub const MAX_TELEMETRY_INTERVAL_SECONDS: u32 = 86_400;
 
 pub struct HostInstallationProfile {
     system_name: String,
@@ -235,6 +238,7 @@ pub struct NodeInstallationProfile {
     board_revision: u8,
     enabled: bool,
     output_rate: OutputRateCode,
+    telemetry_interval_seconds: u32,
 }
 
 impl NodeInstallationProfile {
@@ -260,6 +264,10 @@ impl NodeInstallationProfile {
 
     pub const fn output_rate(&self) -> OutputRateCode {
         self.output_rate
+    }
+
+    pub const fn telemetry_interval_seconds(&self) -> u32 {
+        self.telemetry_interval_seconds
     }
 }
 
@@ -372,6 +380,23 @@ fn parse_node(value: &Value, path: &str) -> Result<NodeInstallationProfile, Topo
         .ok_or_else(|| TopologyConfigError::UnsupportedOutputRate {
             value: object["output_rate_hz"].to_string(),
         })?;
+    let telemetry_interval_seconds = match object.get("telemetry_interval_seconds") {
+        None => DEFAULT_TELEMETRY_INTERVAL_SECONDS,
+        Some(value) => {
+            let value = value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| TopologyConfigError::InvalidTelemetryInterval {
+                    path: path.to_owned(),
+                })?;
+            if !(MIN_TELEMETRY_INTERVAL_SECONDS..=MAX_TELEMETRY_INTERVAL_SECONDS).contains(&value) {
+                return Err(TopologyConfigError::InvalidTelemetryInterval {
+                    path: path.to_owned(),
+                });
+            }
+            value
+        }
+    };
 
     Ok(NodeInstallationProfile {
         node_address,
@@ -380,6 +405,7 @@ fn parse_node(value: &Value, path: &str) -> Result<NodeInstallationProfile, Topo
         board_revision,
         enabled,
         output_rate,
+        telemetry_interval_seconds,
     })
 }
 
@@ -651,6 +677,9 @@ pub enum TopologyConfigError {
     UnsupportedOutputRate {
         value: String,
     },
+    InvalidTelemetryInterval {
+        path: String,
+    },
 }
 
 impl fmt::Display for TopologyConfigError {
@@ -694,7 +723,7 @@ mod tests {
                 {
                     "name": "line-a", "channel_id": 1, "label": "Linia A", "enabled": true,
                     "transport": {"kind": "serial-rs485", "device_id": "usb-rs485-1", "endpoint": "/dev/line-a", "baud_rate": 115200},
-                    "nodes": [{"id": 1, "name": "North bearing", "hardware_id": "2f13349450fa4084", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
+                    "nodes": [{"id": 1, "name": "North bearing", "hardware_id": "2f13349450fa4084", "board_revision": 2, "enabled": true, "output_rate_hz": 125, "telemetry_interval_seconds": 60}]
                 },
                 {
                     "name": "line-b", "channel_id": 2, "enabled": true,
@@ -709,6 +738,14 @@ mod tests {
     fn parses_topology_and_preserves_shared_transport_device() {
         let profile = InstallationTopologyProfile::from_document(&valid_document()).unwrap();
         assert_eq!(profile.system_name(), "rpi-sanok");
+        assert_eq!(
+            profile.channels()[0].nodes()[0].telemetry_interval_seconds(),
+            60
+        );
+        assert_eq!(
+            profile.channels()[1].nodes()[0].telemetry_interval_seconds(),
+            600
+        );
         assert_eq!(profile.channels().len(), 2);
         assert_eq!(profile.enabled_channels().count(), 2);
         assert_eq!(profile.channels()[0].transport().device_id(), "usb-rs485-1");

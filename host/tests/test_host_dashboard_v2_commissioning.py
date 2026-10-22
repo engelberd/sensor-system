@@ -137,7 +137,9 @@ class CommissioningProfileStoreTests(unittest.TestCase):
         )
 
         saved = json.loads(self.profile.read_text(encoding="utf-8"))
-        self.assertEqual(saved["runtime_v2"]["telemetry_interval_seconds"], 300)
+        self.assertEqual(
+            saved["channels"][0]["nodes"][0]["telemetry_interval_seconds"], 300
+        )
         self.assertEqual(result["telemetry_interval_seconds"], 300)
         self.assertTrue(result["telemetry_interval_changed"])
 

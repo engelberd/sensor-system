@@ -273,11 +273,20 @@ class V2OperatorApiTests(unittest.TestCase):
         self.assertEqual(response["phase"], "succeeded")
         saved = json.loads(self.config.read_text(encoding="utf-8"))
         self.assertEqual(saved["channels"][0]["nodes"][0]["output_rate_hz"], 500)
-        self.assertEqual(saved["runtime_v2"]["telemetry_interval_seconds"], 300)
-        self.assertTrue(response["profile"]["telemetry_interval_changed"])
-        self.assertNotIn("telemetry_interval_seconds", self.operations.submitted[-1])
         self.assertEqual(
-            self.repository.config_payload()["runtime_v2"]["telemetry_interval_seconds"],
+            saved["channels"][0]["nodes"][0]["telemetry_interval_seconds"], 300
+        )
+        self.assertTrue(response["profile"]["telemetry_interval_changed"])
+        self.assertEqual(
+            self.operations.submitted[-1]["operation"], "set_telemetry_interval"
+        )
+        self.assertEqual(
+            self.operations.submitted[-1]["telemetry_interval_seconds"], 300
+        )
+        self.assertEqual(
+            self.repository.config_payload()["channels"][0]["nodes"][0][
+                "telemetry_interval_seconds"
+            ],
             300,
         )
 

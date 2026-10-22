@@ -13,7 +13,7 @@
     {
       "name": "line-b", "channel_id": 2, "label": "Linia B", "enabled": true,
       "transport": {"kind": "serial-rs485", "device_id": "wch-quad-serial-bd265dabcd", "endpoint": "/dev/sensor-system-line-b", "baud_rate": 115200},
-      "nodes": [{"id": 1, "hardware_id": "32d32d8f5b796a99", "board_revision": 2, "enabled": true, "output_rate_hz": 125}]
+      "nodes": [{"id": 1, "hardware_id": "32d32d8f5b796a99", "board_revision": 2, "enabled": true, "output_rate_hz": 125, "telemetry_interval_seconds": 60}]
     }
   ]
 }

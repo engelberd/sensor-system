@@ -120,7 +120,6 @@ class CommissioningProfileStore:
 
         profile_path = self.profile_path()
         profile = self._read_document(profile_path)
-        effective = _load_merged_document(self.active_config_path)
         channels = profile.get("channels")
         if not isinstance(channels, list):
             raise CommissioningProfileError("installation profile has no channels array")
@@ -153,11 +152,7 @@ class CommissioningProfileStore:
             output_rate_unchanged = float(node.get("output_rate_hz")) == rate
         except (TypeError, ValueError):
             output_rate_unchanged = False
-        effective_runtime = effective.get("runtime_v2")
-        effective_runtime = effective_runtime if isinstance(effective_runtime, dict) else {}
-        current_telemetry_interval = effective_runtime.get(
-            "telemetry_interval_seconds"
-        )
+        current_telemetry_interval = node.get("telemetry_interval_seconds", 600)
         telemetry_interval_changed = (
             telemetry_interval is not None
             and current_telemetry_interval != telemetry_interval
@@ -173,12 +168,7 @@ class CommissioningProfileStore:
             }
         node["output_rate_hz"] = stored_rate
         if telemetry_interval is not None:
-            runtime = profile.setdefault("runtime_v2", {})
-            if not isinstance(runtime, dict):
-                raise CommissioningProfileError(
-                    "installation profile runtime_v2 must be an object"
-                )
-            runtime["telemetry_interval_seconds"] = telemetry_interval
+            node["telemetry_interval_seconds"] = telemetry_interval
         self._atomic_write(profile_path, profile)
         return {
             "profile_path": str(profile_path),

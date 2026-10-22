@@ -207,6 +207,13 @@ impl OperationsIpcServer {
                 };
                 OperationKind::ResetConfiguration { expected_revision }
             }
+            Some("set_telemetry_interval") => {
+                let interval_seconds = match u32_field(object, "telemetry_interval_seconds") {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                OperationKind::SetTelemetryInterval { interval_seconds }
+            }
             Some("restart_node") => OperationKind::RestartNode,
             Some("scan_unassigned") => OperationKind::ScanUnassigned {
                 round_nonce: match u64_field(object, "round_nonce") {
@@ -246,6 +253,7 @@ impl OperationsIpcServer {
                 | OperationKind::ValidateConfiguration { .. }
                 | OperationKind::ApplyConfiguration { .. }
                 | OperationKind::ResetConfiguration { .. }
+                | OperationKind::SetTelemetryInterval { .. }
                 | OperationKind::RestartNode
         ) {
             let node_address = match u8_field(object, "node_address") {
@@ -610,6 +618,14 @@ fn operation_result_json(result: OperationResult) -> Value {
         OperationResult::NodeRestartRequested { node_address } => json!({
             "kind": "node_restart_requested",
             "node_address": node_address
+        }),
+        OperationResult::TelemetryIntervalApplied {
+            node_address,
+            interval_seconds,
+        } => json!({
+            "kind": "telemetry_interval_applied",
+            "node_address": node_address,
+            "telemetry_interval_seconds": interval_seconds
         }),
     }
 }

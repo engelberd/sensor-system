@@ -534,6 +534,7 @@ class V2DashboardRepository:
             "validate_configuration",
             "apply_configuration",
             "reset_configuration",
+            "set_telemetry_interval",
             "restart_node",
             "scan_unassigned",
             "assign_address",
@@ -566,6 +567,10 @@ class V2DashboardRepository:
             ),
             "reset_configuration": ("node_address", "expected_revision"),
             "restart_node": ("node_address",),
+            "set_telemetry_interval": (
+                "node_address",
+                "telemetry_interval_seconds",
+            ),
             "scan_unassigned": ("round_nonce", "slot_count"),
             "assign_address": (
                 "round_nonce",
@@ -582,7 +587,12 @@ class V2DashboardRepository:
                 payload.get("telemetry_interval_seconds")
             )
             if operation
-            in {"validate_configuration", "apply_configuration", "reset_configuration"}
+            in {
+                "validate_configuration",
+                "apply_configuration",
+                "reset_configuration",
+                "set_telemetry_interval",
+            }
             else None
         )
         if operation in {"apply_configuration", "reset_configuration"}:
@@ -611,6 +621,19 @@ class V2DashboardRepository:
             output_rate_hz = OUTPUT_RATE_HZ_BY_CODE.get(output_rate_code)
             if output_rate_hz is None:
                 raise OperationsIpcClientError("host returned an unsupported output rate")
+            if telemetry_interval_seconds is not None:
+                telemetry_submitted = self.operations.submit(
+                    {
+                        "channel_id": channel_id,
+                        "operation_id": fresh_operation_id(),
+                        "operation": "set_telemetry_interval",
+                        "node_address": _safe_int(payload.get("node_address")),
+                        "telemetry_interval_seconds": telemetry_interval_seconds,
+                    }
+                )
+                self._wait_for_operation(
+                    channel_id, telemetry_submitted, timeout_seconds=10.0
+                )
             completed["profile"] = self.commissioning_profiles.update_node_output_rate(
                 channel_id=channel_id,
                 node_address=_safe_int(payload.get("node_address")),

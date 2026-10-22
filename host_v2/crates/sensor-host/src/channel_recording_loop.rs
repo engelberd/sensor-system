@@ -201,6 +201,16 @@ where
         self.measurements.reconfigure_node(config, now)
     }
 
+    pub fn reconfigure_telemetry(
+        &mut self,
+        node_address: u8,
+        config: crate::channel_runtime::TelemetryScheduleConfig,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements
+            .reconfigure_telemetry(node_address, config, now)
+    }
+
     pub fn observe_configuration(
         &self,
         node_address: u8,
@@ -542,6 +552,16 @@ where
     ) -> Result<(), MeasurementCoordinatorError> {
         let now = self.endpoint.now();
         self.measurements.reconfigure_node(config, now)
+    }
+
+    pub fn reconfigure_telemetry(
+        &mut self,
+        node_address: u8,
+        config: crate::channel_runtime::TelemetryScheduleConfig,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements
+            .reconfigure_telemetry(node_address, config, now)
     }
 
     pub fn observe_configuration(

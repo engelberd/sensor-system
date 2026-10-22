@@ -170,6 +170,43 @@ impl ChannelStartupPlan {
         self.admission = report;
         Ok(report)
     }
+
+    pub fn accept_telemetry_interval(
+        &mut self,
+        node_address: u8,
+        interval_seconds: u32,
+    ) -> Result<(AdmissionReport, TelemetryScheduleConfig), ChannelStartupError> {
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|node| node.discovered.node_address == node_address)
+            .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+        let mut telemetry = node
+            .telemetry
+            .ok_or(ChannelStartupError::TelemetryUnavailable(node_address))?;
+        telemetry.interval = DurationMicros::new(u64::from(interval_seconds) * 1_000_000)
+            .map_err(|_| ChannelStartupError::InvalidTelemetryInterval)?;
+        telemetry.validate().map_err(ChannelStartupError::Runtime)?;
+        let previous = node.telemetry;
+        node.telemetry = Some(telemetry);
+        let admission =
+            ChannelAdmission::new(self.policy.admission).map_err(ChannelStartupError::Admission)?;
+        let report = evaluate_plan_admission(&admission, &self.nodes, self.policy)?;
+        if !report.accepted() {
+            let node = self
+                .nodes
+                .iter_mut()
+                .find(|node| node.discovered.node_address == node_address)
+                .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+            node.telemetry = previous;
+            return Err(ChannelStartupError::ChannelOverCapacity {
+                channel_id: self.channel_id,
+                report,
+            });
+        }
+        self.admission = report;
+        Ok((report, telemetry))
+    }
 }
 
 /// Converts immutable discovery evidence into bounded per-channel scheduler
@@ -392,7 +429,13 @@ fn node_plan(
         output_rate_mask: capabilities.output_rate_mask,
         telemetry: capabilities
             .supports_service(ServiceId::Telemetry)
-            .then_some(policy.telemetry_schedule),
+            .then(|| TelemetryScheduleConfig {
+                interval: DurationMicros::new(
+                    u64::from(discovered.telemetry_interval_seconds()) * 1_000_000,
+                )
+                .expect("validated telemetry interval is nonzero"),
+                ..policy.telemetry_schedule
+            }),
     })
 }
 
@@ -440,6 +483,8 @@ pub enum ChannelStartupError {
         node_address: u8,
     },
     InvalidConfiguration,
+    InvalidTelemetryInterval,
+    TelemetryUnavailable(u8),
     UnknownNode(u8),
     UnsupportedOutputRate {
         node_address: u8,

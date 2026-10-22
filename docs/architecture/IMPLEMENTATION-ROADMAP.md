@@ -1188,11 +1188,12 @@ Stan pionu:
    runtime uruchamia go przed workerami kanałów, nadzoruje błędy zapisu i
    zamyka po kanałach. Restart node wykonuje idempotentny rollover Telemetry na
    wyłącznym wątku storage przed wznowieniem schedulera.
-5. **Gotowa konfiguracja interwału:** `runtime_v2.telemetry_interval_seconds`
-   ma produktową wartość domyślną 600 s i może być nadpisane przez profil
-   instalacji. Formularz Configuration dashboardu zapisuje tę wspólną politykę
-   hosta w stabilnym profilu systemu i po zmianie wykonuje kontrolowany restart,
-   aby wszystkie node dostały nowy harmonogram. Slot wire i retry pozostają
+5. **Gotowa konfiguracja interwału:** `telemetry_interval_seconds` przy wpisie
+   node ma produktową wartość domyślną 600 s. Formularz Configuration zapisuje
+   politykę wybranego node w stabilnym profilu systemu i przekazuje ją na żywo
+   do schedulera przez Operations IPC. Zmiana nie restartuje procesu ani innych
+   kanałów. `runtime_v2.telemetry_interval_seconds` pozostaje domyślną wartością
+   zgodności dla profili bez pola per node. Slot wire i retry pozostają
    wewnętrzną polityką. Pierwszy odczyt
    następuje po pełnym interwale i jest przesunięty o jeden slot na kolejny node.
    Runtime Status i dashboard pokazują ostatnią temperaturę, wiek odczytu oraz

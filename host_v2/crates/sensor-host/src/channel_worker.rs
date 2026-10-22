@@ -1101,6 +1101,10 @@ where
                 && result.operation_id == execution.operation_id
                 && result.code == sensor_protocol::RuntimeResultCode::Ok
             {
+                if self.operations.mode() == ChannelOperatingMode::Faulted {
+                    self.operations
+                        .set_mode(ChannelOperatingMode::Maintenance)?;
+                }
                 self.operations
                     .complete_active(OperationResult::NodeRestartRequested { node_address })?;
                 return Ok(None);
@@ -1748,6 +1752,37 @@ where
                         self.begin_automatic_configuration(request)?;
                     } else {
                         self.configuration = self.begin_configuration(request, true)?;
+                    }
+                } else if let OperationKind::SetTelemetryInterval { interval_seconds } =
+                    request.kind
+                {
+                    let OperationTarget::Node { node_address, .. } = request.target else {
+                        unreachable!("telemetry interval is node-scoped")
+                    };
+                    let mut candidate = self.configuration_plan.clone();
+                    match candidate.accept_telemetry_interval(node_address, interval_seconds) {
+                        Ok((_, telemetry)) => {
+                            if self
+                                .recording
+                                .reconfigure_telemetry(node_address, telemetry)
+                                .is_err()
+                            {
+                                self.operations
+                                    .fail_active(OperationsError::ConfigurationFailed)?;
+                            } else {
+                                self.configuration_plan = candidate;
+                                self.operations.complete_active(
+                                    OperationResult::TelemetryIntervalApplied {
+                                        node_address,
+                                        interval_seconds,
+                                    },
+                                )?;
+                            }
+                        }
+                        Err(_) => {
+                            self.operations
+                                .fail_active(OperationsError::ConfigurationAdmissionRejected)?;
+                        }
                     }
                 } else if matches!(
                     request.kind,

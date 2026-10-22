@@ -492,6 +492,34 @@ impl ChannelRuntime {
         self.telemetry.len()
     }
 
+    pub fn reconfigure_telemetry(
+        &mut self,
+        node_address: u8,
+        config: TelemetryScheduleConfig,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        let config = config.validate()?;
+        let state = self
+            .telemetry
+            .iter_mut()
+            .find(|state| state.node_address == node_address)
+            .ok_or(ChannelRuntimeError::TelemetryNotConfigured(node_address))?;
+        state.config = config;
+        if !state.in_flight {
+            state.deadline = now
+                .checked_add(config.interval)
+                .ok_or(ChannelRuntimeError::TimeOverflow)?;
+            state.ready_at = MonotonicMicros::new(
+                state
+                    .deadline
+                    .get()
+                    .saturating_sub(config.estimated_slot.get()),
+            );
+            state.queued_at = now;
+        }
+        Ok(())
+    }
+
     pub fn select_work(
         &mut self,
         now: MonotonicMicros,
@@ -1147,6 +1175,7 @@ pub enum ChannelRuntimeError {
     DuplicateNode(u8),
     DuplicateTimeSync(u8),
     DuplicateTelemetry(u8),
+    TelemetryNotConfigured(u8),
     UnknownNode(u8),
     ZeroJournalCapacity,
     InvalidChunkSize,
@@ -1742,5 +1771,35 @@ mod tests {
             runtime.select_measurement(MonotonicMicros::new(0)),
             Err(ChannelRuntimeError::UnifiedDispatchRequired)
         );
+    }
+
+    #[test]
+    fn telemetry_interval_can_be_rescheduled_for_one_node_without_process_restart() {
+        let mut runtime = runtime(1);
+        runtime
+            .register_node(config(1), SequenceCursor::ORIGIN, MonotonicMicros::new(0))
+            .unwrap();
+        runtime
+            .configure_telemetry(1, telemetry_config(), MonotonicMicros::new(600_000_000))
+            .unwrap();
+        let mut updated = telemetry_config();
+        updated.interval = duration(60_000_000);
+        runtime
+            .reconfigure_telemetry(1, updated, MonotonicMicros::new(1_000_000))
+            .unwrap();
+
+        let Some(ChannelDispatch::Measurement(measurement)) = runtime
+            .select_work(MonotonicMicros::new(60_989_999))
+            .unwrap()
+        else {
+            panic!("measurement remains available before the new telemetry slot");
+        };
+        complete_empty(&mut runtime, measurement, 60_989_999);
+        assert!(matches!(
+            runtime
+                .select_work(MonotonicMicros::new(60_990_000))
+                .unwrap(),
+            Some(ChannelDispatch::Telemetry(_))
+        ));
     }
 }

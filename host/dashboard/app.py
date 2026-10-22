@@ -1060,7 +1060,7 @@ INDEX_HTML = """<!doctype html>
           </label>
           <label class="field">Interwał telemetrii (sekundy)
             <input id="config-telemetry-interval" type="number" min="60" max="86400" step="60" required />
-            <span class="node-meta">Wspólna polityka hosta dla wszystkich node. Zmiana wymaga kontrolowanego restartu hosta.</span>
+            <span class="node-meta">Polityka odczytu telemetrii tego node. Zmiana działa od razu i nie zatrzymuje innych kanałów.</span>
           </label>
           <label class="field">Offset X
             <input id="config-offset-x" type="number" min="-32768" max="32767" step="1" required />
@@ -1136,6 +1136,7 @@ INDEX_HTML = """<!doctype html>
       let logsAvailable = true;
       let commissioningState = null;
       let currentTelemetryIntervalSeconds = 600;
+      const telemetryIntervalsByNode = new Map();
       const selectedDataPaths = new Set();
 
       function $(id) {
@@ -1432,7 +1433,7 @@ INDEX_HTML = """<!doctype html>
           && !node.channel_active_operation;
         const rescueRestart = !node.channel_controls_available
           || !node.channel_mode
-          || ["faulted", "offline"].includes(node.channel_mode);
+          || node.channel_mode === "offline";
         const canRestart = channelEnabled && node.enabled
           && (rescueRestart || !node.channel_active_operation);
         const telemetrySupported = Boolean((Number(node.service_flags) || 0) & 0x100);
@@ -2069,6 +2070,13 @@ INDEX_HTML = """<!doctype html>
           if (Number.isInteger(configuredTelemetryInterval) && configuredTelemetryInterval >= 60) {
             currentTelemetryIntervalSeconds = configuredTelemetryInterval;
           }
+          telemetryIntervalsByNode.clear();
+          (data.config && Array.isArray(data.config.channels) ? data.config.channels : []).forEach((channel) => {
+            (Array.isArray(channel.nodes) ? channel.nodes : []).forEach((node) => {
+              const interval = Number(node.telemetry_interval_seconds || 600);
+              telemetryIntervalsByNode.set(`${channel.channel_id}:${node.id}`, interval);
+            });
+          });
           renderHero(data);
           renderOverview(data);
           renderChannels(data);
@@ -2400,8 +2408,9 @@ INDEX_HTML = """<!doctype html>
         $("config-node-id").value = nodeAddress;
         $("node-config-form").dataset.channelName = channelName;
         $("node-config-form").dataset.channelMode = channelMode;
-        $("node-config-form").dataset.telemetryInterval = String(currentTelemetryIntervalSeconds);
-        $("config-telemetry-interval").value = String(currentTelemetryIntervalSeconds);
+        const nodeTelemetryInterval = telemetryIntervalsByNode.get(`${channelId}:${nodeAddress}`) || 600;
+        $("node-config-form").dataset.telemetryInterval = String(nodeTelemetryInterval);
+        $("config-telemetry-interval").value = String(nodeTelemetryInterval);
         $("node-config-title").textContent = `${channelName} · node ${nodeAddress}`;
         showConfigurationLoading(
           "Odczytywanie konfiguracji",
@@ -2473,16 +2482,11 @@ INDEX_HTML = """<!doctype html>
           reset_configuration: "Przywrócenie konfiguracji domyślnej",
         };
         const channelName = form.dataset.channelName || `channel-${channelId}`;
-        const telemetryIntervalChanged = ["apply_configuration", "reset_configuration"].includes(operation)
-          && requestedTelemetryInterval !== Number(form.dataset.telemetryInterval || currentTelemetryIntervalSeconds);
-        const restartWarning = telemetryIntervalChanged
-          ? " Zmiana interwału telemetrii zapisze profil instalacji i wykona kontrolowany restart hosta, co chwilowo przerwie nagrywanie na wszystkich aktywnych kanałach."
-          : "";
         const recordingWarning = (form.dataset.channelMode || "unknown") === "recording"
           ? ` ${actionLabels[operation] || "Ta operacja"} chwilowo zatrzyma nagrywanie na ${channelName}. Host zapisze ogon danych, wykona operację w Maintenance i automatycznie spróbuje wznowić Recording.`
           : "";
-        if ((recordingWarning || telemetryIntervalChanged) && !window.confirm(
-          `${recordingWarning}${restartWarning} Kontynuować?`.trim()
+        if (recordingWarning && !window.confirm(
+          `${recordingWarning} Kontynuować?`.trim()
         )) return;
         setConfigurationFormBusy(true, "Host wykonuje bezpieczną procedurę konfiguracji…");
         try {
@@ -2497,23 +2501,14 @@ INDEX_HTML = """<!doctype html>
               currentTelemetryIntervalSeconds = Number(profile.telemetry_interval_seconds);
               form.dataset.telemetryInterval = String(currentTelemetryIntervalSeconds);
               $("config-telemetry-interval").value = String(currentTelemetryIntervalSeconds);
+              telemetryIntervalsByNode.set(`${channelId}:${nodeAddress}`, currentTelemetryIntervalSeconds);
             }
             const modeNote = response.mode === "recording"
               ? "Kanał bezpiecznie wrócił do Recording."
               : `Kanał pozostał w trybie ${response.mode || "Maintenance"}.`;
             $("node-config-status").textContent = `Zastosowano revision ${response.result.observed.revision}. ${modeNote}`;
             if (profile.telemetry_interval_changed) {
-              $("node-config-status").textContent += " Restartuję hosta, aby uruchomić nowy harmonogram telemetrii…";
-              try {
-                await fetchJson("/api/v2/service/restart", {
-                  method: "POST",
-                  headers: { "X-Sensor-System-Request": "dashboard-v2" },
-                });
-                $("node-config-status").textContent = `Zastosowano revision ${response.result.observed.revision}. Interwał telemetrii: ${currentTelemetryIntervalSeconds} s. Host został kontrolowanie uruchomiony ponownie.`;
-                await new Promise((resolve) => window.setTimeout(resolve, 1500));
-              } catch (error) {
-                $("node-config-status").textContent = `Konfiguracja i interwał ${currentTelemetryIntervalSeconds} s zostały zapisane, ale automatyczny restart hosta nie powiódł się: ${error.message}`;
-              }
+              $("node-config-status").textContent += ` Interwał telemetrii ${currentTelemetryIntervalSeconds} s działa bez restartu hosta.`;
             }
           } else {
             $("node-config-status").textContent = "Operacja zakończona.";
@@ -2558,6 +2553,8 @@ INDEX_HTML = """<!doctype html>
           ? `Kanał ${channelName} nie ma działającego workera. Host wyśle bezpośredni reboot do node ${nodeAddress} po RS485, a następnie zrestartuje usługę hosta, aby ponownie dołączyć kanał. Spowoduje to krótką kontrolowaną przerwę na wszystkich liniach. Kontynuować?`
           : channelMode === "recording"
           ? `Restart node ${nodeAddress} chwilowo przerwie nagrywanie na ${channelName}. Host trwale zapisze ogon, przejdzie do Maintenance, zrestartuje node, wykona ponowny handshake i automatycznie wznowi Recording. Kontynuować?`
+          : channelMode === "faulted"
+          ? `Kanał ${channelName} jest w Faulted. Host zrestartuje node ${nodeAddress} po RS485, przejdzie do Maintenance, uzgodni nową epokę strumienia i spróbuje automatycznie wznowić Recording. Kontynuować?`
           : `Zrestartować node ${nodeAddress} na ${channelName}? Kanał pozostanie w ${channelMode === "maintenance" ? "Maintenance" : "bieżącym trybie"}; Recording można następnie wznowić przyciskiem kanału.`;
         if (!window.confirm(prompt)) return;
         const previousLabel = button.textContent;
@@ -2581,12 +2578,13 @@ INDEX_HTML = """<!doctype html>
           }
           button.textContent = "Restartowanie...";
           const result = await submitV2Operation(channelId, "restart_node", { node_address: nodeAddress });
-          if (channelMode === "recording") {
+          if (channelMode === "recording" || channelMode === "faulted") {
+            enteredMaintenance = true;
             button.textContent = "Wznawianie...";
             await submitV2Operation(channelId, "resume_recording");
             enteredMaintenance = false;
           }
-          $("overview-note").textContent = channelMode === "recording"
+          $("overview-note").textContent = ["recording", "faulted"].includes(channelMode)
             ? `Node zrestartowany i Recording wznowiony · operacja restartu ${result.operation_id}`
             : `Restart node przyjęty jako operacja ${result.operation_id}`;
           await loadDashboard();

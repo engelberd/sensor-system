@@ -153,6 +153,17 @@ impl ChannelWorkCoordinator {
             .map_err(MeasurementCoordinatorError::Runtime)
     }
 
+    pub fn reconfigure_telemetry(
+        &mut self,
+        node_address: u8,
+        config: TelemetryScheduleConfig,
+        now: MonotonicMicros,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        self.runtime
+            .reconfigure_telemetry(node_address, config, now)
+            .map_err(MeasurementCoordinatorError::Runtime)
+    }
+
     pub fn dispatch_next_work(
         &mut self,
         agent: &mut ChannelAgent,

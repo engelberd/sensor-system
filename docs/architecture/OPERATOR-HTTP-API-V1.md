@@ -78,12 +78,12 @@ publikuje dopiero po pełnym Resume. Kanał, który już był w `Maintenance`, n
 jest automatycznie uruchamiany. Błąd konfiguracji pozostawia stabilne
 `Maintenance`, `Faulted` albo `Offline`; nigdy nie jest maskowany samym Resume.
 Formularz udostępnia ODR, zakres, high-pass, profil filtra, FIFO watermark,
-offsety, revision oraz interwał telemetrii hosta. Interwał jest wspólną polityką
-hosta, a nie konfiguracją zapisywaną w node; dashboard umieszcza go w tym samym
-formularzu operatorskim, trwale zapisuje w profilu instalacji i po rzeczywistej
-zmianie wykonuje kontrolowany restart hosta, aby złożyć nowy harmonogram dla
-wszystkich node. Dozwolony zakres to 60–86400 s, a wartość domyślna wynosi
-600 s. ODR nierozgłaszane przez capabilities danego node są
+offsety, revision oraz interwał telemetrii hosta dla wybranego node. Interwał
+jest polityką schedulera, a nie konfiguracją zapisywaną w firmware. Dashboard
+trwale zapisuje go przy danym node w profilu instalacji i przekazuje do
+workera przez typowaną operację `SetTelemetryInterval`. Scheduler zmienia
+termin następnego odczytu bez restartu procesu i bez zatrzymywania pozostałych
+kanałów. Dozwolony zakres to 60–86400 s, a wartość domyślna wynosi 600 s. ODR nierozgłaszane przez capabilities danego node są
 wyłączone w UI. Okno Configuration otwiera się synchronicznie po potwierdzeniu
 operatora, a podczas asynchronicznego GetConfiguration pokazuje fazę i czas
 operacji. Pola edycji pojawiają się dopiero po otrzymaniu kompletnej

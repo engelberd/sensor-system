@@ -30,6 +30,7 @@ pub struct NodeDiscoveryTarget {
     hardware_id: HardwareId,
     board_revision: u8,
     output_rate: OutputRateCode,
+    telemetry_interval_seconds: u32,
     requirements: HandshakeRequirements,
 }
 
@@ -48,6 +49,10 @@ impl NodeDiscoveryTarget {
 
     pub const fn output_rate(self) -> OutputRateCode {
         self.output_rate
+    }
+
+    pub const fn telemetry_interval_seconds(self) -> u32 {
+        self.telemetry_interval_seconds
     }
 
     pub const fn requirements(self) -> HandshakeRequirements {
@@ -162,6 +167,7 @@ fn node_target(channel_id: u8, node: &NodeInstallationProfile) -> NodeDiscoveryT
         hardware_id: node.hardware_id(),
         board_revision: node.board_revision(),
         output_rate: node.output_rate(),
+        telemetry_interval_seconds: node.telemetry_interval_seconds(),
         requirements,
     }
 }
@@ -256,6 +262,7 @@ impl DiscoveryInventoryCollector<'_> {
             output_rate: configuration
                 .map(|value| value.desired.output_rate)
                 .unwrap_or(target.output_rate),
+            telemetry_interval_seconds: target.telemetry_interval_seconds,
             configuration,
             identity,
             capabilities,
@@ -287,6 +294,7 @@ pub struct DiscoveredNode {
     channel_id: u8,
     node_address: u8,
     output_rate: OutputRateCode,
+    telemetry_interval_seconds: u32,
     identity: NodeIdentity,
     capabilities: NodeCapabilities,
     configuration: Option<ObservedConfiguration>,
@@ -307,6 +315,10 @@ impl DiscoveredNode {
 
     pub const fn output_rate(&self) -> OutputRateCode {
         self.output_rate
+    }
+
+    pub const fn telemetry_interval_seconds(&self) -> u32 {
+        self.telemetry_interval_seconds
     }
 
     pub const fn identity(&self) -> NodeIdentity {

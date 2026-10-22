@@ -196,6 +196,9 @@ fn operation_json(kind: &OperationKind) -> Value {
         OperationKind::ResetConfiguration { expected_revision } => {
             json!({"kind": "reset_configuration", "expected_revision": expected_revision})
         }
+        OperationKind::SetTelemetryInterval { interval_seconds } => {
+            json!({"kind": "set_telemetry_interval", "telemetry_interval_seconds": interval_seconds})
+        }
         OperationKind::RestartNode => json!({"kind": "restart_node"}),
         OperationKind::ScanUnassigned {
             round_nonce,
@@ -236,6 +239,12 @@ fn result_json(result: &OperationResult) -> Value {
         }
         OperationResult::NodeRestartRequested { node_address } => {
             json!({"kind": "node_restart_requested", "node_address": node_address})
+        }
+        OperationResult::TelemetryIntervalApplied {
+            node_address,
+            interval_seconds,
+        } => {
+            json!({"kind": "telemetry_interval_applied", "node_address": node_address, "telemetry_interval_seconds": interval_seconds})
         }
     }
 }
