@@ -17,7 +17,11 @@ from host.dashboard.v2_operations import (
     OperationsIpcClientError,
     fresh_operation_id,
 )
-from host.dashboard.v2_commissioning import CommissioningProfileStore
+from host.dashboard.v2_commissioning import (
+    MAX_TELEMETRY_INTERVAL_SECONDS,
+    MIN_TELEMETRY_INTERVAL_SECONDS,
+    CommissioningProfileStore,
+)
 from host.dashboard.v2_service_control import (
     DEFAULT_SERVICE_CONTROL_SOCKET,
     ServiceControlClient,
@@ -277,6 +281,12 @@ class V2DashboardRepository:
                 ],
                 "fifo_watermark": {"minimum": 3, "maximum": 96, "step": 3},
                 "offset": {"minimum": -32768, "maximum": 32767},
+                "telemetry_interval_seconds": {
+                    "scope": "host",
+                    "minimum": MIN_TELEMETRY_INTERVAL_SECONDS,
+                    "maximum": MAX_TELEMETRY_INTERVAL_SECONDS,
+                    "default": 600,
+                },
             },
             "channel_operations": [
                 "enter_maintenance",
@@ -567,6 +577,14 @@ class V2DashboardRepository:
             if field not in payload:
                 raise ValueError(f"{field} is required for {operation}")
             request[field] = payload[field]
+        telemetry_interval_seconds = (
+            self.commissioning_profiles.validate_telemetry_interval(
+                payload.get("telemetry_interval_seconds")
+            )
+            if operation
+            in {"validate_configuration", "apply_configuration", "reset_configuration"}
+            else None
+        )
         if operation in {"apply_configuration", "reset_configuration"}:
             # The node owns the full persisted configuration, while output ODR
             # is also host scheduling policy.  Preflight the profile before
@@ -597,6 +615,7 @@ class V2DashboardRepository:
                 channel_id=channel_id,
                 node_address=_safe_int(payload.get("node_address")),
                 output_rate_hz=output_rate_hz,
+                telemetry_interval_seconds=telemetry_interval_seconds,
             )
             return completed
         return self.operations.submit(request)
@@ -624,6 +643,7 @@ class V2DashboardRepository:
             "mode": "host-v2-read-only",
             "system": profile.get("system", {}),
             "storage": storage,
+            "runtime_v2": profile.get("runtime_v2", {}),
             "supervisor": {
                 "status_file": str(self.status_path),
                 "event_log": f"journald:{self.service_unit}",

@@ -146,6 +146,10 @@ class V2OperatorApiTests(unittest.TestCase):
         self.assertIn("apply_configuration", capabilities["node_operations"])
         self.assertFalse(capabilities["service_control"])
         self.assertEqual(
+            capabilities["measurement_configuration"]["telemetry_interval_seconds"],
+            {"scope": "host", "minimum": 60, "maximum": 86400, "default": 600},
+        )
+        self.assertEqual(
             capabilities["commissioning_workflow"]["scan_slot_count"], 16
         )
 
@@ -188,6 +192,9 @@ class V2OperatorApiTests(unittest.TestCase):
             self.assertIn('id="commission-details-stage" hidden', html)
             self.assertIn('id="config-load-stage" hidden', html)
             self.assertIn('id="config-fields"', html)
+            self.assertIn('id="config-telemetry-interval"', html)
+            self.assertIn("Wspólna polityka hosta dla wszystkich node", html)
+            self.assertIn("profile.telemetry_interval_changed", html)
             self.assertIn('$("node-config-dialog").showModal();', html)
             self.assertIn("formatOperationId(channel.active_operation_id)", html)
             self.assertIn("Próbki i ciągłość", html)
@@ -259,12 +266,42 @@ class V2OperatorApiTests(unittest.TestCase):
                     "offset_y": 0,
                     "offset_z": 0,
                 },
+                "telemetry_interval_seconds": 300,
             },
         )
 
         self.assertEqual(response["phase"], "succeeded")
         saved = json.loads(self.config.read_text(encoding="utf-8"))
         self.assertEqual(saved["channels"][0]["nodes"][0]["output_rate_hz"], 500)
+        self.assertEqual(saved["runtime_v2"]["telemetry_interval_seconds"], 300)
+        self.assertTrue(response["profile"]["telemetry_interval_changed"])
+        self.assertNotIn("telemetry_interval_seconds", self.operations.submitted[-1])
+        self.assertEqual(
+            self.repository.config_payload()["runtime_v2"]["telemetry_interval_seconds"],
+            300,
+        )
+
+    def test_invalid_telemetry_interval_is_rejected_before_node_operation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "60..86400"):
+            self.repository.submit_operation_payload(
+                2,
+                {
+                    "operation": "validate_configuration",
+                    "node_address": 1,
+                    "configuration": {
+                        "output_rate_code": 5,
+                        "range_g": 2,
+                        "high_pass_corner": 0,
+                        "filter_profile": 1,
+                        "fifo_watermark": 30,
+                        "offset_x": 0,
+                        "offset_y": 0,
+                        "offset_z": 0,
+                    },
+                    "telemetry_interval_seconds": 30,
+                },
+            )
+        self.assertEqual(self.operations.submitted, [])
 
     def test_http_submit_and_poll_use_same_operations_client(self) -> None:
         server = DashboardServer(("127.0.0.1", 0), self.repository)

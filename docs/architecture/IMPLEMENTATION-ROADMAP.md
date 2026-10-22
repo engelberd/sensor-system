@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-21
+- Ostatnia aktualizacja: 2026-10-22
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -1190,7 +1190,10 @@ Stan pionu:
    wyłącznym wątku storage przed wznowieniem schedulera.
 5. **Gotowa konfiguracja interwału:** `runtime_v2.telemetry_interval_seconds`
    ma produktową wartość domyślną 600 s i może być nadpisane przez profil
-   instalacji. Slot wire i retry pozostają wewnętrzną polityką. Pierwszy odczyt
+   instalacji. Formularz Configuration dashboardu zapisuje tę wspólną politykę
+   hosta w stabilnym profilu systemu i po zmianie wykonuje kontrolowany restart,
+   aby wszystkie node dostały nowy harmonogram. Slot wire i retry pozostają
+   wewnętrzną polityką. Pierwszy odczyt
    następuje po pełnym interwale i jest przesunięty o jeden slot na kolejny node.
    Runtime Status i dashboard pokazują ostatnią temperaturę, wiek odczytu oraz
    rozróżniają oczekiwanie na pierwszy snapshot od firmware bez capability

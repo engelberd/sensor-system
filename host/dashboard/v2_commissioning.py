@@ -9,6 +9,8 @@ from typing import Any
 
 
 _HARDWARE_ID = re.compile(r"^[0-9a-fA-F]{16}$")
+MIN_TELEMETRY_INTERVAL_SECONDS = 60
+MAX_TELEMETRY_INTERVAL_SECONDS = 86_400
 
 
 class CommissioningProfileError(ValueError):
@@ -88,6 +90,7 @@ class CommissioningProfileStore:
         channel_id: int,
         node_address: int,
         output_rate_hz: float | int,
+        telemetry_interval_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Persist the scheduler-relevant part of node configuration.
 
@@ -111,9 +114,13 @@ class CommissioningProfileStore:
         }
         if rate not in supported_rates:
             raise CommissioningProfileError("unsupported output rate")
+        telemetry_interval = self.validate_telemetry_interval(
+            telemetry_interval_seconds
+        )
 
         profile_path = self.profile_path()
         profile = self._read_document(profile_path)
+        effective = _load_merged_document(self.active_config_path)
         channels = profile.get("channels")
         if not isinstance(channels, list):
             raise CommissioningProfileError("installation profile has no channels array")
@@ -143,24 +150,58 @@ class CommissioningProfileStore:
 
         stored_rate: float | int = int(rate) if rate.is_integer() else rate
         try:
-            unchanged = float(node.get("output_rate_hz")) == rate
+            output_rate_unchanged = float(node.get("output_rate_hz")) == rate
         except (TypeError, ValueError):
-            unchanged = False
-        if unchanged:
+            output_rate_unchanged = False
+        effective_runtime = effective.get("runtime_v2")
+        effective_runtime = effective_runtime if isinstance(effective_runtime, dict) else {}
+        current_telemetry_interval = effective_runtime.get(
+            "telemetry_interval_seconds"
+        )
+        telemetry_interval_changed = (
+            telemetry_interval is not None
+            and current_telemetry_interval != telemetry_interval
+        )
+        if output_rate_unchanged and not telemetry_interval_changed:
             return {
                 "profile_path": str(profile_path),
                 "channel_id": channel_id,
                 "node_address": node_address,
                 "output_rate_hz": stored_rate,
+                "telemetry_interval_seconds": telemetry_interval,
+                "telemetry_interval_changed": False,
             }
         node["output_rate_hz"] = stored_rate
+        if telemetry_interval is not None:
+            runtime = profile.setdefault("runtime_v2", {})
+            if not isinstance(runtime, dict):
+                raise CommissioningProfileError(
+                    "installation profile runtime_v2 must be an object"
+                )
+            runtime["telemetry_interval_seconds"] = telemetry_interval
         self._atomic_write(profile_path, profile)
         return {
             "profile_path": str(profile_path),
             "channel_id": channel_id,
             "node_address": node_address,
             "output_rate_hz": stored_rate,
+            "telemetry_interval_seconds": telemetry_interval,
+            "telemetry_interval_changed": telemetry_interval_changed,
         }
+
+    @staticmethod
+    def validate_telemetry_interval(value: int | None) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise CommissioningProfileError(
+                "telemetry interval must be an integer number of seconds"
+            )
+        if not MIN_TELEMETRY_INTERVAL_SECONDS <= value <= MAX_TELEMETRY_INTERVAL_SECONDS:
+            raise CommissioningProfileError(
+                "telemetry interval must be in 60..86400 seconds"
+            )
+        return value
 
     def verify_writable(self) -> Path:
         profile_path = self.profile_path()

@@ -128,6 +128,30 @@ class CommissioningProfileStoreTests(unittest.TestCase):
         self.assertEqual(result["output_rate_hz"], 125)
         self.assertEqual(self.profile.read_bytes(), original)
 
+    def test_updates_telemetry_interval_with_output_rate_atomically(self) -> None:
+        result = self.store.update_node_output_rate(
+            channel_id=2,
+            node_address=1,
+            output_rate_hz=125,
+            telemetry_interval_seconds=300,
+        )
+
+        saved = json.loads(self.profile.read_text(encoding="utf-8"))
+        self.assertEqual(saved["runtime_v2"]["telemetry_interval_seconds"], 300)
+        self.assertEqual(result["telemetry_interval_seconds"], 300)
+        self.assertTrue(result["telemetry_interval_changed"])
+
+    def test_rejects_invalid_telemetry_interval_before_write(self) -> None:
+        original = self.profile.read_bytes()
+        with self.assertRaisesRegex(CommissioningProfileError, "60..86400"):
+            self.store.update_node_output_rate(
+                channel_id=2,
+                node_address=1,
+                output_rate_hz=125,
+                telemetry_interval_seconds=30,
+            )
+        self.assertEqual(self.profile.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()
