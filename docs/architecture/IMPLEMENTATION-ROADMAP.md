@@ -1203,3 +1203,17 @@ Stan pionu:
    0.5.10 potwierdził poprawne wartości około 25,9 °C oraz brak timeoutów,
    retry, backpressure, gapów i wpływu na ciągłość próbek. Pozostał eksport
    temperatury obok okna analitycznego.
+
+### Utwardzenie obsługi operatorskiej restartu i Configuration
+
+Dashboard i jego lokalny adapter HTTP ograniczają powtarzane odczyty
+Configuration tego samego node do jednego żądania na 3 s. Jest to dodatkowa
+ochrona UI nad istniejącą wyłącznością workera, bez wpływu na cykliczny transfer
+Measurement.
+
+`RestartNode` jest dostępny również w `Offline`. Worker kończy operację dopiero
+po potwierdzeniu resetu i trzysekundowym oknie rozruchu, po czym dashboard
+wykonuje `ResumeRecording` z nowym handshake i `boot_epoch`. Awaryjna ścieżka
+bez działającego workera zwalnia port przez zatrzymanie usługi, wysyła reset i
+zawsze próbuje ponownie uruchomić usługę. Dashboard może ustawić nietrwały punkt
+odniesienia liczników próbek i ciągłości; nie kasuje to żadnych danych Capture.

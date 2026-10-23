@@ -36,6 +36,7 @@ STATUS_STALE_AFTER_S = 30.0
 JOURNAL_CACHE_SECONDS = 5.0
 SAMPLE_RATE_WINDOW_US = 5_000_000
 RESCUE_RESTART_SETTLE_SECONDS = 3.0
+CONFIGURATION_REQUEST_COOLDOWN_SECONDS = 3.0
 OUTPUT_RATE_HZ_BY_CODE = {
     0: 4000.0,
     1: 2000.0,
@@ -191,6 +192,86 @@ class V2DashboardRepository:
         self._rate_observations: dict[
             tuple[int, int], tuple[int, deque[tuple[int, int]]]
         ] = {}
+        self._configuration_rate_lock = threading.Lock()
+        self._configuration_not_before: dict[tuple[int, int], float] = {}
+        self._metrics_baseline_lock = threading.Lock()
+        self._metrics_baselines: dict[tuple[int, int], dict[str, int]] = {}
+
+    def _reserve_read_only_configuration_request(
+        self,
+        channel_id: int,
+        node_address: int,
+    ) -> None:
+        key = (channel_id, node_address)
+        now = time.monotonic()
+        with self._configuration_rate_lock:
+            not_before = self._configuration_not_before.get(key, 0.0)
+            if now < not_before:
+                remaining = not_before - now
+                raise OperationsIpcClientError(
+                    f"configuration request cooldown active; retry in {remaining:.1f} s"
+                )
+            self._configuration_not_before[key] = (
+                now + CONFIGURATION_REQUEST_COOLDOWN_SECONDS
+            )
+
+    def reset_node_metrics_view_payload(
+        self,
+        channel_id: int,
+        node_address: int,
+    ) -> dict[str, Any]:
+        self._validate_channel_id(channel_id)
+        if not 1 <= node_address <= 253:
+            raise ValueError("node_address must be in 1..253")
+        status = _load_status(self.status_path)
+        node = next(
+            (
+                item
+                for item in (status or {}).get("nodes", [])
+                if isinstance(item, dict)
+                and _safe_int(item.get("channel_id")) == channel_id
+                and _safe_int(item.get("node_address")) == node_address
+            ),
+            None,
+        )
+        if node is None:
+            raise ValueError("node runtime metrics are not available")
+        baseline = {
+            "persisted_sample_count": _safe_int(node.get("persisted_sample_count")),
+            "gap_count": _safe_int(node.get("gap_count")),
+            "missing_sample_count": _safe_int(node.get("missing_sample_count")),
+            "continuity_break_count": _safe_int(node.get("continuity_break_count")),
+        }
+        with self._metrics_baseline_lock:
+            self._metrics_baselines[(channel_id, node_address)] = baseline
+        return {
+            "ok": True,
+            "channel_id": channel_id,
+            "node_address": node_address,
+            "scope": "dashboard_view",
+            "cleared": [
+                "samples",
+                "gaps",
+                "missing_samples",
+                "continuity_breaks",
+            ],
+        }
+
+    def _metrics_since_baseline(
+        self,
+        channel_id: int,
+        node_address: int,
+        raw: dict[str, int],
+    ) -> tuple[dict[str, int], bool]:
+        key = (channel_id, node_address)
+        with self._metrics_baseline_lock:
+            baseline = self._metrics_baselines.get(key)
+            if baseline is None:
+                return raw, False
+            if any(raw[field] < baseline[field] for field in raw):
+                self._metrics_baselines.pop(key, None)
+                return raw, False
+            return ({field: raw[field] - baseline[field] for field in raw}, True)
 
     def _sample_rate(
         self,
@@ -379,7 +460,10 @@ class V2DashboardRepository:
             raise FileNotFoundError(f"sensor-hil binary not found: {self.hil_binary}")
         if not self._rescue_lock.acquire(blocking=False):
             raise OperationsIpcClientError("another rescue restart is already running")
+        service_stopped = False
         try:
+            self.service_control.perform("stop")
+            service_stopped = True
             try:
                 completed = subprocess.run(
                     [
@@ -407,7 +491,8 @@ class V2DashboardRepository:
             # Give the bootloader and application time to reopen RS485 before
             # the host begins its discovery handshake.
             time.sleep(RESCUE_RESTART_SETTLE_SECONDS)
-            service = self.service_control.perform("restart")
+            service = self.service_control.perform("start")
+            service_stopped = False
             return {
                 "ok": True,
                 "channel_id": channel_id,
@@ -418,6 +503,11 @@ class V2DashboardRepository:
                 "service": service.get("state", service),
             }
         finally:
+            if service_stopped:
+                try:
+                    self.service_control.perform("start")
+                except ServiceControlError:
+                    pass
             self._rescue_lock.release()
 
     def register_commissioned_node_payload(
@@ -595,6 +685,11 @@ class V2DashboardRepository:
             }
             else None
         )
+        if operation in {"get_configuration", "validate_configuration"}:
+            self._reserve_read_only_configuration_request(
+                channel_id,
+                _safe_int(payload.get("node_address")),
+            )
         if operation in {"apply_configuration", "reset_configuration"}:
             # The node owns the full persisted configuration, while output ODR
             # is also host scheduling policy.  Preflight the profile before
@@ -848,8 +943,22 @@ class V2DashboardRepository:
                 continuity_break_count = (
                     _safe_int(node.get("continuity_break_count")) if isinstance(node, dict) else 0
                 )
-                if missing_sample_count > 0:
-                    alerts.append(f"utracone próbki: {missing_sample_count}")
+                visible_metrics, metrics_view_reset = self._metrics_since_baseline(
+                    channel_id,
+                    address,
+                    {
+                        "persisted_sample_count": persisted_samples or 0,
+                        "gap_count": gap_count,
+                        "missing_sample_count": missing_sample_count,
+                        "continuity_break_count": continuity_break_count,
+                    },
+                )
+                visible_samples = visible_metrics["persisted_sample_count"]
+                visible_gap_count = visible_metrics["gap_count"]
+                visible_missing_sample_count = visible_metrics["missing_sample_count"]
+                visible_continuity_break_count = visible_metrics["continuity_break_count"]
+                if visible_missing_sample_count > 0:
+                    alerts.append(f"utracone próbki: {visible_missing_sample_count}")
                 measured_rate = (
                     self._sample_rate(
                         channel_id=channel_id,
@@ -894,14 +1003,15 @@ class V2DashboardRepository:
                         "configuration_revision": _safe_int(node.get("configuration_revision")) if isinstance(node, dict) else 0,
                         "service_flags": _safe_int(node.get("service_flags")) if isinstance(node, dict) else 0,
                         "feature_flags": _safe_int(node.get("feature_flags")) if isinstance(node, dict) else 0,
-                        "samples_written": persisted_samples if persisted_samples is not None else 0,
+                        "samples_written": visible_samples,
                         "expected_sample_seq": produced,
                         "instant_samples_per_second_5s": measured_rate,
                         "rate_stability_percent_5s": None,
                         "bursts_no_data": _safe_int(metrics.get("measurement_no_data")),
-                        "gaps_detected": gap_count,
-                        "missing_sample_count": missing_sample_count,
-                        "continuity_break_count": continuity_break_count,
+                        "gaps_detected": visible_gap_count,
+                        "missing_sample_count": visible_missing_sample_count,
+                        "continuity_break_count": visible_continuity_break_count,
+                        "metrics_view_reset": metrics_view_reset,
                         "received_cursor": received,
                         "durable_cursor": durable,
                         "released_cursor": released,

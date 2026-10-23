@@ -198,7 +198,9 @@ pub fn admit_operation(
         OperationKind::RestartNode
             if matches!(
                 mode,
-                ChannelOperatingMode::Maintenance | ChannelOperatingMode::Faulted
+                ChannelOperatingMode::Maintenance
+                    | ChannelOperatingMode::Faulted
+                    | ChannelOperatingMode::Offline
             ) =>
         {
             Ok(())
@@ -1058,6 +1060,23 @@ mod tests {
         assert_eq!(
             wrong_scope.validate(),
             Err(OperationsError::WrongTargetScope)
+        );
+    }
+
+    #[test]
+    fn restart_is_available_to_recover_an_offline_channel() {
+        let request = OperationRequest {
+            operation_id: OperationId::new(2).unwrap(),
+            target: OperationTarget::Node {
+                channel_id: 1,
+                node_address: 1,
+            },
+            kind: OperationKind::RestartNode,
+        };
+
+        assert_eq!(
+            admit_operation(&request, ChannelOperatingMode::Offline),
+            Ok(())
         );
     }
 

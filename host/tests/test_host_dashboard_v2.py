@@ -258,6 +258,39 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertAlmostEqual(second["instant_samples_per_second_5s"], 125.0)
 
     @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
+    def test_metrics_view_baseline_preserves_data_and_absolute_cursors(
+        self, _journal: object
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config, status = self._fixture(Path(tmp))
+            repository = V2DashboardRepository(config, status_path=status)
+
+            result = repository.reset_node_metrics_view_payload(2, 1)
+            self.assertEqual(result["scope"], "dashboard_view")
+            reset = repository.dashboard_payload()["channels"][0]["nodes"][0]
+            self.assertEqual(reset["samples_written"], 0)
+            self.assertEqual(reset["gaps_detected"], 0)
+            self.assertEqual(reset["missing_sample_count"], 0)
+            self.assertEqual(reset["continuity_break_count"], 0)
+            self.assertTrue(reset["metrics_view_reset"])
+            self.assertEqual(reset["received_cursor"], 1040)
+            self.assertEqual(reset["durable_cursor"], 1040)
+
+            document = json.loads(status.read_text(encoding="utf-8"))
+            node = document["nodes"][0]
+            node["persisted_sample_count"] += 125
+            node["gap_count"] += 1
+            node["missing_sample_count"] += 3
+            node["continuity_break_count"] += 1
+            status.write_text(json.dumps(document), encoding="utf-8")
+
+            advanced = repository.dashboard_payload()["channels"][0]["nodes"][0]
+            self.assertEqual(advanced["samples_written"], 125)
+            self.assertEqual(advanced["gaps_detected"], 1)
+            self.assertEqual(advanced["missing_sample_count"], 3)
+            self.assertEqual(advanced["continuity_break_count"], 1)
+
+    @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
     def test_stale_status_marks_channel_offline(self, _journal: object) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             old_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - 120_000

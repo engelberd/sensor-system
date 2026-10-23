@@ -113,7 +113,7 @@ restartem.
 | ValidateConfiguration | node | Recording, Maintenance lub Faulted |
 | ApplyConfiguration | node | Maintenance lub Faulted; request w Recording uruchamia kontrolowane Stop/Resume |
 | ResetConfiguration | node | Maintenance lub Faulted; request w Recording uruchamia kontrolowane Stop/Resume |
-| RestartNode | node | Maintenance lub Faulted |
+| RestartNode | node | Maintenance, Faulted lub Offline |
 | ScanUnassigned | channel | Maintenance |
 | AssignAddress | channel + exact hardware ID | Maintenance |
 
@@ -211,9 +211,13 @@ Scan odpytuje sloty sekwencyjnie przez tego samego arbitra RS485, zapisuje
 ostatni kompletny wynik tylko w pamięci procesu i rozróżnia pusty slot od błędu
 całej rundy. Assign wymaga hardware ID oraz nonce z ostatniego udanego skanu,
 odrzuca adres zajęty przez skonfigurowany node, a sukces publikuje dopiero po
-handshake pod nowym adresem. `RestartNode` kończy się po potwierdzonym wysłaniu
-polecenia; `ResumeRecording` wykonuje później świeży handshake, wykrywa nowy
-`boot_epoch` i przeprowadza trwały rollover Capture oraz Time.
+handshake pod nowym adresem. Po potwierdzeniu `RestartNode` worker przez 3 s nie
+dotyka portu, aby bootloader i aplikacja zdążyły ponownie przejąć transceiver.
+Dopiero potem operacja otrzymuje wynik sukcesu. `ResumeRecording` wykonuje
+świeży handshake, wykrywa nowy `boot_epoch` i przeprowadza trwały rollover
+Capture oraz Time. Restart jest także dopuszczony w stabilnym `Offline`, dzięki
+czemu zwykły worker-owned control plane pozostaje podstawową drogą ratunkową
+bez zwalniania portu i restartowania całej usługi.
 
 `ApplyConfiguration` i `ResetConfiguration` wymagają `expected_revision` oraz
 Maintenance. Jeszcze przed mutacją host waliduje pełną wartość, sprawdza maskę

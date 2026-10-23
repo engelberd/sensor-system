@@ -73,6 +73,8 @@ use crate::time_wal::HostClockId;
 pub type ProductionChannelLoop<P, C, T> =
     ThreadedChannelRecordingLoop<P, C, GroupedPersistenceExecutor<CaptureRepository>, T>;
 
+const NODE_RESTART_SETTLE_TIME: Duration = Duration::from_secs(3);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChannelCompositionPolicy {
     pub activation: RecordingActivationPolicy,
@@ -267,6 +269,7 @@ struct RestartExecution {
     node_address: u8,
     operation_id: u32,
     deadline: Instant,
+    settle_until: Option<Instant>,
     terminal_error: Option<OperationsError>,
 }
 
@@ -1053,6 +1056,7 @@ where
             node_address,
             operation_id,
             deadline,
+            settle_until: None,
             terminal_error: None,
         }))
     }
@@ -1061,6 +1065,26 @@ where
         &mut self,
         mut execution: RestartExecution,
     ) -> Result<Option<RestartExecution>, ProductionChannelStepError> {
+        if let Some(settle_until) = execution.settle_until {
+            if Instant::now() < settle_until {
+                // The reset response was already received. Do not touch the
+                // serial endpoint while the bootloader and application are
+                // handing the transceiver back to protocol 5.
+                return Ok(Some(execution));
+            }
+            if matches!(
+                self.operations.mode(),
+                ChannelOperatingMode::Faulted | ChannelOperatingMode::Offline
+            ) {
+                self.operations
+                    .set_mode(ChannelOperatingMode::Maintenance)?;
+            }
+            self.operations
+                .complete_active(OperationResult::NodeRestartRequested {
+                    node_address: execution.node_address,
+                })?;
+            return Ok(None);
+        }
         if execution.terminal_error.is_none() && Instant::now() >= execution.deadline {
             execution.terminal_error = Some(OperationsError::RestartDeadline);
         }
@@ -1107,14 +1131,13 @@ where
             if node_address == execution.node_address
                 && result.operation_id == execution.operation_id
                 && result.code == sensor_protocol::RuntimeResultCode::Ok
+                && execution.settle_until.is_none()
             {
-                if self.operations.mode() == ChannelOperatingMode::Faulted {
-                    self.operations
-                        .set_mode(ChannelOperatingMode::Maintenance)?;
-                }
-                self.operations
-                    .complete_active(OperationResult::NodeRestartRequested { node_address })?;
-                return Ok(None);
+                execution.settle_until = Some(
+                    Instant::now()
+                        .checked_add(NODE_RESTART_SETTLE_TIME)
+                        .ok_or(ChannelMaintenanceError::DeadlineOverflow)?,
+                );
             }
         }
         Ok(Some(execution))

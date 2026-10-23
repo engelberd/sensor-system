@@ -1124,6 +1124,7 @@ INDEX_HTML = """<!doctype html>
     <script>
       const REFRESH_MS = 1000;
       const LOG_REFRESH_MS = 6000;
+      const CONFIGURATION_COOLDOWN_MS = 3000;
       let refreshTimer = null;
       let lastLogsRefreshAt = 0;
       let currentDataPath = ".";
@@ -1137,6 +1138,7 @@ INDEX_HTML = """<!doctype html>
       let commissioningState = null;
       let currentTelemetryIntervalSeconds = 600;
       const telemetryIntervalsByNode = new Map();
+      const configurationCooldownUntilByNode = new Map();
       const selectedDataPaths = new Set();
 
       function $(id) {
@@ -1428,12 +1430,15 @@ INDEX_HTML = """<!doctype html>
           node.framing_protocol != null ? `framing ${node.framing_protocol}` : null,
           node.application_protocol != null ? `app ${node.application_protocol}` : null,
         ].filter(Boolean).join(" · ");
+        const configurationKey = `${node.channel_id}:${node.node_id}`;
+        const configurationCoolingDown = Date.now()
+          < (configurationCooldownUntilByNode.get(configurationKey) || 0);
         const canConfigure = channelEnabled && node.enabled
           && ["recording", "maintenance", "faulted"].includes(node.channel_mode)
-          && !node.channel_active_operation;
+          && !node.channel_active_operation
+          && !configurationCoolingDown;
         const rescueRestart = !node.channel_controls_available
-          || !node.channel_mode
-          || node.channel_mode === "offline";
+          || !node.channel_mode;
         const canRestart = channelEnabled && node.enabled
           && (rescueRestart || !node.channel_active_operation);
         const telemetrySupported = Boolean((Number(node.service_flags) || 0) & 0x100);
@@ -1455,7 +1460,7 @@ INDEX_HTML = """<!doctype html>
                   data-channel-name="${escapeHtml(node.channel_name)}"
                   data-node-id="${escapeHtml(node.node_id)}"
                   data-output-rate-mask="${escapeHtml(node.output_rate_mask || 0)}"
-                  type="button" ${canConfigure ? "" : "disabled"}>Konfiguruj</button>
+                  type="button" ${canConfigure ? "" : "disabled"}>${configurationCoolingDown ? "Odczekaj…" : "Konfiguruj"}</button>
                 ${canRestart ? `<button class="btn secondary small v2-node-restart-btn"
                   data-channel-id="${escapeHtml(node.channel_id)}"
                   data-channel-name="${escapeHtml(node.channel_name)}"
@@ -1463,6 +1468,10 @@ INDEX_HTML = """<!doctype html>
                   data-channel-mode="${escapeHtml(node.channel_mode || "unknown")}"
                   data-rescue-restart="${rescueRestart ? "true" : "false"}"
                   type="button">Restart node</button>` : ""}
+                <button class="btn secondary small v2-node-metrics-reset-btn"
+                  data-channel-id="${escapeHtml(node.channel_id)}"
+                  data-node-id="${escapeHtml(node.node_id)}"
+                  type="button">Zeruj liczniki</button>
               </div>
             </td>
             <td data-label="Stan">
@@ -1477,6 +1486,7 @@ INDEX_HTML = """<!doctype html>
             <td data-label="Próbki i ciągłość">
               <span class="mono">próbki ${escapeHtml(formatNumber(node.samples_written || 0))}</span>
               <div class="node-meta mono">gaps ${escapeHtml(formatNumber(node.gaps_detected || 0))} · missing ${escapeHtml(formatNumber(node.missing_sample_count || 0))} · breaks ${escapeHtml(formatNumber(node.continuity_break_count || 0))}</div>
+              <div class="node-meta">${node.metrics_view_reset ? "od ostatniego zerowania widoku" : "od uruchomienia hosta"}</div>
               <div class="node-meta">rx ${escapeHtml(formatNumber(node.received_cursor))} · durable ${escapeHtml(formatNumber(node.durable_cursor))}</div>
             </td>
             <td data-label="Backlog">
@@ -2398,6 +2408,17 @@ INDEX_HTML = """<!doctype html>
         const channelMode = button.dataset.channelMode || "unknown";
         const outputRateMask = Number(button.dataset.outputRateMask || 0);
         if (!channelId || !nodeAddress) return;
+        const configurationKey = `${channelId}:${nodeAddress}`;
+        const now = Date.now();
+        const notBefore = configurationCooldownUntilByNode.get(configurationKey) || 0;
+        if (now < notBefore) {
+          const remaining = Math.ceil((notBefore - now) / 1000);
+          throw new Error(`Odczekaj ${remaining} s przed ponownym odczytem konfiguracji.`);
+        }
+        configurationCooldownUntilByNode.set(
+          configurationKey,
+          now + CONFIGURATION_COOLDOWN_MS,
+        );
         const previousLabel = button.textContent;
         button.disabled = true;
         button.textContent = "Odczytywanie...";
@@ -2448,6 +2469,36 @@ INDEX_HTML = """<!doctype html>
           });
           $("config-close-btn").disabled = false;
           $("node-config-status").textContent = `Błąd: ${error.message}`;
+        } finally {
+          const remaining = Math.max(
+            0,
+            (configurationCooldownUntilByNode.get(configurationKey) || 0) - Date.now(),
+          );
+          button.disabled = remaining > 0;
+          button.textContent = remaining > 0 ? "Odczekaj…" : previousLabel;
+          if (remaining > 0) {
+            window.setTimeout(() => loadDashboard(), remaining + 50);
+          }
+        }
+      }
+
+      async function resetNodeMetricsView(button, askForConfirmation = true) {
+        const channelId = Number(button.dataset.channelId || 0);
+        const nodeAddress = Number(button.dataset.nodeId || 0);
+        if (!channelId || !nodeAddress) return;
+        if (askForConfirmation && !window.confirm(
+          "Wyzerować liczniki próbek, gaps, missing i breaks tylko w widoku dashboardu? Dane pomiarowe i zdarzenia w plikach nie zostaną usunięte."
+        )) return;
+        const previousLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "Zerowanie…";
+        try {
+          await fetchJson(`/api/v2/channels/${encodeURIComponent(channelId)}/nodes/${encodeURIComponent(nodeAddress)}/reset-metrics-view`, {
+            method: "POST",
+            headers: { "X-Sensor-System-Request": "dashboard-v2" },
+          });
+          $("overview-note").textContent = `Wyzerowano widok liczników node ${nodeAddress}; zapisane dane pozostały bez zmian`;
+          await loadDashboard();
         } finally {
           button.disabled = false;
           button.textContent = previousLabel;
@@ -2558,11 +2609,14 @@ INDEX_HTML = """<!doctype html>
           ? `Restart node ${nodeAddress} chwilowo przerwie nagrywanie na ${channelName}. Host trwale zapisze ogon, przejdzie do Maintenance, zrestartuje node, wykona ponowny handshake i automatycznie wznowi Recording. Kontynuować?`
           : channelMode === "faulted"
           ? `Kanał ${channelName} jest w Faulted. Host zrestartuje node ${nodeAddress} po RS485, przejdzie do Maintenance, uzgodni nową epokę strumienia i spróbuje automatycznie wznowić Recording. Kontynuować?`
+          : channelMode === "offline"
+          ? `Kanał ${channelName} jest Offline. Host spróbuje zrestartować node ${nodeAddress} przez posiadany port RS485, odczeka na ponowny start i wznowi Recording. Kontynuować?`
           : `Zrestartować node ${nodeAddress} na ${channelName}? Kanał pozostanie w ${channelMode === "maintenance" ? "Maintenance" : "bieżącym trybie"}; Recording można następnie wznowić przyciskiem kanału.`;
         if (!window.confirm(prompt)) return;
         const previousLabel = button.textContent;
         button.disabled = true;
         let enteredMaintenance = false;
+        let resumeAttempted = false;
         try {
           if (rescueRestart) {
             button.textContent = "Ratowanie...";
@@ -2581,24 +2635,33 @@ INDEX_HTML = """<!doctype html>
           }
           button.textContent = "Restartowanie...";
           const result = await submitV2Operation(channelId, "restart_node", { node_address: nodeAddress });
-          if (channelMode === "recording" || channelMode === "faulted") {
+          if (["recording", "faulted", "offline"].includes(channelMode)) {
             enteredMaintenance = true;
             button.textContent = "Wznawianie...";
+            resumeAttempted = true;
             await submitV2Operation(channelId, "resume_recording");
             enteredMaintenance = false;
+            resumeAttempted = false;
           }
-          $("overview-note").textContent = ["recording", "faulted"].includes(channelMode)
+          await fetchJson(`/api/v2/channels/${encodeURIComponent(channelId)}/nodes/${encodeURIComponent(nodeAddress)}/reset-metrics-view`, {
+            method: "POST",
+            headers: { "X-Sensor-System-Request": "dashboard-v2" },
+          });
+          $("overview-note").textContent = ["recording", "faulted", "offline"].includes(channelMode)
             ? `Node zrestartowany i Recording wznowiony · operacja restartu ${result.operation_id}`
             : `Restart node przyjęty jako operacja ${result.operation_id}`;
           await loadDashboard();
         } catch (error) {
-          if (enteredMaintenance) {
+          if (enteredMaintenance && !resumeAttempted) {
             try {
               button.textContent = "Przywracanie...";
               await submitV2Operation(channelId, "resume_recording");
             } catch (resumeError) {
               throw new Error(`${error.message}; automatyczne wznowienie nie powiodło się: ${resumeError.message}`);
             }
+          }
+          if (resumeAttempted) {
+            throw new Error(`${error.message}; restart został wysłany, ale automatyczne wznowienie Recording nie powiodło się. Sprawdź stan kanału i ponów restart node.`);
           }
           throw error;
         } finally {
@@ -2781,6 +2844,10 @@ INDEX_HTML = """<!doctype html>
         }
         if (target.classList.contains("v2-node-restart-btn")) {
           restartV2Node(target).catch((error) => alert(error.message));
+          return;
+        }
+        if (target.classList.contains("v2-node-metrics-reset-btn")) {
+          resetNodeMetricsView(target).catch((error) => alert(error.message));
           return;
         }
         if (target.classList.contains("v2-node-config-btn")) {
@@ -5887,6 +5954,23 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     self.repository.rescue_restart_node_payload(channel_id, node_address)
                 )
                 return
+            metrics_reset_route = self._parse_v2_metrics_reset_route(route)
+            if metrics_reset_route is not None and getattr(
+                self.repository, "supports_v2_operations", False
+            ):
+                if self.headers.get("X-Sensor-System-Request") != "dashboard-v2":
+                    self._write_json(
+                        {"error": "missing dashboard-v2 request marker"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                channel_id, node_address = metrics_reset_route
+                self._write_json(
+                    self.repository.reset_node_metrics_view_payload(
+                        channel_id, node_address
+                    )
+                )
+                return
             commissioning_route = self._parse_v2_commissioning_route(route)
             if commissioning_route is not None and getattr(
                 self.repository, "supports_v2_operations", False
@@ -6089,6 +6173,21 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             or parts[:3] != ["api", "v2", "channels"]
             or parts[4] != "nodes"
             or parts[6] != "rescue-restart"
+        ):
+            return None
+        try:
+            return int(parts[3]), int(parts[5])
+        except ValueError:
+            raise ValueError("channel_id and node_address must be integers")
+
+    @staticmethod
+    def _parse_v2_metrics_reset_route(route: str) -> tuple[int, int] | None:
+        parts = [unquote(part) for part in route.split("/") if part]
+        if (
+            len(parts) != 7
+            or parts[:3] != ["api", "v2", "channels"]
+            or parts[4] != "nodes"
+            or parts[6] != "reset-metrics-view"
         ):
             return None
         try:

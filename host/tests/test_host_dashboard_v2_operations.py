@@ -198,6 +198,9 @@ class V2OperatorApiTests(unittest.TestCase):
             self.assertIn("profile.telemetry_interval_changed", html)
             self.assertIn('$("node-config-dialog").showModal();', html)
             self.assertIn("Host odczytuje konfigurację bez zatrzymywania pomiaru", html)
+            self.assertIn("CONFIGURATION_COOLDOWN_MS = 3000", html)
+            self.assertIn("v2-node-metrics-reset-btn", html)
+            self.assertIn("od ostatniego zerowania widoku", html)
             self.assertIn(
                 'const mutatesMeasurement = operation === "apply_configuration" || operation === "reset_configuration";',
                 html,
@@ -318,6 +321,21 @@ class V2OperatorApiTests(unittest.TestCase):
                 },
             )
         self.assertEqual(self.operations.submitted, [])
+
+    def test_read_only_configuration_requests_are_rate_limited_per_node(self) -> None:
+        first = self.repository.submit_operation_payload(
+            2,
+            {"operation": "get_configuration", "node_address": 1},
+        )
+        self.assertEqual(first["phase"], "queued")
+
+        with self.assertRaisesRegex(
+            OperationsIpcClientError, "configuration request cooldown active"
+        ):
+            self.repository.submit_operation_payload(
+                2,
+                {"operation": "get_configuration", "node_address": 1},
+            )
 
     def test_http_submit_and_poll_use_same_operations_client(self) -> None:
         server = DashboardServer(("127.0.0.1", 0), self.repository)
@@ -500,7 +518,7 @@ class V2OperatorApiTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(payload["action"], "rescue_restart_node")
                 self.assertEqual(payload["transport"], "rs485")
-                self.assertEqual(service.actions, ["restart"])
+                self.assertEqual(service.actions, ["stop", "start"])
                 settle.assert_called_once_with(3.0)
                 command = run.call_args.args[0]
                 self.assertEqual(
@@ -520,6 +538,42 @@ class V2OperatorApiTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_failed_rescue_restart_still_restores_host_service(self) -> None:
+        profile = json.loads(self.config.read_text(encoding="utf-8"))
+        channel = profile["channels"][0]
+        channel["transport"].update(
+            {"endpoint": "/dev/sensor-system-line-b", "baud_rate": 115200}
+        )
+        channel["nodes"][0].update(
+            {"hardware_id": "0102030405060708", "board_revision": 2}
+        )
+        self.config.write_text(json.dumps(profile), encoding="utf-8")
+        hil_binary = Path(self.temp.name) / "sensor-hil"
+        hil_binary.write_text("test", encoding="utf-8")
+        service = FakeServiceControlClient(available=True)
+        repository = V2DashboardRepository(
+            self.config,
+            status_path=Path(self.temp.name) / "missing-status.json",
+            operations_client=UnavailableOperationsClient(),
+            service_control_client=service,
+            hil_binary=hil_binary,
+        )
+
+        with patch(
+            "host.dashboard.v2.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="node did not acknowledge restart",
+            ),
+        ):
+            with self.assertRaisesRegex(
+                OperationsIpcClientError, "did not acknowledge restart"
+            ):
+                repository.rescue_restart_node_payload(2, 1)
+
+        self.assertEqual(service.actions, ["stop", "start"])
 
     def test_http_registers_commissioned_node_and_restarts_host(self) -> None:
         service = FakeServiceControlClient(available=True)

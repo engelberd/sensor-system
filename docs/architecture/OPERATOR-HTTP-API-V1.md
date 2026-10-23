@@ -26,6 +26,7 @@ samym ID zachowuje idempotency Operations API.
 | GET | `/api/v2/channels/{channel_id}/operations/status` | tryb kanału i aktywna operacja |
 | POST | `/api/v2/channels/{channel_id}/operations` | złożenie jednej operacji |
 | GET | `/api/v2/channels/{channel_id}/operations/{operation_id}` | odczyt fazy i wyniku |
+| POST | `/api/v2/channels/{channel_id}/nodes/{node_address}/reset-metrics-view` | ustawienie lokalnego punktu odniesienia liczników dashboardu |
 | POST | `/api/v2/channels/{channel_id}/commission` | zatwierdzenie wykrytego node, zapis profilu i restart hosta |
 
 Mutujący POST wymaga `Content-Type: application/json` oraz nagłówka
@@ -81,6 +82,24 @@ break; próbki z tego czasu pozostają w journalu node. Kanał, który już był
 `Maintenance`, nie jest automatycznie uruchamiany. Błąd mutacji pozostawia
 stabilne `Maintenance`, `Faulted` albo `Offline`; nigdy nie jest maskowany samym
 Resume.
+
+Adapter ogranicza `GetConfiguration` i `ValidateConfiguration` dla tej samej
+pary channel/node do jednego żądania na 3 s. UI równolegle blokuje przycisk i
+pokazuje `Odczekaj…`. To ochrona obsługi operatorskiej; wyłączność oraz bounded
+kolejka nadal należą do workera i pozostają ostateczną ochroną RS485.
+
+Restart z `Recording` wykonuje Stop, `RestartNode`, trzysekundowe okno rozruchu
+po potwierdzeniu node i pełny `ResumeRecording`. Ta sama ścieżka działa ze
+stabilnego `Faulted` i `Offline`. Bezpośredni rescue jest używany tylko wtedy,
+gdy worker lub Operations IPC nie istnieje; helper najpierw zatrzymuje usługę,
+wysyła reset przez zwolniony port, a usługę uruchamia również po błędzie próby.
+
+`reset-metrics-view` nie usuwa Capture, zdarzeń ani liczników runtime. Zapamiętuje
+w procesie dashboardu bieżące wartości `samples`, `gaps`, `missing` i `breaks`,
+a w widoku pokazuje późniejsze przyrosty. Restart node wywołany z dashboardu
+ustawia ten punkt odniesienia automatycznie dopiero po udanym wznowieniu
+Recording. Absolutne kursory `rx` i `durable` pozostają widoczne.
+
 Formularz udostępnia ODR, zakres, high-pass, profil filtra, FIFO watermark,
 offsety, revision oraz interwał telemetrii hosta dla wybranego node. Interwał
 jest polityką schedulera, a nie konfiguracją zapisywaną w firmware. Dashboard
