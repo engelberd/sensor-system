@@ -197,6 +197,12 @@ class V2OperatorApiTests(unittest.TestCase):
             self.assertNotIn('fetchJson("/api/v2/service/restart"', html)
             self.assertIn("profile.telemetry_interval_changed", html)
             self.assertIn('$("node-config-dialog").showModal();', html)
+            self.assertIn("Host odczytuje konfigurację bez zatrzymywania pomiaru", html)
+            self.assertIn(
+                'const mutatesMeasurement = operation === "apply_configuration" || operation === "reset_configuration";',
+                html,
+            )
+            self.assertNotIn("Odczyt konfiguracji node ${nodeAddress} chwilowo zatrzyma", html)
             self.assertIn("formatOperationId(channel.active_operation_id)", html)
             self.assertIn("Próbki i ciągłość", html)
             self.assertIn("node.samples_written", html)

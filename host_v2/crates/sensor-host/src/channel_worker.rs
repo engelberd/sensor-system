@@ -281,6 +281,13 @@ fn default_measurement_configuration() -> sensor_protocol::MeasurementConfigurat
     sensor_protocol::MeasurementConfiguration::product_default()
 }
 
+fn configuration_requires_quiesce(kind: &OperationKind) -> bool {
+    matches!(
+        kind,
+        OperationKind::ApplyConfiguration { .. } | OperationKind::ResetConfiguration { .. }
+    )
+}
+
 impl ResumeRecordingExecution {
     fn new(
         nodes: &[ChannelControlNode],
@@ -1748,7 +1755,9 @@ where
                         | OperationKind::ResetConfiguration { .. }
                 ) && self.configuration.is_none()
                 {
-                    if self.operations.mode() == ChannelOperatingMode::Recording {
+                    if self.operations.mode() == ChannelOperatingMode::Recording
+                        && configuration_requires_quiesce(&request.kind)
+                    {
                         self.begin_automatic_configuration(request)?;
                     } else {
                         self.configuration = self.begin_configuration(request, true)?;
@@ -2664,6 +2673,31 @@ mod tests {
             sensor_odr: sensor_protocol::Adxl355Odr::Hz125,
             decimation_factor: 1,
         }
+    }
+
+    #[test]
+    fn only_mutating_measurement_configuration_requires_quiesce() {
+        let desired = observed_configuration().desired;
+
+        assert!(!configuration_requires_quiesce(
+            &OperationKind::GetConfiguration
+        ));
+        assert!(!configuration_requires_quiesce(
+            &OperationKind::ValidateConfiguration {
+                configuration: desired,
+            }
+        ));
+        assert!(configuration_requires_quiesce(
+            &OperationKind::ApplyConfiguration {
+                expected_revision: 1,
+                configuration: desired,
+            }
+        ));
+        assert!(configuration_requires_quiesce(
+            &OperationKind::ResetConfiguration {
+                expected_revision: 1,
+            }
+        ));
     }
 
     fn topology() -> InstallationTopologyProfile {

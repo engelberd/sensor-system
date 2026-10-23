@@ -95,11 +95,12 @@ jest zapisywany jako gap albo continuity break wraz z powodem serwisowym. Taka
 polityka nie osłabia normalnego nagrywania: luka bez jawnej operacji pozostaje
 błędem wymagającym diagnostyki.
 
-Pierwsza wersja celowo dopuszcza Configuration i Commissioning w Maintenance.
+Mutacje Configuration i Commissioning wykonują się w Maintenance. Odczyt oraz
+walidacja konfiguracji są krótkimi operacjami tylko do odczytu i korzystają z
+tego samego arbitra RS485 podczas `Recording`; próbki powstałe podczas tej
+transakcji pozostają w journalu node i są pobierane w kolejnych slotach.
 Configuration pozostaje też dostępne w `Faulted` jako service-safe naprawa przed
-restartem. Dzięki temu ruch serwisowy nie powoduje pływania `samples/s` w
-Production. Późniejsze read-only sondy mogą otrzymać osobny budżet, jeśli
-pomiary wykażą, że jest to potrzebne.
+restartem.
 
 ## Operacje pierwszego zakresu
 
@@ -108,10 +109,10 @@ pomiary wykażą, że jest to potrzebne.
 | ReadStatus | channel lub node | każdy |
 | EnterMaintenance | channel | Recording |
 | ResumeRecording | channel | Maintenance |
-| GetConfiguration | node | Maintenance lub Faulted |
-| ValidateConfiguration | node | Maintenance lub Faulted |
-| ApplyConfiguration | node | Maintenance lub Faulted |
-| ResetConfiguration | node | Maintenance lub Faulted |
+| GetConfiguration | node | Recording, Maintenance lub Faulted |
+| ValidateConfiguration | node | Recording, Maintenance lub Faulted |
+| ApplyConfiguration | node | Maintenance lub Faulted; request w Recording uruchamia kontrolowane Stop/Resume |
+| ResetConfiguration | node | Maintenance lub Faulted; request w Recording uruchamia kontrolowane Stop/Resume |
 | RestartNode | node | Maintenance lub Faulted |
 | ScanUnassigned | channel | Maintenance |
 | AssignAddress | channel + exact hardware ID | Maintenance |

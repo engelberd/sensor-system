@@ -2398,9 +2398,6 @@ INDEX_HTML = """<!doctype html>
         const channelMode = button.dataset.channelMode || "unknown";
         const outputRateMask = Number(button.dataset.outputRateMask || 0);
         if (!channelId || !nodeAddress) return;
-        if (channelMode === "recording" && !window.confirm(
-          `Odczyt konfiguracji node ${nodeAddress} chwilowo zatrzyma nagrywanie na ${channelName}. Host trwale zapisze ogon danych, przejdzie do Maintenance, odczyta konfigurację i automatycznie wznowi Recording. Kontynuować?`
-        )) return;
         const previousLabel = button.textContent;
         button.disabled = true;
         button.textContent = "Odczytywanie...";
@@ -2414,7 +2411,7 @@ INDEX_HTML = """<!doctype html>
         $("node-config-title").textContent = `${channelName} · node ${nodeAddress}`;
         showConfigurationLoading(
           "Odczytywanie konfiguracji",
-          "Host przygotowuje kanał i oczekuje na odpowiedź node…",
+          "Host odczytuje konfigurację bez zatrzymywania pomiaru…",
         );
         setConfigurationFormBusy(true, "Odczytywanie aktualnej konfiguracji node…");
         $("node-config-dialog").showModal();
@@ -2482,13 +2479,19 @@ INDEX_HTML = """<!doctype html>
           reset_configuration: "Przywrócenie konfiguracji domyślnej",
         };
         const channelName = form.dataset.channelName || `channel-${channelId}`;
-        const recordingWarning = (form.dataset.channelMode || "unknown") === "recording"
+        const mutatesMeasurement = operation === "apply_configuration" || operation === "reset_configuration";
+        const recordingWarning = mutatesMeasurement && (form.dataset.channelMode || "unknown") === "recording"
           ? ` ${actionLabels[operation] || "Ta operacja"} chwilowo zatrzyma nagrywanie na ${channelName}. Host zapisze ogon danych, wykona operację w Maintenance i automatycznie spróbuje wznowić Recording.`
           : "";
         if (recordingWarning && !window.confirm(
           `${recordingWarning} Kontynuować?`.trim()
         )) return;
-        setConfigurationFormBusy(true, "Host wykonuje bezpieczną procedurę konfiguracji…");
+        setConfigurationFormBusy(
+          true,
+          mutatesMeasurement
+            ? "Host wykonuje bezpieczną procedurę konfiguracji…"
+            : "Host sprawdza konfigurację bez zatrzymywania pomiaru…",
+        );
         try {
           const response = await submitV2Operation(channelId, operation, fields);
           if (response.result && response.result.kind === "configuration_validated") {

@@ -1130,7 +1130,8 @@ node przechodzi pełną symulację, a podstawowy pion Operations IPC jest gotowy
 Pion Configuration per node jest podłączony przez ten sam control plane:
 Get/Validate/Apply/Reset przechodzą od `hostctl`, przez ograniczone IPC i
 worker-owned ledger, do jedynego `ChannelAgent` i wracają jako typowane wyniki.
-Apply/Reset wymagają Maintenance i revision, przed wire przeliczają admission
+Get/Validate korzystają podczas Recording z krótkiej transakcji arbitra bez Stop
+i continuity break. Apply/Reset wymagają Maintenance i revision, przed wire przeliczają admission
 całego kanału, po sukcesie zapisują trwały snapshot konfiguracji, rekonfigurują
 quiescent scheduler i zastępują plan używany przez Resume. Bootstrap odczytuje
 rzeczywistą konfigurację node, więc restart hosta rozstrzyga przerwę pomiędzy

@@ -72,11 +72,15 @@ pozostaje w domenie hosta. Adapter HTTP jedynie ogranicza nazwy i wymagane pola,
 a następnie przekazuje request do tego samego API, z którego korzysta
 `hostctl channel`.
 
-Operacje Configuration złożone podczas `Recording` są jedną operacją domenową.
-Worker wykonuje `EnteringMaintenance → Configuring → ResumingRecording`, a wynik
-publikuje dopiero po pełnym Resume. Kanał, który już był w `Maintenance`, nie
-jest automatycznie uruchamiany. Błąd konfiguracji pozostawia stabilne
-`Maintenance`, `Faulted` albo `Offline`; nigdy nie jest maskowany samym Resume.
+Mutujące operacje Configuration złożone podczas `Recording` są jedną operacją
+domenową. Dla `ApplyConfiguration` i `ResetConfiguration` worker wykonuje
+`EnteringMaintenance → Configuring → ResumingRecording`, a wynik publikuje
+dopiero po pełnym Resume. `GetConfiguration` i `ValidateConfiguration` wykonują
+krótką transakcję przez ten sam arbiter RS485 bez Stop, Maintenance ani continuity
+break; próbki z tego czasu pozostają w journalu node. Kanał, który już był w
+`Maintenance`, nie jest automatycznie uruchamiany. Błąd mutacji pozostawia
+stabilne `Maintenance`, `Faulted` albo `Offline`; nigdy nie jest maskowany samym
+Resume.
 Formularz udostępnia ODR, zakres, high-pass, profil filtra, FIFO watermark,
 offsety, revision oraz interwał telemetrii hosta dla wybranego node. Interwał
 jest polityką schedulera, a nie konfiguracją zapisywaną w firmware. Dashboard
