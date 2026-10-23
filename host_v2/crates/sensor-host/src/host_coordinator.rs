@@ -1550,7 +1550,7 @@ mod tests {
                 .unwrap();
             // A successful reset response starts the production boot-settle
             // guard before RestartNode may complete.
-            let restart_deadline = Instant::now() + Duration::from_secs(5);
+            let restart_deadline = Instant::now() + Duration::from_secs(12);
             while {
                 let snapshot = first_operations.snapshot().unwrap();
                 (snapshot.records.len() < 9

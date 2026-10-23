@@ -73,7 +73,11 @@ use crate::time_wal::HostClockId;
 pub type ProductionChannelLoop<P, C, T> =
     ThreadedChannelRecordingLoop<P, C, GroupedPersistenceExecutor<CaptureRepository>, T>;
 
-const NODE_RESTART_SETTLE_TIME: Duration = Duration::from_secs(3);
+// Bench HIL with the installed RP2350 application showed that an acknowledged
+// watchdog reboot can need materially more than three seconds before protocol
+// 5 is responsive again. Keep this guard below the Operations API rather than
+// relying on timing in an individual UI client.
+const NODE_RESTART_SETTLE_TIME: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChannelCompositionPolicy {

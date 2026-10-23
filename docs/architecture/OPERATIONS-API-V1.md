@@ -211,11 +211,13 @@ Scan odpytuje sloty sekwencyjnie przez tego samego arbitra RS485, zapisuje
 ostatni kompletny wynik tylko w pamięci procesu i rozróżnia pusty slot od błędu
 całej rundy. Assign wymaga hardware ID oraz nonce z ostatniego udanego skanu,
 odrzuca adres zajęty przez skonfigurowany node, a sukces publikuje dopiero po
-handshake pod nowym adresem. Po potwierdzeniu `RestartNode` worker przez 3 s nie
+handshake pod nowym adresem. Po potwierdzeniu `RestartNode` worker przez 10 s nie
 dotyka portu, aby bootloader i aplikacja zdążyły ponownie przejąć transceiver.
 Dopiero potem operacja otrzymuje wynik sukcesu. `ResumeRecording` wykonuje
 świeży handshake, wykrywa nowy `boot_epoch` i przeprowadza trwały rollover
-Capture oraz Time. Restart jest także dopuszczony w stabilnym `Offline`, dzięki
+Capture oraz Time. Dziesięć sekund wynika z HIL na zainstalowanym RP2350: 3 s
+nie wystarczały, a 10 s pozwalało powtarzalnie wykonać kolejny handshake.
+Restart jest także dopuszczony w stabilnym `Offline`, dzięki
 czemu zwykły worker-owned control plane pozostaje podstawową drogą ratunkową
 bez zwalniania portu i restartowania całej usługi.
 

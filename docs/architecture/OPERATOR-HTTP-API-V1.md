@@ -88,7 +88,7 @@ pary channel/node do jednego żądania na 3 s. UI równolegle blokuje przycisk i
 pokazuje `Odczekaj…`. To ochrona obsługi operatorskiej; wyłączność oraz bounded
 kolejka nadal należą do workera i pozostają ostateczną ochroną RS485.
 
-Restart z `Recording` wykonuje Stop, `RestartNode`, trzysekundowe okno rozruchu
+Restart z `Recording` wykonuje Stop, `RestartNode`, dziesięciosekundowe okno rozruchu
 po potwierdzeniu node i pełny `ResumeRecording`. Ta sama ścieżka działa ze
 stabilnego `Faulted` i `Offline`. Bezpośredni rescue jest używany tylko wtedy,
 gdy worker lub Operations IPC nie istnieje; helper najpierw zatrzymuje usługę,

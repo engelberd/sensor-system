@@ -1212,7 +1212,8 @@ ochrona UI nad istniejącą wyłącznością workera, bez wpływu na cykliczny t
 Measurement.
 
 `RestartNode` jest dostępny również w `Offline`. Worker kończy operację dopiero
-po potwierdzeniu resetu i trzysekundowym oknie rozruchu, po czym dashboard
+po potwierdzeniu resetu i dziesięciosekundowym oknie rozruchu potwierdzonym HIL,
+po czym dashboard
 wykonuje `ResumeRecording` z nowym handshake i `boot_epoch`. Awaryjna ścieżka
 bez działającego workera zwalnia port przez zatrzymanie usługi, wysyła reset i
 zawsze próbuje ponownie uruchomić usługę. Dashboard może ustawić nietrwały punkt
