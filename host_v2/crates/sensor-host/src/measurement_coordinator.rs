@@ -289,6 +289,7 @@ impl ChannelWorkCoordinator {
             .map_err(MeasurementCoordinatorError::Runtime)?;
         let (metrics, metrics_reader) =
             NodeMetricsPublisher::new(self.channel_id, config.node_address, session.cursors());
+        metrics.observe_session_cursors(&session, None);
         self.sessions.push(ManagedSession {
             node_address: config.node_address,
             session: Some(session),

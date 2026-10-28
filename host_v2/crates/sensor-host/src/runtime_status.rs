@@ -290,7 +290,9 @@ fn nodes_json(observation: &HostRuntimeObservation, now_us: u64) -> Vec<Value> {
                 "channel_name": node.channel_name(),
                 "node_address": node.node_address(),
                 "hardware_id": hardware_id_hex(identity.hardware_id.bytes()),
-                "boot_epoch": identity.boot_epoch.get(),
+                "boot_epoch": metrics
+                    .and_then(|metrics| metrics.boot_epoch)
+                    .unwrap_or_else(|| identity.boot_epoch.get()),
                 "board_revision": identity.board_revision,
                 "firmware": format!("{}.{}.{}", identity.firmware.major, identity.firmware.minor, identity.firmware.patch),
                 "framing_protocol": identity.protocol.framing,

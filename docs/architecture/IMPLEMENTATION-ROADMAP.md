@@ -432,7 +432,9 @@ tej samej lub nowej epce wraca do Recording. Runtime status publikuje stan,
 liczbę prób i przyczynę. Testy jednostkowe potwierdzają błędną odpowiedź bez
 faultu workera, scheduler recovery, slow offline probe i ponowne dołączenie tej
 samej epoki. Status HTTP/dashboard rozróżnia `degraded`, `recovering` i
-`offline`, pokazuje przyczynę oraz liczbę nieudanych prób. Do zamknięcia bramki
+`offline`, pokazuje przyczynę oraz liczbę nieudanych prób. `boot_epoch` i
+cursory po rollover pochodzą z bieżącej `NodeSession`, a nie ze statycznego
+inventory procesu. Do zamknięcia bramki
 pozostają symulacja pełnego workera dla nowej epoki oraz HIL
 odłączenia/powrotu bez utraty przyszłego okna.
 

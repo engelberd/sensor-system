@@ -12,6 +12,7 @@ use crate::transaction::MonotonicMicros;
 pub struct NodeMetricsSnapshot {
     pub channel_id: u8,
     pub node_address: u8,
+    pub boot_epoch: Option<u64>,
     pub received_cursor: u64,
     pub durable_cursor: u64,
     pub released_cursor: u64,
@@ -37,6 +38,7 @@ pub struct NodeTelemetryMetricsSnapshot {
 
 #[derive(Default)]
 struct NodeMetricsAtomic {
+    boot_epoch: AtomicU64,
     received_cursor: AtomicU64,
     durable_cursor: AtomicU64,
     released_cursor: AtomicU64,
@@ -75,6 +77,10 @@ impl NodeMetricsReader {
         NodeMetricsSnapshot {
             channel_id: self.channel_id,
             node_address: self.node_address,
+            boot_epoch: match self.metrics.boot_epoch.load(Ordering::Acquire) {
+                0 => None,
+                value => Some(value),
+            },
             received_cursor: load(&self.metrics.received_cursor),
             durable_cursor: load(&self.metrics.durable_cursor),
             released_cursor: load(&self.metrics.released_cursor),
@@ -193,6 +199,9 @@ impl NodeMetricsPublisher {
             .last_measurement_monotonic_us
             .store(now.get(), Ordering::Relaxed);
         self.metrics.has_measurement.store(true, Ordering::Release);
+        self.metrics
+            .boot_epoch
+            .store(session.boot_epoch().get(), Ordering::Release);
     }
 
     pub(crate) fn observe_session_cursors(
@@ -209,6 +218,9 @@ impl NodeMetricsPublisher {
                 .has_produced_cursor
                 .store(true, Ordering::Release);
         }
+        self.metrics
+            .boot_epoch
+            .store(session.boot_epoch().get(), Ordering::Release);
     }
 
     pub(crate) fn observe_time_sync(&self, now: MonotonicMicros) {
@@ -400,6 +412,7 @@ mod tests {
             NodeMetricsSnapshot {
                 channel_id: 2,
                 node_address: 7,
+                boot_epoch: Some(9),
                 received_cursor: 12,
                 durable_cursor: 12,
                 released_cursor: 10,
@@ -443,6 +456,33 @@ mod tests {
                 failures: 4,
             }
         );
+    }
+
+    #[test]
+    fn publishes_the_current_session_epoch_after_rollover() {
+        let (publisher, reader) = NodeMetricsPublisher::new(2, 7, DeliveryCursors::empty());
+        let first = NodeSession::recovered(
+            HardwareId::from_bytes([1; 8]),
+            BootEpoch::new(9),
+            SequenceCursor::new(12),
+            SequenceCursor::new(10),
+        )
+        .unwrap();
+        publisher.observe_session_cursors(&first, Some(15));
+        assert_eq!(reader.snapshot().boot_epoch, Some(9));
+
+        let replacement = NodeSession::recovered(
+            HardwareId::from_bytes([1; 8]),
+            BootEpoch::new(10),
+            SequenceCursor::new(4),
+            SequenceCursor::new(3),
+        )
+        .unwrap();
+        publisher.observe_session_cursors(&replacement, Some(6));
+        let snapshot = reader.snapshot();
+        assert_eq!(snapshot.boot_epoch, Some(10));
+        assert_eq!(snapshot.received_cursor, 4);
+        assert_eq!(snapshot.produced_cursor, Some(6));
     }
 
     #[test]
