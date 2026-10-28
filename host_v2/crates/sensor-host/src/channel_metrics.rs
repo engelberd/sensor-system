@@ -222,6 +222,7 @@ impl ChannelMetricsPublisher {
                     increment(&self.metrics.telemetry_backpressure)
                 }
             },
+            ThreadedChannelRecordingEvent::RecoveryDue(_) => {}
         }
     }
 

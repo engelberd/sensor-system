@@ -913,9 +913,27 @@ class V2DashboardRepository:
                 measurement_age_ms = node.get("last_measurement_age_ms") if isinstance(node, dict) else None
                 time_sync_age_ms = node.get("last_time_sync_age_ms") if isinstance(node, dict) else None
                 telemetry_age_ms = node.get("last_telemetry_age_ms") if isinstance(node, dict) else None
-                online = bool(node is not None and not status_stale)
+                availability = (
+                    str(node.get("availability", "online"))
+                    if isinstance(node, dict)
+                    else "unknown"
+                )
+                recovery_reason = (
+                    node.get("recovery_reason") if isinstance(node, dict) else None
+                )
+                availability_failures = (
+                    _safe_int(node.get("availability_failures"))
+                    if isinstance(node, dict)
+                    else 0
+                )
+                online = bool(
+                    node is not None
+                    and not status_stale
+                    and availability != "offline"
+                )
                 measurement_fresh = bool(
                     running
+                    and availability in {"online", "degraded"}
                     and measurement_age_ms is not None
                     and _safe_int(measurement_age_ms, int(STATUS_STALE_AFTER_S * 1000) + 1)
                     <= int(STATUS_STALE_AFTER_S * 1000)
@@ -927,6 +945,13 @@ class V2DashboardRepository:
                     alerts.append("cursory niedostępne")
                 elif running and not measurement_fresh:
                     alerts.append("brak świeżych próbek")
+                if availability in {"degraded", "recovering", "offline"}:
+                    availability_alert = availability
+                    if recovery_reason:
+                        availability_alert += f": {recovery_reason}"
+                    if availability_failures:
+                        availability_alert += f" (próby: {availability_failures})"
+                    alerts.append(availability_alert)
                 received = _safe_int(cursors.get("received")) if isinstance(cursors, dict) else 0
                 durable = _safe_int(cursors.get("durable")) if isinstance(cursors, dict) else 0
                 released = _safe_int(cursors.get("released")) if isinstance(cursors, dict) else 0
@@ -986,10 +1011,21 @@ class V2DashboardRepository:
                         "runtime_v2": True,
                         "has_runtime": node is not None,
                         "online": online,
+                        "availability": availability,
+                        "recovery_reason": recovery_reason,
+                        "availability_failures": availability_failures,
                         "receiving_samples": measurement_fresh,
                         "expected_to_receive": running,
                         "sample_flow_state": (
-                            "flowing" if measurement_fresh else "idle" if online and not running else "stalled" if online else "offline"
+                            "flowing"
+                            if measurement_fresh
+                            else "recovering"
+                            if availability == "recovering"
+                            else "idle"
+                            if online and not running
+                            else "stalled"
+                            if online
+                            else "offline"
                         ),
                         "firmware_version": node.get("firmware") if isinstance(node, dict) else None,
                         "hardware_id": node.get("hardware_id") if isinstance(node, dict) else raw_node.get("hardware_id"),

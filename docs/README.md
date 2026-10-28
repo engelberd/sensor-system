@@ -81,6 +81,8 @@ rejestru luk zamraża
 [ADR-0009](adr/0009-source-sequence-and-gap-ledger.md).
 Sposób przeplatania danych, synchronizacji i poleceń na jednej magistrali opisuje
 [COMMUNICATION-MODEL.md](protocol/COMMUNICATION-MODEL.md).
+Bounded samonaprawę node bez zatrzymywania przyszłych okien zamraża
+[ADR-0011](adr/0011-bounded-online-node-recovery.md).
 Inwentaryzacja starych poleceń, znalezione problemy z niezawodnością i katalog
 potrzeb v2 są w
 [LEGACY-TRANSACTION-AUDIT.md](protocol/LEGACY-TRANSACTION-AUDIT.md).

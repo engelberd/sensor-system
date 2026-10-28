@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-22
+- Ostatnia aktualizacja: 2026-10-28
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -423,6 +423,18 @@ wykonuje najwyżej jedną akcję wire albo jedno rozliczenie persistence na krok
 Po odpowiedzi runtime wyznacza `ready_at` z output ODR, zweryfikowanego backlogu,
 docelowego wypełnienia chunku i deadline obsługi. Zapobiega to ciasnej pętli
 `NoData`, a zaległy strumień jest pobierany bez sztucznego oczekiwania.
+
+Po incydencie, w którym trwałe `recovery_required` zatrzymało jeden node na
+kilka godzin, ADR-0011 zastąpił boolean typowanym stanem dostępności. Recovery
+jest kandydatem `Control` wspólnego schedulera, wykonuje bounded handshake i
+reconciliation, po niepowodzeniu przechodzi do wolnego probe `Offline`, a po
+tej samej lub nowej epce wraca do Recording. Runtime status publikuje stan,
+liczbę prób i przyczynę. Testy jednostkowe potwierdzają błędną odpowiedź bez
+faultu workera, scheduler recovery, slow offline probe i ponowne dołączenie tej
+samej epoki. Status HTTP/dashboard rozróżnia `degraded`, `recovering` i
+`offline`, pokazuje przyczynę oraz liczbę nieudanych prób. Do zamknięcia bramki
+pozostają symulacja pełnego workera dla nowej epoki oraz HIL
+odłączenia/powrotu bez utraty przyszłego okna.
 
 Deterministyczna symulacja bajtowej magistrali obejmuje cztery node 125 Hz przez
 pełny framing v3 i Measurement protocol 5. Potwierdza brak głodzenia zdrowych

@@ -28,9 +28,10 @@ use crate::channel_recovery::{
     prepare_capture_stream, reconcile_channel_streams, ChannelRecoveryError,
 };
 use crate::channel_resume::{
-    ResumeNodeContract, ResumeVerificationError, ResumeVerificationGroup, ResumeVerificationPolicy,
-    ResumeVerificationProgress,
+    ResumeNodeContract, ResumeNodeEvidence, ResumeVerificationError, ResumeVerificationGroup,
+    ResumeVerificationPolicy, ResumeVerificationProgress,
 };
+use crate::channel_runtime::RecoveryDispatch;
 use crate::channel_startup::{
     assemble_recording_coordinator, ChannelAssemblyError, ChannelStartupPlan,
     RecordingAssemblyPolicy,
@@ -187,6 +188,7 @@ pub struct ProductionChannelTask<P, C, T> {
     configuration_workflow: Option<AutomaticConfigurationWorkflow>,
     commissioning: Option<CommissioningExecution>,
     restart: Option<RestartExecution>,
+    online_recovery: Option<OnlineRecoveryExecution>,
     commissioning_discoveries: Vec<sensor_protocol::CommissioningIdentity>,
     configuration_plan: ChannelStartupPlan,
     rollover: ChannelRolloverServices,
@@ -275,6 +277,42 @@ struct RestartExecution {
     deadline: Instant,
     settle_until: Option<Instant>,
     terminal_error: Option<OperationsError>,
+}
+
+struct OnlineRecoveryExecution {
+    dispatch: RecoveryDispatch,
+    verification: ResumeVerificationGroup,
+    evidence: Option<ResumeNodeEvidence>,
+    pending_rollover: Option<PendingEpochRollover>,
+    capture_durable: Option<sensor_core::SequenceCursor>,
+    activation: Option<SafeStateGroupOperation>,
+    activation_complete: bool,
+    abort_pending: bool,
+}
+
+impl OnlineRecoveryExecution {
+    fn new(
+        dispatch: RecoveryDispatch,
+        node: ChannelControlNode,
+        policy: ChannelMaintenancePolicy,
+    ) -> Result<Self, ChannelMaintenanceError> {
+        Ok(Self {
+            dispatch,
+            verification: ResumeVerificationGroup::new(
+                &[ResumeNodeContract {
+                    requirements: node.requirements,
+                    previous_boot_epoch: node.boot_epoch,
+                }],
+                policy.resume_verification,
+            )?,
+            evidence: None,
+            pending_rollover: None,
+            capture_durable: None,
+            activation: None,
+            activation_complete: false,
+            abort_pending: false,
+        })
+    }
 }
 
 fn configuration_key_node(key: ControlWorkKey) -> u8 {
@@ -404,6 +442,7 @@ where
             configuration_workflow: None,
             commissioning: None,
             restart: None,
+            online_recovery: None,
             commissioning_discoveries: Vec::new(),
             configuration_plan: startup.clone(),
             rollover,
@@ -1147,6 +1186,211 @@ where
         Ok(Some(execution))
     }
 
+    fn fail_online_recovery(
+        &mut self,
+        execution: OnlineRecoveryExecution,
+    ) -> Result<Option<OnlineRecoveryExecution>, ProductionChannelStepError> {
+        self.recording.fail_online_recovery(execution.dispatch)?;
+        Ok(None)
+    }
+
+    fn drive_online_recovery(
+        &mut self,
+        mut execution: OnlineRecoveryExecution,
+    ) -> Result<Option<OnlineRecoveryExecution>, ProductionChannelStepError> {
+        if execution.abort_pending {
+            match execution
+                .verification
+                .abort_current(self.recording.endpoint_mut().agent_mut())
+            {
+                Ok(ResumeVerificationProgress::AwaitingWireSettlement { .. }) => {
+                    let started = Instant::now();
+                    let endpoint_event = match self.recording.endpoint_mut().step() {
+                        Ok(event) => event,
+                        Err(_) => return self.fail_online_recovery(execution),
+                    };
+                    self.metrics.observe_step(
+                        &ThreadedChannelRecordingEvent::Endpoint(endpoint_event),
+                        started.elapsed(),
+                    );
+                    return Ok(Some(execution));
+                }
+                Ok(_) | Err(_) => return self.fail_online_recovery(execution),
+            }
+        }
+        if execution.evidence.is_none() {
+            let now = self.recording.endpoint_mut().now();
+            let progress = match execution
+                .verification
+                .drive(self.recording.endpoint_mut().agent_mut(), now)
+            {
+                Ok(progress) => progress,
+                Err(_) => return self.fail_online_recovery(execution),
+            };
+            match progress {
+                ResumeVerificationProgress::Complete => {
+                    execution.evidence = execution.verification.evidence().first().copied();
+                    if execution.evidence.is_none() {
+                        return self.fail_online_recovery(execution);
+                    }
+                    execution.activation_complete = execution
+                        .evidence
+                        .is_some_and(|value| value.runtime.state == RuntimeState::Recording);
+                }
+                ResumeVerificationProgress::NodeOffline { .. } => {
+                    return self.fail_online_recovery(execution);
+                }
+                ResumeVerificationProgress::NodeVerified { evidence, .. } => {
+                    execution.evidence = Some(evidence);
+                    execution.activation_complete =
+                        evidence.runtime.state == RuntimeState::Recording;
+                }
+                ResumeVerificationProgress::Submitted { .. }
+                | ResumeVerificationProgress::Waiting { .. }
+                | ResumeVerificationProgress::AwaitingWireSettlement { .. } => {
+                    let started = Instant::now();
+                    let endpoint_event = match self.recording.endpoint_mut().step() {
+                        Ok(event) => event,
+                        Err(_) => return self.fail_online_recovery(execution),
+                    };
+                    let timed_out = matches!(
+                        endpoint_event,
+                        ChannelEndpointEvent::Agent(
+                            ChannelEvent::HandshakeTimedOut { .. }
+                                | ChannelEvent::LifecycleTimedOut { .. }
+                                | ChannelEvent::StreamStateTimedOut { .. }
+                                | ChannelEvent::WireAttemptFailed { .. }
+                        )
+                    );
+                    if let ChannelEndpointEvent::Agent(event) = &endpoint_event {
+                        if execution.verification.handle_event(event).is_err() {
+                            return self.fail_online_recovery(execution);
+                        }
+                    }
+                    self.metrics.observe_step(
+                        &ThreadedChannelRecordingEvent::Endpoint(endpoint_event),
+                        started.elapsed(),
+                    );
+                    if timed_out {
+                        execution.abort_pending = true;
+                        return Ok(Some(execution));
+                    }
+                    return Ok(Some(execution));
+                }
+            }
+        }
+
+        let evidence = execution
+            .evidence
+            .ok_or(ChannelMaintenanceError::MissingResumeEvidence)?;
+        let previous = self
+            .nodes
+            .iter()
+            .find(|node| node.id.node_address == execution.dispatch.node_address)
+            .copied()
+            .ok_or(ChannelMaintenanceError::MissingResumeNode)?;
+
+        if evidence.stream_recovery_required && execution.capture_durable.is_none() {
+            if let Some(mut pending) = execution.pending_rollover.take() {
+                if let Some(ticket) = pending.time_ticket.as_ref() {
+                    match ticket.try_result() {
+                        Ok(None) => {}
+                        Ok(Some(Ok(result))) if result.stream == pending.expected_time_stream => {
+                            pending.time_ticket = None;
+                        }
+                        _ => return self.fail_online_recovery(execution),
+                    }
+                }
+                if let Some(ticket) = pending.telemetry_ticket.as_ref() {
+                    match ticket.try_result() {
+                        Ok(None) => {}
+                        Ok(Some(Ok(result)))
+                            if Some(result.stream) == pending.expected_telemetry_stream =>
+                        {
+                            pending.telemetry_ticket = None;
+                        }
+                        _ => return self.fail_online_recovery(execution),
+                    }
+                }
+                if pending.time_ticket.is_none() && pending.telemetry_ticket.is_none() {
+                    execution.capture_durable = Some(pending.capture_durable);
+                } else {
+                    execution.pending_rollover = Some(pending);
+                    return Ok(Some(execution));
+                }
+            } else {
+                execution.pending_rollover = self.begin_epoch_rollover(previous, evidence)?;
+                return Ok(Some(execution));
+            }
+        }
+
+        if !execution.activation_complete {
+            if execution.activation.is_none() {
+                execution.activation = Some(self.safe_state_group(
+                    SafeStateTarget::Recording,
+                    &[SafeStateNodeContract {
+                        requirements: previous.requirements,
+                        boot_epoch: evidence.identity.boot_epoch,
+                    }],
+                )?);
+            }
+            let group = execution
+                .activation
+                .as_mut()
+                .ok_or(ChannelMaintenanceError::MissingSafeStateGroup)?;
+            let now = self.recording.endpoint_mut().now();
+            match group.drive(self.recording.endpoint_mut().agent_mut(), now)? {
+                SafeStateGroupProgress::Complete => {
+                    execution.activation = None;
+                    execution.activation_complete = true;
+                }
+                SafeStateGroupProgress::NodeOffline { .. }
+                | SafeStateGroupProgress::NodeConvergenceFailed { .. } => {
+                    return self.fail_online_recovery(execution);
+                }
+                SafeStateGroupProgress::Node { .. }
+                | SafeStateGroupProgress::NodeReached { .. } => {
+                    self.step_safe_state_endpoint(group)?;
+                    return Ok(Some(execution));
+                }
+            }
+        }
+
+        let result = if evidence.stream_recovery_required {
+            let durable = execution
+                .capture_durable
+                .ok_or(ChannelMaintenanceError::MissingResumeEvidence)?;
+            self.recording.replace_online_recovery(
+                execution.dispatch,
+                ExpectedStreamState {
+                    hardware_id: evidence.identity.hardware_id,
+                    boot_epoch: evidence.identity.boot_epoch,
+                    journal_capacity_samples: evidence.capabilities.journal_capacity_samples,
+                },
+                durable,
+                evidence.stream,
+            )
+        } else {
+            self.recording.reconcile_online_recovery(
+                execution.dispatch,
+                evidence.capabilities.journal_capacity_samples,
+                evidence.stream,
+            )
+        };
+        if result.is_err() {
+            return self.fail_online_recovery(execution);
+        }
+        if evidence.stream_recovery_required {
+            let node = self
+                .nodes
+                .iter_mut()
+                .find(|node| node.id.node_address == execution.dispatch.node_address)
+                .ok_or(ChannelMaintenanceError::MissingResumeNode)?;
+            node.boot_epoch = evidence.identity.boot_epoch;
+        }
+        Ok(None)
+    }
+
     fn drive_maintenance(
         &mut self,
         mut execution: MaintenanceEntryExecution,
@@ -1749,6 +1993,10 @@ where
     type Shutdown = ControlledChannelShutdownReport;
 
     fn step(&mut self) -> Result<(), Self::StepError> {
+        if let Some(execution) = self.online_recovery.take() {
+            self.online_recovery = self.drive_online_recovery(execution)?;
+            return Ok(());
+        }
         match self
             .operations
             .poll_command()
@@ -1865,10 +2113,26 @@ where
             .step()
             .map_err(ProductionChannelStepError::Recording)?;
         self.metrics.observe_step(&event, started.elapsed());
+        if let ThreadedChannelRecordingEvent::RecoveryDue(dispatch) = event {
+            let node = self
+                .nodes
+                .iter()
+                .find(|node| node.id.node_address == dispatch.node_address)
+                .copied()
+                .ok_or(ChannelMaintenanceError::MissingResumeNode)?;
+            self.online_recovery = Some(OnlineRecoveryExecution::new(
+                dispatch,
+                node,
+                self.maintenance_policy,
+            )?);
+        }
         Ok(())
     }
 
-    fn shutdown(self) -> Self::Shutdown {
+    fn shutdown(mut self) -> Self::Shutdown {
+        if let Some(recovery) = self.online_recovery.take() {
+            let _ = self.recording.fail_online_recovery(recovery.dispatch);
+        }
         if self.operations.mode() == ChannelOperatingMode::Maintenance {
             return finalize_quiesced_channel(self.recording);
         }
@@ -2003,6 +2267,8 @@ pub enum ChannelMaintenanceError {
     EmptyChannel,
     DeadlineOverflow,
     MissingSafeStateGroup,
+    MissingResumeEvidence,
+    MissingResumeNode,
     SafeStatePolicy(crate::safe_state::SafeStateError),
     SafeStateGroup(SafeStateGroupError),
     Mode(ChannelModeError),

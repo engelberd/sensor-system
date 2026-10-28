@@ -96,6 +96,18 @@ przy awarii dłuższej niż policzony czas retencji. Musi natomiast:
 Docelowy czas retencji będzie parametrem wyznaczonym z dostępnej pamięci,
 formatu próbki i output ODR, a następnie zweryfikowany testem na firmware.
 
+### Dostępność kolejnych okien
+
+Ochrona pojedynczego niejednoznacznego fragmentu nie może bezterminowo zatrzymać
+przyszłych poprawnych próbek. Po ograniczonej próbie retransmisji i recovery
+host zapisuje `Gap` albo `ContinuityBreak`, po czym wznawia Recording. Node,
+który nie odpowiada, przechodzi do `Offline` dopiero po próbach wznowienia i
+pozostaje objęty okresowym bounded probe. Zdrowe node na tej samej magistrali
+nie mogą zostać przez to zagłodzone.
+
+`RecoveryRequired` jest zdarzeniem uruchamiającym samonaprawę, nigdy trwałą
+kwarantanną bez następnego deadline. Szczegóły zamraża ADR-0011.
+
 ## 5. Topologia i wymienny transport
 
 Model produktu rozróżnia:

@@ -10,11 +10,13 @@ use crate::bounded_writer::{
 use crate::channel_agent::{ChannelAgent, ChannelAgentError, ChannelEvent};
 use crate::channel_runtime::{
     ChannelDispatch, ChannelRuntime, ChannelRuntimeError, MeasurementDispatch, MeasurementProgress,
-    NodeScheduleConfig, TelemetryDispatch, TelemetryScheduleConfig, TimeSyncDispatch,
-    TimeSyncScheduleConfig,
+    NodeAvailability, NodeScheduleConfig, RecoveryCause, RecoveryDispatch, TelemetryDispatch,
+    TelemetryScheduleConfig, TimeSyncDispatch, TimeSyncScheduleConfig,
 };
 use crate::measurement_persistence::{persist_pending, DurableMeasurementSink, PersistenceError};
-use crate::measurement_transfer::{MeasurementTransfer, MeasurementTransferError, PersistenceKind};
+use crate::measurement_transfer::{
+    MeasurementTransfer, MeasurementTransferError, PersistenceKind, RecoveryReason,
+};
 use crate::node_metrics::{NodeMetricsPublisher, NodeMetricsReader};
 use crate::node_session::{NodeSession, SessionPhase};
 use crate::persistence_executor::WriteRecoveryRange;
@@ -48,7 +50,26 @@ pub enum MeasurementSettlement {
     },
     RecoveryRequired {
         node_address: u8,
+        cause: MeasurementRecoveryCause,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MeasurementRecoveryCause {
+    StreamChanged(sensor_core::BootEpoch),
+    InvalidRelease(sensor_protocol::StreamState),
+    InvalidResponse,
+    StreamRegressed,
+}
+
+impl From<RecoveryReason> for MeasurementRecoveryCause {
+    fn from(value: RecoveryReason) -> Self {
+        match value {
+            RecoveryReason::StreamChanged(epoch) => Self::StreamChanged(epoch),
+            RecoveryReason::InvalidRelease(state) => Self::InvalidRelease(state),
+            RecoveryReason::InvalidResponse => Self::InvalidResponse,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,6 +127,7 @@ pub struct ChannelWorkCoordinator {
     runtime: ChannelRuntime,
     sessions: Vec<ManagedSession>,
     active_dispatch: Option<MeasurementDispatch>,
+    active_recovery: Option<RecoveryDispatch>,
     active_time_sync: Option<TimeSyncDispatch>,
     active_telemetry: Option<TelemetryDispatch>,
     pending_completion: Option<PendingCompletion>,
@@ -122,6 +144,7 @@ impl ChannelWorkCoordinator {
             runtime,
             sessions: Vec::with_capacity(capacity),
             active_dispatch: None,
+            active_recovery: None,
             active_time_sync: None,
             active_telemetry: None,
             pending_completion: None,
@@ -203,6 +226,9 @@ impl ChannelWorkCoordinator {
             return Ok(None);
         };
         match dispatch {
+            ChannelDispatch::Recovery(recovery) => {
+                self.active_recovery = Some(recovery);
+            }
             ChannelDispatch::Measurement(measurement) => {
                 if let Err(error) = self.submit_measurement(agent, measurement) {
                     self.runtime
@@ -571,7 +597,10 @@ impl ChannelWorkCoordinator {
                             }
                         }
                         Err(ChannelRuntimeError::StreamRegressed) => {
-                            MeasurementSettlement::RecoveryRequired { node_address }
+                            MeasurementSettlement::RecoveryRequired {
+                                node_address,
+                                cause: MeasurementRecoveryCause::StreamRegressed,
+                            }
                         }
                         Err(error) => {
                             self.pending_completion = Some(pending);
@@ -591,13 +620,26 @@ impl ChannelWorkCoordinator {
                 }
             }
             SessionPhase::RecoveryRequired => {
-                if let Err(error) = self.runtime.require_recovery(pending.dispatch) {
+                let cause = pending
+                    .transfer
+                    .recovery_reason()
+                    .map(runtime_recovery_cause)
+                    .unwrap_or(RecoveryCause::InvalidResponse);
+                if let Err(error) = self.runtime.require_recovery(pending.dispatch, cause, now) {
                     self.pending_completion = Some(pending);
                     return Err(MeasurementSettlementError::Coordinator(
                         MeasurementCoordinatorError::Runtime(error),
                     ));
                 }
-                MeasurementSettlement::RecoveryRequired { node_address }
+                let cause = pending
+                    .transfer
+                    .recovery_reason()
+                    .map(MeasurementRecoveryCause::from)
+                    .unwrap_or(MeasurementRecoveryCause::InvalidResponse);
+                MeasurementSettlement::RecoveryRequired {
+                    node_address,
+                    cause,
+                }
             }
             _ => {
                 self.pending_completion = Some(pending);
@@ -609,13 +651,24 @@ impl ChannelWorkCoordinator {
 
         let produced = settlement_progress(settlement).map(|progress| progress.produced.get());
         let session = pending.transfer.into_session();
+        let availability = self
+            .runtime
+            .snapshot(node_address, now)
+            .map_err(MeasurementCoordinatorError::Runtime)
+            .map_err(MeasurementSettlementError::Coordinator)?
+            .availability;
         let managed = self
             .managed_session_mut(node_address)
             .map_err(MeasurementSettlementError::Coordinator)?;
         if let MeasurementSettlement::Persisted { kind, .. } = settlement {
             managed.metrics.observe_persistence(kind);
         }
-        managed.metrics.observe_session(&session, produced, now);
+        if settlement_progress(settlement).is_some() {
+            managed.metrics.observe_session(&session, produced, now);
+        } else {
+            managed.metrics.observe_session_cursors(&session, produced);
+        }
+        managed.metrics.observe_availability(availability);
         managed.session = Some(session);
         self.active_dispatch = None;
         self.observe_shutdown_settlement(settlement)
@@ -789,19 +842,34 @@ impl ChannelWorkCoordinator {
                     kind: persistence_kind,
                 },
                 Err(ChannelRuntimeError::StreamRegressed) => {
-                    MeasurementSettlement::RecoveryRequired { node_address }
+                    MeasurementSettlement::RecoveryRequired {
+                        node_address,
+                        cause: MeasurementRecoveryCause::StreamRegressed,
+                    }
                 }
                 Err(error) => return Err(MeasurementCoordinatorError::Runtime(error)),
             };
         let write = self.in_flight_writes.remove(index);
         let session = write.transfer.into_session();
+        let availability = self
+            .runtime
+            .snapshot(node_address, now)
+            .map_err(MeasurementCoordinatorError::Runtime)?
+            .availability;
         let managed = self.managed_session_mut(node_address)?;
         if let MeasurementSettlement::Persisted { kind, .. } = settlement {
             managed.metrics.observe_persistence(kind);
         }
-        managed
-            .metrics
-            .observe_session(&session, Some(produced.get()), now);
+        if settlement_progress(settlement).is_some() {
+            managed
+                .metrics
+                .observe_session(&session, Some(produced.get()), now);
+        } else {
+            managed
+                .metrics
+                .observe_session_cursors(&session, Some(produced.get()));
+        }
+        managed.metrics.observe_availability(availability);
         managed.session = Some(session);
         Ok(settlement)
     }
@@ -819,6 +887,125 @@ impl ChannelWorkCoordinator {
         managed.metrics.observe_session(&session, None, now);
         managed.session = Some(session);
         Ok(())
+    }
+
+    pub fn fail_online_recovery(
+        &mut self,
+        dispatch: RecoveryDispatch,
+        now: MonotonicMicros,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        if self.active_recovery != Some(dispatch) {
+            return Err(MeasurementCoordinatorError::InvariantViolation);
+        }
+        self.runtime
+            .fail_recovery(dispatch, now)
+            .map_err(MeasurementCoordinatorError::Runtime)?;
+        let availability = self
+            .runtime
+            .snapshot(dispatch.node_address, now)
+            .map_err(MeasurementCoordinatorError::Runtime)?
+            .availability;
+        self.managed_session(dispatch.node_address)?
+            .metrics
+            .observe_availability(availability);
+        self.active_recovery = None;
+        Ok(())
+    }
+
+    pub fn reconcile_online_recovery(
+        &mut self,
+        dispatch: RecoveryDispatch,
+        journal_capacity_samples: u32,
+        stream: sensor_protocol::StreamState,
+        now: MonotonicMicros,
+    ) -> Result<RecoveryContinuity, MeasurementCoordinatorError> {
+        if self.active_recovery != Some(dispatch) {
+            return Err(MeasurementCoordinatorError::InvariantViolation);
+        }
+        let session = self
+            .managed_session(dispatch.node_address)?
+            .session
+            .as_ref()
+            .ok_or(MeasurementCoordinatorError::SessionUnavailable(
+                dispatch.node_address,
+            ))?;
+        let expected = ExpectedStreamState {
+            hardware_id: session.hardware_id(),
+            boot_epoch: session.boot_epoch(),
+            journal_capacity_samples,
+        };
+        let capture = CaptureRecoveryEvidence {
+            hardware_id: session.hardware_id(),
+            boot_epoch: session.boot_epoch(),
+            durable_cursor: session.cursors().durable(),
+        };
+        let reconciled = reconcile_existing_capture(expected, capture, stream)
+            .map_err(MeasurementCoordinatorError::StreamRecovery)?;
+        let continuity = reconciled.continuity();
+        let session = reconciled.into_session();
+        self.runtime
+            .complete_recovery(dispatch, session.cursors().received(), stream.produced, now)
+            .map_err(MeasurementCoordinatorError::Runtime)?;
+        let managed = self.managed_session_mut(dispatch.node_address)?;
+        managed
+            .metrics
+            .observe_session_cursors(&session, Some(stream.produced.get()));
+        managed
+            .metrics
+            .observe_availability(NodeAvailability::Online);
+        managed.session = Some(session);
+        self.active_recovery = None;
+        Ok(continuity)
+    }
+
+    pub fn replace_online_recovery(
+        &mut self,
+        dispatch: RecoveryDispatch,
+        expected: ExpectedStreamState,
+        durable_cursor: SequenceCursor,
+        stream: sensor_protocol::StreamState,
+        now: MonotonicMicros,
+    ) -> Result<RecoveryContinuity, MeasurementCoordinatorError> {
+        if self.active_recovery != Some(dispatch) {
+            return Err(MeasurementCoordinatorError::InvariantViolation);
+        }
+        let previous = self
+            .managed_session(dispatch.node_address)?
+            .session
+            .as_ref()
+            .ok_or(MeasurementCoordinatorError::SessionUnavailable(
+                dispatch.node_address,
+            ))?;
+        if previous.hardware_id() != expected.hardware_id {
+            return Err(MeasurementCoordinatorError::ResumeHardwareMismatch(
+                dispatch.node_address,
+            ));
+        }
+        let reconciled = reconcile_existing_capture(
+            expected,
+            CaptureRecoveryEvidence {
+                hardware_id: expected.hardware_id,
+                boot_epoch: expected.boot_epoch,
+                durable_cursor,
+            },
+            stream,
+        )
+        .map_err(MeasurementCoordinatorError::StreamRecovery)?;
+        let continuity = reconciled.continuity();
+        let session = reconciled.into_session();
+        self.runtime
+            .complete_recovery(dispatch, durable_cursor, stream.produced, now)
+            .map_err(MeasurementCoordinatorError::Runtime)?;
+        let managed = self.managed_session_mut(dispatch.node_address)?;
+        managed
+            .metrics
+            .observe_session_cursors(&session, Some(stream.produced.get()));
+        managed
+            .metrics
+            .observe_availability(NodeAvailability::Online);
+        managed.session = Some(session);
+        self.active_recovery = None;
+        Ok(continuity)
     }
 
     /// Rebuilds one quiesced session from fresh node evidence and the cursor
@@ -918,6 +1105,7 @@ impl ChannelWorkCoordinator {
 
     pub const fn has_active_dispatch(&self) -> bool {
         self.active_dispatch.is_some()
+            || self.active_recovery.is_some()
             || self.active_time_sync.is_some()
             || self.active_telemetry.is_some()
     }
@@ -938,12 +1126,18 @@ impl ChannelWorkCoordinator {
         if !self.is_quiescent() || self.shutdown_drain_nodes.is_some() {
             return Err(MeasurementCoordinatorError::ShutdownDrainNotReady);
         }
-        self.shutdown_drain_nodes = Some(
-            self.sessions
-                .iter()
-                .map(|session| session.node_address)
-                .collect(),
-        );
+        let mut drainable = VecDeque::with_capacity(self.sessions.len());
+        for session in &self.sessions {
+            if self
+                .runtime
+                .recovery_cause(session.node_address)
+                .map_err(MeasurementCoordinatorError::Runtime)?
+                .is_none()
+            {
+                drainable.push_back(session.node_address);
+            }
+        }
+        self.shutdown_drain_nodes = Some(drainable);
         self.quiescing = false;
         Ok(())
     }
@@ -1096,6 +1290,14 @@ impl ChannelWorkCoordinator {
             return Err(MeasurementCoordinatorError::Agent(rejected.error));
         }
         Ok(())
+    }
+}
+
+fn runtime_recovery_cause(reason: RecoveryReason) -> RecoveryCause {
+    match reason {
+        RecoveryReason::StreamChanged(_) => RecoveryCause::StreamChanged,
+        RecoveryReason::InvalidRelease(_) => RecoveryCause::InvalidRelease,
+        RecoveryReason::InvalidResponse => RecoveryCause::InvalidResponse,
     }
 }
 
@@ -1407,6 +1609,114 @@ mod tests {
                 MonotonicMicros::new(1),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn recovery_required_becomes_scheduled_control_and_can_rejoin_same_epoch() {
+        let mut coordinator = coordinator();
+        let mut agent = agent();
+        let request = begin_wire_attempt(&mut coordinator, &mut agent);
+        let mut payload = [0; MAX_PAYLOAD_BYTES];
+        let len = encode_pull_response(
+            &PullResponse::StreamChanged(BootEpoch::new(10)),
+            &mut payload,
+        )
+        .unwrap();
+        assert!(matches!(
+            agent
+                .receive(
+                    MonotonicMicros::new(1),
+                    &response(&request, &payload[..len]),
+                )
+                .unwrap(),
+            ChannelEvent::MeasurementRecoveryRequired {
+                reason: RecoveryReason::StreamChanged(_),
+                ..
+            }
+        ));
+        let settlement = coordinator
+            .settle_completed(
+                &mut agent,
+                &mut Sink {
+                    failures_remaining: 0,
+                    chunk_calls: 0,
+                },
+                MonotonicMicros::new(1),
+            )
+            .unwrap();
+        assert!(matches!(
+            settlement,
+            MeasurementSettlement::RecoveryRequired {
+                cause: MeasurementRecoveryCause::StreamChanged(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            coordinator.node_metrics_readers()[0]
+                .snapshot()
+                .last_measurement_monotonic_us,
+            None
+        );
+        let ChannelDispatch::Recovery(recovery) = coordinator
+            .dispatch_next_work(&mut agent, MonotonicMicros::new(2))
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("recovery must be selected through the shared scheduler");
+        };
+        let stream = StreamState {
+            boot_epoch: BootEpoch::new(9),
+            retained_from: SequenceCursor::ORIGIN,
+            produced: SequenceCursor::ORIGIN,
+            released: SequenceCursor::ORIGIN,
+            capacity_samples: 2_048,
+            overwritten_samples: 0,
+        };
+        coordinator
+            .reconcile_online_recovery(recovery, 2_048, stream, MonotonicMicros::new(3))
+            .unwrap();
+        assert!(matches!(
+            coordinator
+                .dispatch_next_work(&mut agent, MonotonicMicros::new(3))
+                .unwrap(),
+            Some(ChannelDispatch::Measurement(_))
+        ));
+    }
+
+    #[test]
+    fn shutdown_skips_a_node_waiting_for_online_recovery() {
+        let mut coordinator = coordinator();
+        let mut agent = agent();
+        let request = begin_wire_attempt(&mut coordinator, &mut agent);
+        let mut payload = [0; MAX_PAYLOAD_BYTES];
+        let len = encode_pull_response(
+            &PullResponse::StreamChanged(BootEpoch::new(10)),
+            &mut payload,
+        )
+        .unwrap();
+        agent
+            .receive(
+                MonotonicMicros::new(1),
+                &response(&request, &payload[..len]),
+            )
+            .unwrap();
+        coordinator
+            .settle_completed(
+                &mut agent,
+                &mut Sink {
+                    failures_remaining: 0,
+                    chunk_calls: 0,
+                },
+                MonotonicMicros::new(1),
+            )
+            .unwrap();
+
+        coordinator.begin_quiesce();
+        assert!(coordinator.is_quiescent());
+        coordinator.begin_shutdown_drain().unwrap();
+        assert!(coordinator.is_shutdown_drain_complete());
+        coordinator.finish_shutdown_drain().unwrap();
+        assert!(coordinator.is_quiescent());
     }
 
     #[test]
@@ -2107,6 +2417,12 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.consecutive_failures, 1);
         assert_eq!(snapshot.ready_at, MonotonicMicros::new(10_012));
+        assert_eq!(
+            coordinator.node_metrics_readers()[0]
+                .snapshot()
+                .last_measurement_monotonic_us,
+            None
+        );
         assert_eq!(dispatch.node_address, 7);
     }
 }

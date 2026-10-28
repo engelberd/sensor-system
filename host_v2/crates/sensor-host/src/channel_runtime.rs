@@ -85,6 +85,64 @@ pub struct MeasurementDispatch {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoveryDispatch {
+    pub work_id: u64,
+    pub node_address: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryCause {
+    StreamChanged,
+    InvalidRelease,
+    InvalidResponse,
+    StreamRegressed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineCause {
+    Unresponsive,
+    Recovery(RecoveryCause),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeAvailability {
+    Online,
+    RetryBackoff { failures: u8 },
+    Recovering { cause: RecoveryCause, failures: u8 },
+    Offline { cause: OfflineCause, failures: u8 },
+}
+
+impl NodeAvailability {
+    pub const fn failures(self) -> u8 {
+        match self {
+            Self::Online => 0,
+            Self::RetryBackoff { failures }
+            | Self::Recovering { failures, .. }
+            | Self::Offline { failures, .. } => failures,
+        }
+    }
+
+    const fn recovery_cause(self) -> Option<RecoveryCause> {
+        match self {
+            Self::Recovering { cause, .. }
+            | Self::Offline {
+                cause: OfflineCause::Recovery(cause),
+                ..
+            } => Some(cause),
+            _ => None,
+        }
+    }
+
+    const fn is_offline(self) -> bool {
+        matches!(self, Self::Offline { .. })
+    }
+
+    const fn allows_auxiliary(self) -> bool {
+        matches!(self, Self::Online | Self::RetryBackoff { .. })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TimeSyncScheduleConfig {
     pub interval: DurationMicros,
     pub estimated_slot: DurationMicros,
@@ -157,6 +215,7 @@ pub struct TelemetryDispatch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelDispatch {
     Measurement(MeasurementDispatch),
+    Recovery(RecoveryDispatch),
     TimeSync(TimeSyncDispatch),
     Telemetry(TelemetryDispatch),
 }
@@ -231,6 +290,7 @@ pub struct NodeScheduleSnapshot {
     pub offline: bool,
     pub in_flight: bool,
     pub recovery_required: bool,
+    pub availability: NodeAvailability,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,16 +302,27 @@ struct NodeScheduleState {
     service_deadline: MonotonicMicros,
     ready_at: MonotonicMicros,
     queued_at: MonotonicMicros,
-    consecutive_failures: u8,
+    availability: NodeAvailability,
     work_id: u64,
     in_flight: bool,
-    recovery_required: bool,
 }
 
 impl NodeScheduleState {
     fn candidate(self, now: MonotonicMicros) -> Result<Option<WorkCandidate>, ChannelRuntimeError> {
-        if self.in_flight || self.recovery_required {
+        if self.in_flight {
             return Ok(None);
+        }
+        if self.availability.recovery_cause().is_some() {
+            return Ok(Some(WorkCandidate {
+                work_id: self.work_id,
+                node_address: self.config.node_address,
+                class: TrafficClass::Control,
+                ready_at: self.ready_at,
+                deadline: Some(self.ready_at),
+                queued_at: self.queued_at,
+                time_to_overflow_us: None,
+                estimated_slot: self.config.measurement_slot,
+            }));
         }
         Ok(Some(WorkCandidate {
             work_id: self.work_id,
@@ -292,10 +363,11 @@ impl NodeScheduleState {
             time_to_overflow_us: self.time_to_overflow_us(now)?,
             service_deadline: self.service_deadline,
             ready_at: self.ready_at,
-            consecutive_failures: self.consecutive_failures,
-            offline: self.consecutive_failures > self.config.retry_attempt_limit,
+            consecutive_failures: self.availability.failures(),
+            offline: self.availability.is_offline(),
             in_flight: self.in_flight,
-            recovery_required: self.recovery_required,
+            recovery_required: self.availability.recovery_cause().is_some(),
+            availability: self.availability,
         })
     }
 }
@@ -367,10 +439,9 @@ impl ChannelRuntime {
             service_deadline: now,
             ready_at: now,
             queued_at: now,
-            consecutive_failures: 0,
+            availability: NodeAvailability::Online,
             work_id,
             in_flight: false,
-            recovery_required: false,
         });
         Ok(())
     }
@@ -389,7 +460,7 @@ impl ChannelRuntime {
             .iter_mut()
             .find(|node| node.config.node_address == config.node_address)
             .ok_or(ChannelRuntimeError::UnknownNode(config.node_address))?;
-        if node.in_flight || node.recovery_required {
+        if node.in_flight || node.availability.recovery_cause().is_some() {
             return Err(ChannelRuntimeError::ReconfigurationWhileActive);
         }
         node.config = config;
@@ -420,7 +491,7 @@ impl ChannelRuntime {
             .iter()
             .find(|node| node.config.node_address == node_address)
             .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
-        if node.recovery_required {
+        if node.availability.recovery_cause().is_some() {
             return Err(ChannelRuntimeError::RecoveryRequired(node_address));
         }
         if self
@@ -460,7 +531,7 @@ impl ChannelRuntime {
             .iter()
             .find(|node| node.config.node_address == node_address)
             .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
-        if node.recovery_required {
+        if node.availability.recovery_cause().is_some() {
             return Err(ChannelRuntimeError::RecoveryRequired(node_address));
         }
         if self
@@ -536,7 +607,7 @@ impl ChannelRuntime {
         for state in self.time_sync.iter().copied() {
             let node_available = self.nodes.iter().any(|node| {
                 node.config.node_address == state.node_address
-                    && !node.recovery_required
+                    && node.availability.allows_auxiliary()
                     && !node.in_flight
             });
             if node_available {
@@ -548,7 +619,7 @@ impl ChannelRuntime {
         for state in self.telemetry.iter().copied() {
             let node_available = self.nodes.iter().any(|node| {
                 node.config.node_address == state.node_address
-                    && !node.recovery_required
+                    && node.availability.allows_auxiliary()
                     && !node.in_flight
             });
             if node_available {
@@ -569,6 +640,21 @@ impl ChannelRuntime {
             return Ok(None);
         };
         let dispatch = match selected.class {
+            TrafficClass::Control => {
+                let node = self
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.work_id == selected.work_id)
+                    .ok_or(ChannelRuntimeError::InvariantViolation)?;
+                if node.availability.recovery_cause().is_none() {
+                    return Err(ChannelRuntimeError::InvariantViolation);
+                }
+                node.in_flight = true;
+                ChannelDispatch::Recovery(RecoveryDispatch {
+                    work_id: node.work_id,
+                    node_address: node.config.node_address,
+                })
+            }
             TrafficClass::Measurement => {
                 let node = self
                     .nodes
@@ -639,6 +725,9 @@ impl ChannelRuntime {
         else {
             return Ok(None);
         };
+        if selected.class != TrafficClass::Measurement {
+            return Ok(None);
+        }
         let node = self
             .nodes
             .iter_mut()
@@ -673,13 +762,13 @@ impl ChannelRuntime {
             .iter_mut()
             .find(|node| node.config.node_address == node_address)
             .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
-        if node.recovery_required {
-            return Err(ChannelRuntimeError::RecoveryRequired(node_address));
+        if node.availability.recovery_cause().is_some() {
+            return Ok(None);
         }
         if node.in_flight {
             return Ok(None);
         }
-        if node.consecutive_failures > 0 && node.ready_at > now {
+        if node.availability.failures() > 0 && node.ready_at > now {
             return Ok(None);
         }
         node.in_flight = true;
@@ -704,7 +793,11 @@ impl ChannelRuntime {
         if progress.received < node.received || progress.produced < node.observed_produced {
             let node = &mut self.nodes[node_index];
             node.in_flight = false;
-            node.recovery_required = true;
+            node.availability = NodeAvailability::Recovering {
+                cause: RecoveryCause::StreamRegressed,
+                failures: 0,
+            };
+            node.ready_at = now;
             self.active_dispatch = None;
             return Err(ChannelRuntimeError::StreamRegressed);
         }
@@ -719,7 +812,7 @@ impl ChannelRuntime {
         node.service_deadline = next_deadline;
         node.ready_at = next_measurement_ready_at(node.config, progress, now)?;
         node.queued_at = now;
-        node.consecutive_failures = 0;
+        node.availability = NodeAvailability::Online;
         node.work_id = next_work_id;
         node.in_flight = false;
         self.active_dispatch = None;
@@ -752,7 +845,11 @@ impl ChannelRuntime {
         if progress.received < node.received || progress.produced < node.observed_produced {
             let node = &mut self.nodes[node_index];
             node.in_flight = false;
-            node.recovery_required = true;
+            node.availability = NodeAvailability::Recovering {
+                cause: RecoveryCause::StreamRegressed,
+                failures: 0,
+            };
+            node.ready_at = now;
             return Err(ChannelRuntimeError::StreamRegressed);
         }
         let next_deadline = now
@@ -766,7 +863,7 @@ impl ChannelRuntime {
         node.service_deadline = next_deadline;
         node.ready_at = next_measurement_ready_at(node.config, progress, now)?;
         node.queued_at = now;
-        node.consecutive_failures = 0;
+        node.availability = NodeAvailability::Online;
         node.work_id = next_work_id;
         node.in_flight = false;
         Ok(())
@@ -777,17 +874,58 @@ impl ChannelRuntime {
     pub fn require_recovery(
         &mut self,
         dispatch: MeasurementDispatch,
+        cause: RecoveryCause,
+        now: MonotonicMicros,
     ) -> Result<(), ChannelRuntimeError> {
         let node_index = self.active_node_index(dispatch)?;
         let node = &mut self.nodes[node_index];
         node.in_flight = false;
-        node.recovery_required = true;
+        node.availability = NodeAvailability::Recovering { cause, failures: 0 };
+        node.ready_at = now;
+        node.queued_at = now;
         self.active_dispatch = None;
         Ok(())
     }
 
     /// Re-enters rotation only after the caller rebuilt `NodeSession` from a
     /// validated boot epoch and durable cursor.
+    pub fn complete_recovery(
+        &mut self,
+        dispatch: RecoveryDispatch,
+        recovered_cursor: SequenceCursor,
+        observed_produced: SequenceCursor,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        let node_index = self.active_recovery_index(dispatch)?;
+        if self.nodes[node_index]
+            .availability
+            .recovery_cause()
+            .is_none()
+        {
+            return Err(ChannelRuntimeError::RecoveryNotRequired(
+                dispatch.node_address,
+            ));
+        }
+        if recovered_cursor > observed_produced {
+            return Err(ChannelRuntimeError::ReceivedAheadOfProduced);
+        }
+        let work_id = self.allocate_work_id()?;
+        let node = &mut self.nodes[node_index];
+        node.received = recovered_cursor;
+        node.observed_produced = observed_produced;
+        node.observed_at = now;
+        node.service_deadline = now;
+        node.ready_at = now;
+        node.queued_at = now;
+        node.availability = NodeAvailability::Online;
+        node.work_id = work_id;
+        node.in_flight = false;
+        self.active_dispatch = None;
+        Ok(())
+    }
+
+    /// Compatibility entry point used by startup/unit composition where no
+    /// scheduler-owned recovery probe is active yet.
     pub fn recover_node(
         &mut self,
         node_address: u8,
@@ -799,7 +937,11 @@ impl ChannelRuntime {
             .iter()
             .position(|node| node.config.node_address == node_address)
             .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
-        if !self.nodes[node_index].recovery_required {
+        if self.nodes[node_index]
+            .availability
+            .recovery_cause()
+            .is_none()
+        {
             return Err(ChannelRuntimeError::RecoveryNotRequired(node_address));
         }
         let work_id = self.allocate_work_id()?;
@@ -810,10 +952,10 @@ impl ChannelRuntime {
         node.service_deadline = now;
         node.ready_at = now;
         node.queued_at = now;
-        node.consecutive_failures = 0;
+        node.availability = NodeAvailability::Online;
         node.work_id = work_id;
         node.in_flight = false;
-        node.recovery_required = false;
+        self.active_dispatch = None;
         Ok(())
     }
 
@@ -835,7 +977,11 @@ impl ChannelRuntime {
             .iter()
             .position(|node| node.config.node_address == node_address)
             .ok_or(ChannelRuntimeError::UnknownNode(node_address))?;
-        if self.nodes[node_index].recovery_required {
+        if self.nodes[node_index]
+            .availability
+            .recovery_cause()
+            .is_some()
+        {
             return Err(ChannelRuntimeError::RecoveryRequired(node_address));
         }
         if self.nodes[node_index].received != recovered_cursor {
@@ -852,7 +998,7 @@ impl ChannelRuntime {
         node.service_deadline = now;
         node.ready_at = now;
         node.queued_at = now;
-        node.consecutive_failures = 0;
+        node.availability = NodeAvailability::Online;
         node.work_id = work_id;
         Ok(())
     }
@@ -882,10 +1028,9 @@ impl ChannelRuntime {
         node.service_deadline = now;
         node.ready_at = now;
         node.queued_at = now;
-        node.consecutive_failures = 0;
+        node.availability = NodeAvailability::Online;
         node.work_id = work_id;
         node.in_flight = false;
-        node.recovery_required = false;
         Ok(())
     }
 
@@ -896,15 +1041,23 @@ impl ChannelRuntime {
     ) -> Result<(), ChannelRuntimeError> {
         let node_index = self.active_node_index(dispatch)?;
         let node = &mut self.nodes[node_index];
-        node.consecutive_failures = node.consecutive_failures.saturating_add(1);
-        let delay = if node.consecutive_failures > node.config.retry_attempt_limit {
+        let failures = node.availability.failures().saturating_add(1);
+        let delay = if failures > node.config.retry_attempt_limit {
             node.config.offline_probe_interval
         } else {
             exponential_delay(
                 node.config.retry_base_delay,
                 node.config.retry_max_delay,
-                node.consecutive_failures,
+                failures,
             )
+        };
+        node.availability = if failures > node.config.retry_attempt_limit {
+            NodeAvailability::Offline {
+                cause: OfflineCause::Unresponsive,
+                failures,
+            }
+        } else {
+            NodeAvailability::RetryBackoff { failures }
         };
         node.ready_at = now
             .checked_add(delay)
@@ -1033,6 +1186,57 @@ impl ChannelRuntime {
             .snapshot(now)
     }
 
+    pub fn recovery_cause(
+        &self,
+        node_address: u8,
+    ) -> Result<Option<RecoveryCause>, ChannelRuntimeError> {
+        self.nodes
+            .iter()
+            .find(|node| node.config.node_address == node_address)
+            .ok_or(ChannelRuntimeError::UnknownNode(node_address))
+            .map(|node| node.availability.recovery_cause())
+    }
+
+    pub fn fail_recovery(
+        &mut self,
+        dispatch: RecoveryDispatch,
+        now: MonotonicMicros,
+    ) -> Result<(), ChannelRuntimeError> {
+        let node_index = self.active_recovery_index(dispatch)?;
+        let node = &mut self.nodes[node_index];
+        let cause =
+            node.availability
+                .recovery_cause()
+                .ok_or(ChannelRuntimeError::RecoveryNotRequired(
+                    dispatch.node_address,
+                ))?;
+        let failures = node.availability.failures().saturating_add(1);
+        let delay = if failures > node.config.retry_attempt_limit {
+            node.config.offline_probe_interval
+        } else {
+            exponential_delay(
+                node.config.retry_base_delay,
+                node.config.retry_max_delay,
+                failures,
+            )
+        };
+        node.availability = if failures > node.config.retry_attempt_limit {
+            NodeAvailability::Offline {
+                cause: OfflineCause::Recovery(cause),
+                failures,
+            }
+        } else {
+            NodeAvailability::Recovering { cause, failures }
+        };
+        node.ready_at = now
+            .checked_add(delay)
+            .ok_or(ChannelRuntimeError::TimeOverflow)?;
+        node.queued_at = now;
+        node.in_flight = false;
+        self.active_dispatch = None;
+        Ok(())
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -1049,6 +1253,25 @@ impl ChannelRuntime {
             return Err(ChannelRuntimeError::StaleDispatch);
         }
         self.in_flight_node_index(dispatch)
+    }
+
+    fn active_recovery_index(
+        &self,
+        dispatch: RecoveryDispatch,
+    ) -> Result<usize, ChannelRuntimeError> {
+        if self.active_dispatch != Some(ChannelDispatch::Recovery(dispatch)) {
+            return Err(ChannelRuntimeError::StaleDispatch);
+        }
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.config.node_address == dispatch.node_address)
+            .ok_or(ChannelRuntimeError::UnknownNode(dispatch.node_address))?;
+        let node = self.nodes[index];
+        if !node.in_flight || node.work_id != dispatch.work_id {
+            return Err(ChannelRuntimeError::StaleDispatch);
+        }
+        Ok(index)
     }
 
     fn in_flight_node_index(
@@ -1467,7 +1690,7 @@ mod tests {
     }
 
     #[test]
-    fn regressed_stream_is_quarantined_until_explicit_recovery() {
+    fn regressed_stream_enters_scheduled_recovery_and_then_slow_offline_probe() {
         let mut runtime = runtime(1);
         runtime
             .register_node(config(1), SequenceCursor::new(100), MonotonicMicros::new(0))
@@ -1497,14 +1720,82 @@ mod tests {
             .select_measurement(MonotonicMicros::new(1))
             .unwrap()
             .is_none());
+        let mut now = MonotonicMicros::new(1);
+        for expected_failures in 1..=4 {
+            let ChannelDispatch::Recovery(recovery) = runtime.select_work(now).unwrap().unwrap()
+            else {
+                panic!("recovery must use the shared control scheduler");
+            };
+            runtime.fail_recovery(recovery, now).unwrap();
+            let snapshot = runtime.snapshot(1, now).unwrap();
+            assert_eq!(snapshot.consecutive_failures, expected_failures);
+            now = snapshot.ready_at;
+        }
+        let snapshot = runtime.snapshot(1, now).unwrap();
+        assert!(snapshot.offline);
+        assert!(matches!(
+            snapshot.availability,
+            NodeAvailability::Offline {
+                cause: OfflineCause::Recovery(RecoveryCause::StreamRegressed),
+                ..
+            }
+        ));
+        assert!(matches!(
+            runtime.select_work(now).unwrap(),
+            Some(ChannelDispatch::Recovery(_))
+        ));
+    }
 
+    #[test]
+    fn recovering_node_does_not_block_measurement_of_another_node() {
+        let mut runtime = runtime(2);
         runtime
-            .recover_node(1, SequenceCursor::ORIGIN, MonotonicMicros::new(2))
+            .register_node(config(1), SequenceCursor::ORIGIN, MonotonicMicros::new(0))
             .unwrap();
-        assert!(runtime
-            .select_measurement(MonotonicMicros::new(2))
+        runtime
+            .register_node(config(2), SequenceCursor::ORIGIN, MonotonicMicros::new(0))
+            .unwrap();
+
+        let first = runtime
+            .select_measurement(MonotonicMicros::new(0))
             .unwrap()
-            .is_some());
+            .unwrap();
+        assert_eq!(first.node_address, 1);
+        runtime
+            .require_recovery(
+                first,
+                RecoveryCause::InvalidResponse,
+                MonotonicMicros::new(1),
+            )
+            .unwrap();
+
+        let ChannelDispatch::Measurement(healthy) = runtime
+            .select_work(MonotonicMicros::new(1))
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("an overdue healthy node must not be starved by recovery");
+        };
+        assert_eq!(healthy.node_address, 2);
+        complete_empty(&mut runtime, healthy, 1);
+
+        let ChannelDispatch::Recovery(recovery) = runtime
+            .select_work(MonotonicMicros::new(1))
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("recovery must be attempted before declaring the node offline");
+        };
+        runtime
+            .fail_recovery(recovery, MonotonicMicros::new(1))
+            .unwrap();
+        assert!(matches!(
+            runtime
+                .snapshot(1, MonotonicMicros::new(1))
+                .unwrap()
+                .availability,
+            NodeAvailability::Recovering { failures: 1, .. }
+        ));
     }
 
     #[test]

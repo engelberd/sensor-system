@@ -1416,6 +1416,8 @@ INDEX_HTML = """<!doctype html>
           ? "WYŁĄCZONY"
           : node.sample_flow_state === "flowing"
           ? "POMIAR"
+          : node.sample_flow_state === "recovering"
+            ? "ODZYSKIWANIE"
           : node.sample_flow_state === "idle"
             ? "IDLE"
             : node.sample_flow_state === "stalled"

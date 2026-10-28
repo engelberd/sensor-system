@@ -164,6 +164,9 @@ class V2DashboardRepositoryTests(unittest.TestCase):
                             "gap_count": 2,
                             "missing_sample_count": 17,
                             "continuity_break_count": 1,
+                            "availability": "online",
+                            "recovery_reason": None,
+                            "availability_failures": 0,
                             "last_measurement_age_ms": 40,
                             "last_time_sync_age_ms": 900,
                             "last_telemetry_age_ms": 12_000,
@@ -232,11 +235,34 @@ class V2DashboardRepositoryTests(unittest.TestCase):
             self.assertEqual(node["temperature_c"], 25.0)
             self.assertEqual(node["temperature_raw"], 1885)
             self.assertEqual(node["last_telemetry_age_ms"], 12_000)
+            self.assertEqual(node["availability"], "online")
+            self.assertEqual(node["availability_failures"], 0)
             self.assertIsNone(node["instant_samples_per_second_5s"])
             disabled = payload["channels"][1]
             self.assertFalse(disabled["enabled"])
             self.assertFalse(disabled["controls_enabled"])
             self.assertIsNone(disabled["operating_mode"])
+
+    @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
+    def test_surfaces_node_recovery_without_marking_it_permanently_offline(
+        self, _journal: object
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config, status = self._fixture(Path(tmp))
+            document = json.loads(status.read_text(encoding="utf-8"))
+            document["nodes"][0]["availability"] = "recovering"
+            document["nodes"][0]["recovery_reason"] = "invalid_response"
+            document["nodes"][0]["availability_failures"] = 2
+            status.write_text(json.dumps(document), encoding="utf-8")
+
+            node = V2DashboardRepository(config, status_path=status).dashboard_payload()[
+                "channels"
+            ][0]["nodes"][0]
+
+            self.assertTrue(node["online"])
+            self.assertEqual(node["sample_flow_state"], "recovering")
+            self.assertEqual(node["recovery_reason"], "invalid_response")
+            self.assertIn("recovering: invalid_response (próby: 2)", node["alerts"])
 
     @patch.object(V2DashboardRepository, "_journal_entries", return_value=[])
     def test_calculates_measured_sample_rate_from_persisted_samples(self, _journal: object) -> None:

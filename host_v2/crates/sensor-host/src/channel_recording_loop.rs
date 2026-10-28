@@ -30,6 +30,7 @@ pub enum ChannelRecordingEvent {
     Measurement(MeasurementSettlement),
     TimeSync(TimeSyncSettlement),
     Telemetry(TelemetrySettlement),
+    RecoveryDue(crate::channel_runtime::RecoveryDispatch),
 }
 
 /// One production recording lane for one communication channel.
@@ -106,9 +107,13 @@ where
         }
 
         if !self.measurements.has_active_dispatch() {
-            self.measurements
+            if let Some(crate::channel_runtime::ChannelDispatch::Recovery(dispatch)) = self
+                .measurements
                 .dispatch_next_work(self.endpoint.agent_mut(), now)
-                .map_err(ChannelRecordingLoopError::Coordinator)?;
+                .map_err(ChannelRecordingLoopError::Coordinator)?
+            {
+                return Ok(ChannelRecordingEvent::RecoveryDue(dispatch));
+            }
         }
 
         let endpoint_event = self
@@ -272,6 +277,7 @@ pub enum ThreadedChannelRecordingEvent {
     PersistenceBackpressured,
     TimeSync(TimeSyncSettlement),
     Telemetry(TelemetrySettlement),
+    RecoveryDue(crate::channel_runtime::RecoveryDispatch),
 }
 
 pub trait RecordingPersistence: PersistenceSubmitter {
@@ -433,9 +439,13 @@ where
         }
 
         if !self.measurements.has_active_dispatch() {
-            self.measurements
+            if let Some(crate::channel_runtime::ChannelDispatch::Recovery(dispatch)) = self
+                .measurements
                 .dispatch_next_work(self.endpoint.agent_mut(), now)
-                .map_err(ThreadedChannelRecordingLoopError::Coordinator)?;
+                .map_err(ThreadedChannelRecordingLoopError::Coordinator)?
+            {
+                return Ok(ThreadedChannelRecordingEvent::RecoveryDue(dispatch));
+            }
         }
 
         let endpoint_event = self
@@ -586,6 +596,37 @@ where
             stream,
             now,
         )
+    }
+
+    pub fn fail_online_recovery(
+        &mut self,
+        dispatch: crate::channel_runtime::RecoveryDispatch,
+    ) -> Result<(), MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements.fail_online_recovery(dispatch, now)
+    }
+
+    pub fn reconcile_online_recovery(
+        &mut self,
+        dispatch: crate::channel_runtime::RecoveryDispatch,
+        journal_capacity_samples: u32,
+        stream: sensor_protocol::StreamState,
+    ) -> Result<crate::stream_recovery::RecoveryContinuity, MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements
+            .reconcile_online_recovery(dispatch, journal_capacity_samples, stream, now)
+    }
+
+    pub fn replace_online_recovery(
+        &mut self,
+        dispatch: crate::channel_runtime::RecoveryDispatch,
+        expected: crate::stream_recovery::ExpectedStreamState,
+        durable_cursor: sensor_core::SequenceCursor,
+        stream: sensor_protocol::StreamState,
+    ) -> Result<crate::stream_recovery::RecoveryContinuity, MeasurementCoordinatorError> {
+        let now = self.endpoint.now();
+        self.measurements
+            .replace_online_recovery(dispatch, expected, durable_cursor, stream, now)
     }
 
     pub fn replace_resume_stream(

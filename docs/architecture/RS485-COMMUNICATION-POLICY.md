@@ -254,6 +254,12 @@ lub zaległości. Zalecany jest deadline-aware weighted round-robin:
    pozostałych ani time sync.
 6. Node offline jest sprawdzany rzadziej i nie może zużywać całego budżetu na
    timeouty.
+7. Niespójność strumienia uruchamia bounded recovery w tym samym schedulerze;
+   nie usuwa node bezterminowo z rotacji.
+8. Probe offline jest pojedynczą krótką próbą. Pełny handshake wykonuje się
+   dopiero po oznace życia, a próby wielu node są fazowane. Domyślny interwał
+   produkcyjny wynosi 30 s i pozostaje konfigurowalny; przy timeout 250 ms
+   ogranicza to koszt całkowicie niemego node do mniej niż 1% czasu kanału.
 
 Adaptacyjny rozmiar burst:
 

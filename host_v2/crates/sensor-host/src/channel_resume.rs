@@ -338,6 +338,20 @@ impl ResumeVerificationGroup {
         Ok(())
     }
 
+    /// Stops the current online verification after a bounded wire failure.
+    /// The active transaction has already settled when a timeout event is
+    /// emitted, so abandoning the retained control work cannot steal a reply
+    /// from another operation.
+    pub fn abort_current(
+        &mut self,
+        agent: &mut ChannelAgent,
+    ) -> Result<ResumeVerificationProgress, ResumeVerificationError> {
+        self.active
+            .as_mut()
+            .ok_or(ResumeVerificationError::InvariantViolation)?
+            .expire(agent)
+    }
+
     pub fn evidence(&self) -> &[ResumeNodeEvidence] {
         &self.evidence
     }

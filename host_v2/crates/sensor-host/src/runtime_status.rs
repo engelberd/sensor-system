@@ -319,10 +319,43 @@ fn nodes_json(observation: &HostRuntimeObservation, now_us: u64) -> Vec<Value> {
                 "persisted_sample_count": metrics.map(|metrics| metrics.persisted_sample_count),
                 "gap_count": metrics.map(|metrics| metrics.gap_count),
                 "missing_sample_count": metrics.map(|metrics| metrics.missing_sample_count),
-                "continuity_break_count": metrics.map(|metrics| metrics.continuity_break_count)
+                "continuity_break_count": metrics.map(|metrics| metrics.continuity_break_count),
+                "availability": metrics.map(|metrics| node_availability_label(metrics.availability)).unwrap_or("unknown"),
+                "recovery_reason": metrics.and_then(|metrics| node_recovery_reason(metrics.availability)),
+                "availability_failures": metrics.map(|metrics| metrics.availability.failures())
             })
         })
         .collect()
+}
+
+fn node_availability_label(availability: crate::channel_runtime::NodeAvailability) -> &'static str {
+    use crate::channel_runtime::NodeAvailability;
+    match availability {
+        NodeAvailability::Online => "online",
+        NodeAvailability::RetryBackoff { .. } => "degraded",
+        NodeAvailability::Recovering { .. } => "recovering",
+        NodeAvailability::Offline { .. } => "offline",
+    }
+}
+
+fn node_recovery_reason(
+    availability: crate::channel_runtime::NodeAvailability,
+) -> Option<&'static str> {
+    use crate::channel_runtime::{NodeAvailability, OfflineCause, RecoveryCause};
+    let cause = match availability {
+        NodeAvailability::Recovering { cause, .. }
+        | NodeAvailability::Offline {
+            cause: OfflineCause::Recovery(cause),
+            ..
+        } => cause,
+        _ => return None,
+    };
+    Some(match cause {
+        RecoveryCause::StreamChanged => "stream_changed",
+        RecoveryCause::InvalidRelease => "invalid_release",
+        RecoveryCause::InvalidResponse => "invalid_response",
+        RecoveryCause::StreamRegressed => "stream_regressed",
+    })
 }
 
 fn channel_metrics_json(metrics: ChannelMetricsSnapshot) -> Value {
@@ -571,5 +604,26 @@ mod tests {
         let value = health_json(&health);
         assert_eq!(value["level"], "degraded");
         assert_eq!(value["reasons"][0]["code"], "channel_faulted");
+    }
+
+    #[test]
+    fn node_availability_labels_preserve_recovery_cause() {
+        use crate::channel_runtime::{NodeAvailability, OfflineCause, RecoveryCause};
+
+        let recovering = NodeAvailability::Recovering {
+            cause: RecoveryCause::InvalidResponse,
+            failures: 2,
+        };
+        assert_eq!(node_availability_label(recovering), "recovering");
+        assert_eq!(node_recovery_reason(recovering), Some("invalid_response"));
+        assert_eq!(recovering.failures(), 2);
+
+        let offline = NodeAvailability::Offline {
+            cause: OfflineCause::Recovery(RecoveryCause::StreamChanged),
+            failures: 4,
+        };
+        assert_eq!(node_availability_label(offline), "offline");
+        assert_eq!(node_recovery_reason(offline), Some("stream_changed"));
+        assert_eq!(offline.failures(), 4);
     }
 }

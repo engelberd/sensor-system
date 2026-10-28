@@ -20,6 +20,7 @@ pub enum PersistenceKind {
 pub enum RecoveryReason {
     StreamChanged(BootEpoch),
     InvalidRelease(StreamState),
+    InvalidResponse,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +52,7 @@ pub struct MeasurementTransfer {
     session: NodeSession,
     observed_produced: Option<SequenceCursor>,
     persistence_kind: Option<PersistenceKind>,
+    recovery_reason: Option<RecoveryReason>,
 }
 
 impl MeasurementTransfer {
@@ -68,6 +70,7 @@ impl MeasurementTransfer {
             session,
             observed_produced: None,
             persistence_kind: None,
+            recovery_reason: None,
         })
     }
 
@@ -89,6 +92,10 @@ impl MeasurementTransfer {
 
     pub const fn persistence_kind(&self) -> Option<PersistenceKind> {
         self.persistence_kind
+    }
+
+    pub const fn recovery_reason(&self) -> Option<RecoveryReason> {
+        self.recovery_reason
     }
 
     pub fn take_pending_persistence(
@@ -136,9 +143,12 @@ impl MeasurementTransfer {
                 self.session.abandon_pull_for_retry()?;
                 return Ok(MeasurementOutcome::NotAccepted);
             }
-            Err(error) => {
+            Err(_error) => {
                 self.session.fail_pull_for_recovery()?;
-                return Err(error.into());
+                self.recovery_reason = Some(RecoveryReason::InvalidResponse);
+                return Ok(MeasurementOutcome::RecoveryRequired(
+                    RecoveryReason::InvalidResponse,
+                ));
             }
         };
 
@@ -184,6 +194,7 @@ impl MeasurementTransfer {
             }
             PullResponse::StreamChanged(epoch) => {
                 self.session.stream_changed()?;
+                self.recovery_reason = Some(RecoveryReason::StreamChanged(epoch));
                 Ok(MeasurementOutcome::RecoveryRequired(
                     RecoveryReason::StreamChanged(epoch),
                 ))
@@ -191,6 +202,7 @@ impl MeasurementTransfer {
             PullResponse::InvalidRelease(state) => {
                 self.session.invalid_release(state)?;
                 self.observed_produced = Some(state.produced);
+                self.recovery_reason = Some(RecoveryReason::InvalidRelease(state));
                 Ok(MeasurementOutcome::RecoveryRequired(
                     RecoveryReason::InvalidRelease(state),
                 ))
@@ -275,6 +287,26 @@ mod tests {
             .begin_attempt(DurationMicros::new(100).unwrap())
             .unwrap();
         assert_eq!(first.payload(), retry.payload());
+    }
+
+    #[test]
+    fn malformed_measurement_response_enters_recovery_instead_of_faulting_worker() {
+        let mut transfer = transfer();
+        transfer
+            .begin_attempt(DurationMicros::new(100).unwrap())
+            .unwrap();
+        assert_eq!(
+            transfer.accept_response(&[0xff]).unwrap(),
+            MeasurementOutcome::RecoveryRequired(RecoveryReason::InvalidResponse)
+        );
+        assert_eq!(
+            transfer.session().phase(),
+            crate::node_session::SessionPhase::RecoveryRequired
+        );
+        assert_eq!(
+            transfer.recovery_reason(),
+            Some(RecoveryReason::InvalidResponse)
+        );
     }
 
     #[test]

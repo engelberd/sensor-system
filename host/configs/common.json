@@ -55,7 +55,7 @@
     "retry_base_delay_ms": 10,
     "retry_max_delay_ms": 1000,
     "retry_attempt_limit": 3,
-    "offline_probe_interval_ms": 5000,
+    "offline_probe_interval_ms": 30000,
     "time_sync_transaction_time_ms": 4,
     "overflow_guard_ms": 100,
     "max_slot_ms": 50,
