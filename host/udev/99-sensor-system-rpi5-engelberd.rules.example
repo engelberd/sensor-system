@@ -1,0 +1,12 @@
+# Stable names for the WCH CH348 eight-channel converter at USB path 3-2.
+# The CH348 exposes one USB interface, so aliases use the verified tty-to-line
+# wiring of this installation. Copy to /etc/udev/rules.d/99-sensor-system-rs485.rules.
+
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB4", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-a", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB1", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-b", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB2", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-c", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB7", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-d", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB0", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-e", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB5", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-f", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB3", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-g", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyCH9344USB6", KERNELS=="3-2:1.0", SYMLINK+="sensor-system-line-h", MODE="0660", GROUP="dialout"
