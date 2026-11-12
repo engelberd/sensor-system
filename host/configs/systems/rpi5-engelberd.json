@@ -4,6 +4,9 @@
     "name": "rpi5-engelberd",
     "site": "engelberd"
   },
+  "runtime_v2": {
+    "telemetry_interval_seconds": 60
+  },
   "channels": [
     {
       "name": "line-a", "channel_id": 1, "label": "Linia A", "enabled": true,
