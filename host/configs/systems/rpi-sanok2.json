@@ -22,7 +22,8 @@
           "hardware_id": "5c2823c24731dcd8",
           "board_revision": 2,
           "enabled": true,
-          "output_rate_hz": 125
+          "output_rate_hz": 125,
+          "telemetry_interval_seconds": 60
         }
       ]
     },
@@ -43,7 +44,7 @@
           "hardware_id": "32d32d8f5b796a99",
           "board_revision": 2,
           "enabled": true,
-          "output_rate_hz": 125,
+          "output_rate_hz": 250,
           "telemetry_interval_seconds": 60
         }
       ]

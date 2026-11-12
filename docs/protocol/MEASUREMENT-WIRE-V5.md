@@ -1,6 +1,6 @@
 # Application protocol 5 — Measurement Service wire contract
 
-- Status: obowiązujący kontrakt wire
+- Status: historyczny; zastąpiony przez [protocol 6](MEASUREMENT-WIRE-V6.md)
 - Service ID: `2`
 - Byte order: little-endian dla wszystkich liczb wielobajtowych
 - Sample encoding: signed two's-complement XYZ24, po 3 bajty LE na oś

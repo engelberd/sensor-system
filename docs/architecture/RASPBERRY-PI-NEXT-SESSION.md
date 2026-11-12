@@ -12,7 +12,7 @@ Przed zmianami przeczytaj:
 2. `docs/architecture/HOST-V2-USER-ADOPTION-ROADMAP.md`;
 3. `docs/architecture/IMPLEMENTATION-ROADMAP.md`, szczególnie sekcję 9;
 4. `docs/architecture/ACQUISITION-QUALITY-AND-DIAGNOSTICS.md`;
-5. `host_v2/DEPLOY-RASPBERRY-PI.md` i `node/README-bootloader.md`.
+5. `host/runtime/DEPLOY-RASPBERRY-PI.md` i `node/README-bootloader.md`.
 
 Obowiązują nadal główne granice: jeden produkt na `main`, `./sgit` zamiast
 `git`, operacje firmware po RS485 z kontrolą board revision, bounded bufory,
@@ -29,7 +29,7 @@ brak zmian w nieśledzonych plikach `hardware/`.
 - Raspberry Pi pobrało `0ae9757`.
 - Świeży linuxowy build `sensor-hil` przeszedł.
 - Świeży linuxowy build pełnej paczki node `0.5.7` board rev 2 przeszedł po
-  zmianie nazwy `protocol_v3/time.h` na `time_service.h`.
+  zmianie nazwy `protocol/time.h` na `time_service.h`.
 - Paczka aktualizacyjna:
   `node/build/releases/sensor-system-node-v0.5.7/sensor-system-node-v0.5.7-update-package.json`.
 - `sensor-host-v2.service` działa. Linie B, C, D, G i H nagrywają. Linia A jest
@@ -81,7 +81,7 @@ Po jednorazowym restarcie zasilania A:
 2. Sprawdź A tylko po RS485:
 
    ```bash
-   host_v2/target/release/sensor-hil identify \
+   host/runtime/target/release/sensor-hil identify \
      /dev/sensor-system-line-a 1 115200
    ```
 
@@ -106,7 +106,7 @@ Po jednorazowym restarcie zasilania A:
    poniżej służy wyłącznie do diagnostyki albo wznowienia ręcznej procedury:
 
    ```bash
-   host_v2/target/release/sensor-hil confirm-trial \
+   host/runtime/target/release/sensor-hil confirm-trial \
      /dev/sensor-system-line-a 1 8d626ee02dcea999 2 0.5.8 115200
    ```
 
@@ -115,7 +115,7 @@ Po jednorazowym restarcie zasilania A:
    prawo jawnie odmówić:
 
    ```bash
-   host_v2/target/release/sensor-hil diagnostics \
+   host/runtime/target/release/sensor-hil diagnostics \
      /dev/sensor-system-line-a 1 8d626ee02dcea999 2 115200
    ```
 

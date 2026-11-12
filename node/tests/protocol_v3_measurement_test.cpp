@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "protocol_v3/measurement.h"
+#include "protocol/measurement.h"
 
 namespace {
 using namespace ProtocolV3;
@@ -14,7 +14,7 @@ using namespace ProtocolV3;
 constexpr uint64_t kEpoch = 0x1122334455667788ull;
 
 std::vector<uint8_t> read_vector(const char* name) {
-    const std::string path = std::string("../host_v2/contracts/golden/") + name;
+    const std::string path = std::string("../host/runtime/contracts/golden/") + name;
     std::ifstream input(path, std::ios::binary);
     assert(input.good());
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), {});
@@ -38,6 +38,8 @@ PullResponse chunk_response() {
     response.chunk.produced = 100;
     response.chunk.first = 20;
     response.chunk.sample_count = 2;
+    response.chunk.device_times[0] = 1000;
+    response.chunk.device_times[1] = 5000;
     response.chunk.config_revision = 3;
     response.chunk.timing = {4, 1000, 5000, 2, kTimingValid};
     response.chunk.samples[0] = {-0x00800000, -1, 0};
@@ -77,7 +79,7 @@ void test_requests_match_golden_vectors() {
     uint8_t pull_bytes[kPullRequestBytes]{};
     assert(encode_pull_request(pull, pull_bytes, sizeof(pull_bytes)) ==
            MeasurementCodecStatus::Ok);
-    assert_vector(pull_bytes, sizeof(pull_bytes), "measurement_v5_pull_request.bin");
+    assert_vector(pull_bytes, sizeof(pull_bytes), "measurement_v6_pull_request.bin");
     PullSamplesRequest decoded_pull{};
     assert(decode_pull_request(pull_bytes, sizeof(pull_bytes), decoded_pull) ==
            MeasurementCodecStatus::Ok);
@@ -87,14 +89,14 @@ void test_requests_match_golden_vectors() {
     uint8_t release_bytes[kReleaseRequestBytes]{};
     assert(encode_release_request(release, release_bytes, sizeof(release_bytes)) ==
            MeasurementCodecStatus::Ok);
-    assert_vector(release_bytes, sizeof(release_bytes), "measurement_v5_release_request.bin");
+    assert_vector(release_bytes, sizeof(release_bytes), "measurement_v6_release_request.bin");
 }
 
 void test_stream_state_matches_golden_vector() {
     uint8_t encoded[kStreamStateSuccessBytes]{};
     assert(encode_stream_state_success(state(), encoded, sizeof(encoded)) ==
            MeasurementCodecStatus::Ok);
-    assert_vector(encoded, sizeof(encoded), "measurement_v5_stream_state_response.bin");
+    assert_vector(encoded, sizeof(encoded), "measurement_v6_stream_state_response.bin");
     StreamState decoded{};
     ResponseStatus remote = ResponseStatus::InternalError;
     assert(decode_stream_state_success(encoded, sizeof(encoded), decoded, remote) ==
@@ -108,8 +110,8 @@ void test_chunk_matches_golden_and_i24_boundaries() {
     size_t size = 0;
     assert(encode_pull_response(response, encoded, sizeof(encoded), size) ==
            MeasurementCodecStatus::Ok);
-    assert(size == 84);
-    assert_vector(encoded, size, "measurement_v5_chunk_response.bin");
+    assert(size == 87);
+    assert_vector(encoded, size, "measurement_v6_chunk_response.bin");
 
     PullResponse decoded{};
     ResponseStatus remote = ResponseStatus::InternalError;
@@ -132,6 +134,11 @@ void test_chunk_matches_golden_and_i24_boundaries() {
         owned.timing,
         &owned,
         read_chunk_sample,
+        [](const void* context, size_t i, uint64_t& value) {
+            const auto& chunk = *static_cast<const SampleChunk*>(context);
+            if (i >= chunk.sample_count) return false;
+            value = chunk.device_times[i]; return true;
+        },
     };
     uint8_t view_encoded[kMaxPayloadBytes]{};
     size_t view_size = 0;
@@ -160,13 +167,13 @@ void assert_state_result(PullResultCode result, const char* vector_name) {
 }
 
 void test_all_pull_results_match_golden_vectors() {
-    assert_state_result(PullResultCode::NoData, "measurement_v5_no_data_response.bin");
+    assert_state_result(PullResultCode::NoData, "measurement_v6_no_data_response.bin");
     assert_state_result(
         PullResultCode::RangeUnavailable,
-        "measurement_v5_range_unavailable_response.bin");
+        "measurement_v6_range_unavailable_response.bin");
     assert_state_result(
         PullResultCode::InvalidRelease,
-        "measurement_v5_invalid_release_response.bin");
+        "measurement_v6_invalid_release_response.bin");
 
     PullResponse changed{};
     changed.result = PullResultCode::StreamChanged;
@@ -175,13 +182,13 @@ void test_all_pull_results_match_golden_vectors() {
     size_t size = 0;
     assert(encode_pull_response(changed, encoded, sizeof(encoded), size) ==
            MeasurementCodecStatus::Ok);
-    assert_vector(encoded, size, "measurement_v5_stream_changed_response.bin");
+    assert_vector(encoded, size, "measurement_v6_stream_changed_response.bin");
 
     const PullResponse gap = gap_response();
     assert(encode_pull_response(gap, encoded, sizeof(encoded), size) ==
            MeasurementCodecStatus::Ok);
     assert(size == kGapResponseBytes);
-    assert_vector(encoded, size, "measurement_v5_gap_response.bin");
+    assert_vector(encoded, size, "measurement_v6_gap_response.bin");
     PullResponse decoded{};
     ResponseStatus remote = ResponseStatus::InternalError;
     assert(decode_pull_response(encoded, size, decoded, remote) ==
@@ -195,13 +202,43 @@ void test_all_pull_results_match_golden_vectors() {
            MeasurementCodecStatus::Ok);
     assert(size == kContinuityBreakResponseBytes);
     assert_vector(
-        encoded, size, "measurement_v5_continuity_break_response.bin");
+        encoded, size, "measurement_v6_continuity_break_response.bin");
     assert(decode_pull_response(encoded, size, decoded, remote) ==
            MeasurementCodecStatus::Ok);
     assert(decoded.result == PullResultCode::ContinuityBreak);
     assert(decoded.continuity_break.at == 20);
     assert(decoded.continuity_break.reason ==
            ContinuityBreakReasonCode::SensorReadUncertain);
+}
+
+void test_individual_times() {
+    const auto golden = read_vector("measurement_v6_chunk_slow_response.bin");
+    PullResponse decoded{}; ResponseStatus remote{};
+    assert(decode_pull_response(golden.data(), golden.size(), decoded, remote) == MeasurementCodecStatus::Ok);
+    assert(decoded.chunk.device_times[0] == 1000 && decoded.chunk.device_times[1] == 129001);
+    uint8_t bytes[kMaxPayloadBytes]{}; size_t size = 0;
+    assert(encode_pull_response(decoded, bytes, sizeof(bytes), size) == MeasurementCodecStatus::Ok);
+    assert(size == golden.size() && std::memcmp(bytes, golden.data(), size) == 0);
+    for (uint32_t delta : {65535u, 65536u, 32000u, 128001u}) {
+        auto response = chunk_response();
+        response.chunk.device_times[1] = 1000 + delta;
+        response.chunk.timing.last_device_time_us = 1000 + delta;
+        assert(encode_pull_response(response, bytes, sizeof(bytes), size) == MeasurementCodecStatus::Ok);
+        assert(bytes[84] == (delta <= 65535 ? 2 : 4));
+        assert(decode_pull_response(bytes, size, decoded, remote) == MeasurementCodecStatus::Ok);
+        assert(decoded.chunk.device_times[1] == 1000 + delta);
+        assert(decode_pull_response(bytes, size - 1, decoded, remote) == MeasurementCodecStatus::InvalidPayloadLength);
+        bytes[85] = 0; bytes[86] = 0;
+        if (delta > 65535) { bytes[87] = 0; bytes[88] = 0; }
+        assert(decode_pull_response(bytes, size, decoded, remote) != MeasurementCodecStatus::Ok);
+    }
+    auto response = chunk_response();
+    response.chunk.sample_count = kMaxWireChunkSamples;
+    for (size_t i = 0; i < kMaxWireChunkSamples; ++i) response.chunk.device_times[i] = 1000 + i * 128001;
+    response.chunk.timing.last_device_time_us = response.chunk.device_times[kMaxWireChunkSamples - 1];
+    assert(encode_pull_response(response, bytes, sizeof(bytes), size) == MeasurementCodecStatus::Ok);
+    assert(size <= kMaxPayloadBytes);
+    assert(decode_pull_response(bytes, size, decoded, remote) == MeasurementCodecStatus::Ok);
 }
 
 void test_fail_closed_validation() {
@@ -267,5 +304,6 @@ int main() {
     test_chunk_matches_golden_and_i24_boundaries();
     test_all_pull_results_match_golden_vectors();
     test_fail_closed_validation();
+    test_individual_times();
     return 0;
 }

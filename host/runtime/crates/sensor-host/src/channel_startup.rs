@@ -1,0 +1,815 @@
+use core::fmt;
+
+use crate::channel_admission::{
+    AdmissionError, AdmissionPolicy, AdmissionReport, ChannelAdmission, NodeTrafficDemand,
+    PeriodicTraffic,
+};
+use sensor_protocol::{ObservabilityProfile, ObservedConfiguration, RuntimeState, ServiceId};
+
+use crate::channel_recovery::RecoveredNode;
+use crate::channel_runtime::{
+    ChannelRuntime, ChannelRuntimeError, NodeScheduleConfig, TelemetryScheduleConfig,
+    TimeSyncScheduleConfig,
+};
+use crate::channel_scheduler::{ChannelScheduler, ChannelSchedulerPolicy};
+use crate::discovery::{DiscoveredNode, DiscoveryInventory, REQUIRED_RECORDING_FEATURES};
+use crate::handshake::HandshakeRequirements;
+use crate::measurement_coordinator::{ChannelWorkCoordinator, MeasurementCoordinatorError};
+use crate::transaction::{DurationMicros, MonotonicMicros};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelStartupPolicy {
+    pub admission: AdmissionPolicy,
+    pub target_chunk_samples: u16,
+    /// Conservative measured cost of one maximum Measurement exchange.
+    pub measurement_transaction_time: DurationMicros,
+    /// Scheduler reservation including turnaround and host-side margin.
+    pub measurement_slot: DurationMicros,
+    pub maximum_service_interval: DurationMicros,
+    pub retry_base_delay: DurationMicros,
+    pub retry_max_delay: DurationMicros,
+    pub retry_attempt_limit: u8,
+    pub offline_probe_interval: DurationMicros,
+    pub time_sync_schedule: TimeSyncScheduleConfig,
+    /// Conservative measured cost used only by admission control.
+    pub time_sync_transaction_time: DurationMicros,
+    pub telemetry_schedule: TelemetryScheduleConfig,
+}
+
+impl ChannelStartupPolicy {
+    pub fn validate(self) -> Result<Self, ChannelStartupError> {
+        ChannelAdmission::new(self.admission).map_err(ChannelStartupError::Admission)?;
+        if self.target_chunk_samples == 0 {
+            return Err(ChannelStartupError::ZeroTargetChunk);
+        }
+        if self.measurement_transaction_time.get() > self.measurement_slot.get() {
+            return Err(ChannelStartupError::TransactionExceedsSlot);
+        }
+        if self.time_sync_transaction_time.get() > self.time_sync_schedule.estimated_slot.get() {
+            return Err(ChannelStartupError::TimeTransactionExceedsSlot);
+        }
+        self.time_sync_schedule
+            .validate()
+            .map_err(ChannelStartupError::Runtime)?;
+        self.telemetry_schedule
+            .validate()
+            .map_err(ChannelStartupError::Runtime)?;
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeStartupPlan {
+    pub discovered: DiscoveredNodeRef,
+    /// The complete fail-closed identity/capability contract is retained for
+    /// post-restart recovery. The running worker must never rebuild a weaker
+    /// handshake from only an address and boot epoch.
+    pub requirements: HandshakeRequirements,
+    pub schedule: NodeScheduleConfig,
+    pub time_sync: TimeSyncScheduleConfig,
+    pub configuration: ObservedConfiguration,
+    pub output_rate_mask: u16,
+    pub telemetry: Option<TelemetryScheduleConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscoveredNodeRef {
+    pub channel_id: u8,
+    pub node_address: u8,
+    pub hardware_id: sensor_core::HardwareId,
+    pub boot_epoch: sensor_core::BootEpoch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelStartupPlan {
+    channel_id: u8,
+    channel_name: String,
+    admission: AdmissionReport,
+    nodes: Vec<NodeStartupPlan>,
+    policy: ChannelStartupPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecordingAssemblyPolicy {
+    pub scheduler: ChannelSchedulerPolicy,
+    pub first_time_sync_delay: DurationMicros,
+    pub time_sync_phase_step: DurationMicros,
+}
+
+impl ChannelStartupPlan {
+    pub const fn channel_id(&self) -> u8 {
+        self.channel_id
+    }
+
+    pub fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    pub const fn admission(&self) -> AdmissionReport {
+        self.admission
+    }
+
+    pub fn nodes(&self) -> &[NodeStartupPlan] {
+        &self.nodes
+    }
+
+    pub fn node(&self, node_address: u8) -> Option<&NodeStartupPlan> {
+        self.nodes
+            .iter()
+            .find(|node| node.discovered.node_address == node_address)
+    }
+
+    pub fn preview_configuration(
+        &self,
+        node_address: u8,
+        configuration: sensor_protocol::MeasurementConfiguration,
+    ) -> Result<AdmissionReport, ChannelStartupError> {
+        configuration
+            .validate()
+            .map_err(|_| ChannelStartupError::InvalidConfiguration)?;
+        let mut nodes = self.nodes.clone();
+        let node = nodes
+            .iter_mut()
+            .find(|node| node.discovered.node_address == node_address)
+            .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+        if node.output_rate_mask & configuration.output_rate.capability_bit() == 0 {
+            return Err(ChannelStartupError::UnsupportedOutputRate {
+                node_address,
+                rate: configuration.output_rate,
+            });
+        }
+        node.schedule.output_rate = configuration.output_rate.sample_rate();
+        let admission =
+            ChannelAdmission::new(self.policy.admission).map_err(ChannelStartupError::Admission)?;
+        evaluate_plan_admission(&admission, &nodes, self.policy)
+    }
+
+    pub fn accept_configuration(
+        &mut self,
+        node_address: u8,
+        observed: ObservedConfiguration,
+    ) -> Result<AdmissionReport, ChannelStartupError> {
+        observed
+            .validate()
+            .map_err(|_| ChannelStartupError::InvalidConfiguration)?;
+        let report = self.preview_configuration(node_address, observed.desired)?;
+        if !report.accepted() {
+            return Err(ChannelStartupError::ChannelOverCapacity {
+                channel_id: self.channel_id,
+                report,
+            });
+        }
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|node| node.discovered.node_address == node_address)
+            .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+        node.configuration = observed;
+        node.schedule.output_rate = observed.desired.output_rate.sample_rate();
+        node.requirements.required_output_rate = Some(observed.desired.output_rate);
+        self.admission = report;
+        Ok(report)
+    }
+
+    pub fn accept_telemetry_interval(
+        &mut self,
+        node_address: u8,
+        interval_seconds: u32,
+    ) -> Result<(AdmissionReport, TelemetryScheduleConfig), ChannelStartupError> {
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|node| node.discovered.node_address == node_address)
+            .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+        let mut telemetry = node
+            .telemetry
+            .ok_or(ChannelStartupError::TelemetryUnavailable(node_address))?;
+        telemetry.interval = DurationMicros::new(u64::from(interval_seconds) * 1_000_000)
+            .map_err(|_| ChannelStartupError::InvalidTelemetryInterval)?;
+        telemetry.validate().map_err(ChannelStartupError::Runtime)?;
+        let previous = node.telemetry;
+        node.telemetry = Some(telemetry);
+        let admission =
+            ChannelAdmission::new(self.policy.admission).map_err(ChannelStartupError::Admission)?;
+        let report = evaluate_plan_admission(&admission, &self.nodes, self.policy)?;
+        if !report.accepted() {
+            let node = self
+                .nodes
+                .iter_mut()
+                .find(|node| node.discovered.node_address == node_address)
+                .ok_or(ChannelStartupError::UnknownNode(node_address))?;
+            node.telemetry = previous;
+            return Err(ChannelStartupError::ChannelOverCapacity {
+                channel_id: self.channel_id,
+                report,
+            });
+        }
+        self.admission = report;
+        Ok((report, telemetry))
+    }
+}
+
+/// Converts immutable discovery evidence into bounded per-channel scheduler
+/// inputs and rejects a channel whose measured traffic budget does not fit.
+pub fn build_channel_startup_plans(
+    inventory: &DiscoveryInventory,
+    policy: ChannelStartupPolicy,
+) -> Result<Vec<ChannelStartupPlan>, ChannelStartupError> {
+    let policy = policy.validate()?;
+    let admission =
+        ChannelAdmission::new(policy.admission).map_err(ChannelStartupError::Admission)?;
+    let mut plans = Vec::new();
+
+    for discovered in inventory.nodes() {
+        if plans.last().map_or(true, |plan: &ChannelStartupPlan| {
+            plan.channel_id != discovered.channel_id()
+        }) {
+            plans.push(ChannelStartupPlan {
+                channel_id: discovered.channel_id(),
+                channel_name: discovered.channel_name().to_owned(),
+                admission: AdmissionReport {
+                    nominal_utilization_ppm: 0,
+                    recovery_reserve_ppm: policy.admission.recovery_reserve_ppm,
+                    required_utilization_ppm: policy.admission.recovery_reserve_ppm,
+                    maximum_utilization_ppm: policy.admission.maximum_utilization_ppm,
+                },
+                nodes: Vec::new(),
+                policy,
+            });
+        }
+        let plan = plans
+            .last_mut()
+            .ok_or(ChannelStartupError::InvariantViolation)?;
+        if plan.channel_name != discovered.channel_name() {
+            return Err(ChannelStartupError::InconsistentChannelIdentity(
+                discovered.channel_id(),
+            ));
+        }
+        plan.nodes.push(node_plan(discovered, policy)?);
+    }
+
+    for plan in &mut plans {
+        plan.admission = evaluate_plan_admission(&admission, &plan.nodes, policy)?;
+        if !plan.admission.accepted() {
+            return Err(ChannelStartupError::ChannelOverCapacity {
+                channel_id: plan.channel_id,
+                report: plan.admission,
+            });
+        }
+    }
+
+    Ok(plans)
+}
+
+/// Creates the in-memory recording coordinator only after every session has
+/// been recovered and every node is confirmed in Production Recording. No
+/// cursor is accepted as a separate argument: the scheduler is initialized
+/// from the cursor already owned by each `NodeSession`.
+pub fn assemble_recording_coordinator(
+    plan: &ChannelStartupPlan,
+    mut recovered: Vec<RecoveredNode>,
+    policy: RecordingAssemblyPolicy,
+    now: MonotonicMicros,
+    work_id_seed: u64,
+) -> Result<ChannelWorkCoordinator, ChannelAssemblyError> {
+    if recovered.len() != plan.nodes.len() {
+        return Err(ChannelAssemblyError::NodeCountMismatch {
+            planned: plan.nodes.len(),
+            recovered: recovered.len(),
+        });
+    }
+    let runtime = ChannelRuntime::new(
+        ChannelScheduler::new(policy.scheduler),
+        ObservabilityProfile::Production,
+        plan.nodes.len(),
+        work_id_seed,
+    )
+    .map_err(ChannelAssemblyError::Runtime)?;
+    let mut coordinator = ChannelWorkCoordinator::new(runtime, plan.channel_id());
+
+    for (index, planned) in plan.nodes.iter().enumerate() {
+        let position = recovered
+            .iter()
+            .position(|node| {
+                node.id().channel_id == planned.discovered.channel_id
+                    && node.id().node_address == planned.discovered.node_address
+            })
+            .ok_or(ChannelAssemblyError::MissingRecoveredNode {
+                channel_id: planned.discovered.channel_id,
+                node_address: planned.discovered.node_address,
+            })?;
+        let node = recovered.swap_remove(position);
+        if node.runtime().state != RuntimeState::Recording
+            || node.runtime().observability != ObservabilityProfile::Production
+        {
+            return Err(ChannelAssemblyError::NodeNotRecording {
+                node_address: node.id().node_address,
+            });
+        }
+        if node.session().hardware_id() != planned.discovered.hardware_id
+            || node.session().boot_epoch() != planned.discovered.boot_epoch
+        {
+            return Err(ChannelAssemblyError::SessionIdentityMismatch {
+                node_address: node.id().node_address,
+            });
+        }
+        coordinator
+            .register_node(planned.schedule, node.into_session(), now)
+            .map_err(ChannelAssemblyError::Coordinator)?;
+
+        let phase = policy
+            .time_sync_phase_step
+            .get()
+            .checked_mul(u64::try_from(index).map_err(|_| ChannelAssemblyError::TimeOverflow)?)
+            .and_then(|value| value.checked_add(policy.first_time_sync_delay.get()))
+            .ok_or(ChannelAssemblyError::TimeOverflow)?;
+        let first_deadline = now
+            .checked_add(
+                DurationMicros::new(phase).map_err(|_| ChannelAssemblyError::TimeOverflow)?,
+            )
+            .ok_or(ChannelAssemblyError::TimeOverflow)?;
+        coordinator
+            .configure_time_sync(
+                planned.discovered.node_address,
+                planned.time_sync,
+                first_deadline,
+            )
+            .map_err(ChannelAssemblyError::Coordinator)?;
+        if let Some(telemetry) = planned.telemetry {
+            let telemetry_phase = telemetry
+                .estimated_slot
+                .get()
+                .checked_mul(u64::try_from(index).map_err(|_| ChannelAssemblyError::TimeOverflow)?)
+                .and_then(|value| value.checked_add(telemetry.interval.get()))
+                .ok_or(ChannelAssemblyError::TimeOverflow)?;
+            let first_telemetry = now
+                .checked_add(
+                    DurationMicros::new(telemetry_phase)
+                        .map_err(|_| ChannelAssemblyError::TimeOverflow)?,
+                )
+                .ok_or(ChannelAssemblyError::TimeOverflow)?;
+            coordinator
+                .configure_telemetry(planned.discovered.node_address, telemetry, first_telemetry)
+                .map_err(ChannelAssemblyError::Coordinator)?;
+        }
+    }
+    Ok(coordinator)
+}
+
+#[derive(Debug)]
+pub enum ChannelAssemblyError {
+    NodeCountMismatch { planned: usize, recovered: usize },
+    MissingRecoveredNode { channel_id: u8, node_address: u8 },
+    NodeNotRecording { node_address: u8 },
+    SessionIdentityMismatch { node_address: u8 },
+    TimeOverflow,
+    Runtime(ChannelRuntimeError),
+    Coordinator(MeasurementCoordinatorError),
+}
+
+impl fmt::Display for ChannelAssemblyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "channel recording assembly error: {self:?}")
+    }
+}
+
+impl std::error::Error for ChannelAssemblyError {}
+
+fn node_plan(
+    discovered: &DiscoveredNode,
+    policy: ChannelStartupPolicy,
+) -> Result<NodeStartupPlan, ChannelStartupError> {
+    let identity = discovered.identity();
+    let capabilities = discovered.capabilities();
+    let configuration =
+        discovered
+            .configuration()
+            .ok_or(ChannelStartupError::MissingObservedConfiguration {
+                channel_id: discovered.channel_id(),
+                node_address: discovered.node_address(),
+            })?;
+    let target_chunk_samples = policy
+        .target_chunk_samples
+        .min(capabilities.max_sample_chunk_samples);
+    let schedule = NodeScheduleConfig {
+        node_address: discovered.node_address(),
+        output_rate: discovered.output_rate().sample_rate(),
+        journal_capacity_samples: capabilities.journal_capacity_samples,
+        max_sample_chunk_samples: capabilities.max_sample_chunk_samples,
+        target_chunk_samples,
+        measurement_slot: policy.measurement_slot,
+        maximum_service_interval: policy.maximum_service_interval,
+        retry_base_delay: policy.retry_base_delay,
+        retry_max_delay: policy.retry_max_delay,
+        retry_attempt_limit: policy.retry_attempt_limit,
+        offline_probe_interval: policy.offline_probe_interval,
+    }
+    .validate()
+    .map_err(ChannelStartupError::Runtime)?;
+    let mut requirements = HandshakeRequirements::recording_node(
+        identity.hardware_id,
+        discovered.node_address(),
+        identity.board_revision,
+        REQUIRED_RECORDING_FEATURES,
+    )
+    .with_output_rate(discovered.output_rate());
+    requirements.required_services |=
+        ServiceId::Time.capability_bit() | ServiceId::Configuration.capability_bit();
+    Ok(NodeStartupPlan {
+        discovered: DiscoveredNodeRef {
+            channel_id: discovered.channel_id(),
+            node_address: discovered.node_address(),
+            hardware_id: identity.hardware_id,
+            boot_epoch: identity.boot_epoch,
+        },
+        requirements,
+        schedule,
+        time_sync: policy.time_sync_schedule,
+        configuration,
+        output_rate_mask: capabilities.output_rate_mask,
+        telemetry: capabilities
+            .supports_service(ServiceId::Telemetry)
+            .then(|| TelemetryScheduleConfig {
+                interval: DurationMicros::new(
+                    u64::from(discovered.telemetry_interval_seconds()) * 1_000_000,
+                )
+                .expect("validated telemetry interval is nonzero"),
+                ..policy.telemetry_schedule
+            }),
+    })
+}
+
+// Slow ODR dispatches partially filled chunks at the service deadline. Charging
+// every such chunk the full measured transaction cost is conservative; using
+// target_chunk_samples here would underestimate the number of transactions.
+fn admission_chunk_samples(schedule: NodeScheduleConfig) -> u16 {
+    let samples_per_interval = u128::from(schedule.output_rate.nanohertz())
+        * u128::from(schedule.maximum_service_interval.get() - schedule.measurement_slot.get())
+        / 1_000_000_000_000_000u128;
+    samples_per_interval.clamp(1, u128::from(schedule.target_chunk_samples)) as u16
+}
+
+fn evaluate_plan_admission(
+    admission: &ChannelAdmission,
+    nodes: &[NodeStartupPlan],
+    policy: ChannelStartupPolicy,
+) -> Result<AdmissionReport, ChannelStartupError> {
+    let demands = nodes
+        .iter()
+        .map(|node| NodeTrafficDemand {
+            output_rate: node.schedule.output_rate,
+            samples_per_chunk: admission_chunk_samples(node.schedule),
+            measurement_transaction_time: policy.measurement_transaction_time,
+            time_sync: Some(PeriodicTraffic {
+                transaction_time: policy.time_sync_transaction_time,
+                interval: policy.time_sync_schedule.interval,
+            }),
+            health: node.telemetry.map(|telemetry| PeriodicTraffic {
+                transaction_time: telemetry.estimated_slot,
+                interval: telemetry.interval,
+            }),
+        })
+        .collect::<Vec<_>>();
+    admission
+        .evaluate(&demands)
+        .map_err(ChannelStartupError::Admission)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelStartupError {
+    ZeroTargetChunk,
+    TransactionExceedsSlot,
+    TimeTransactionExceedsSlot,
+    InconsistentChannelIdentity(u8),
+    ChannelOverCapacity {
+        channel_id: u8,
+        report: AdmissionReport,
+    },
+    Admission(AdmissionError),
+    Runtime(ChannelRuntimeError),
+    InvariantViolation,
+    MissingObservedConfiguration {
+        channel_id: u8,
+        node_address: u8,
+    },
+    InvalidConfiguration,
+    InvalidTelemetryInterval,
+    TelemetryUnavailable(u8),
+    UnknownNode(u8),
+    UnsupportedOutputRate {
+        node_address: u8,
+        rate: sensor_protocol::OutputRateCode,
+    },
+}
+
+impl fmt::Display for ChannelStartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "channel startup planning error: {self:?}")
+    }
+}
+
+impl std::error::Error for ChannelStartupError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sensor_core::BootEpoch;
+    use sensor_protocol::{
+        FirmwareVersion, NodeCapabilities, NodeIdentity, OutputRateCode, RuntimeResult,
+        RuntimeResultCode, RuntimeState, SensorStatusCode, ServiceId, CAPABILITIES_SCHEMA_VERSION,
+        LOCAL_PROTOCOL_VERSION, MAX_PAYLOAD_BYTES,
+    };
+
+    use crate::channel_recovery::RecoveredNode;
+    use crate::channel_scheduler::ChannelSchedulerPolicy;
+    use crate::discovery::{
+        DiscoveryTargetId, InstallationDiscoveryPlan, REQUIRED_RECORDING_FEATURES,
+    };
+    use crate::installation_topology::InstallationTopologyProfile;
+    use crate::node_session::NodeSession;
+    use crate::stream_recovery::RecoveryContinuity;
+    use serde_json::json;
+
+    fn duration(value: u64) -> DurationMicros {
+        DurationMicros::new(value).unwrap()
+    }
+
+    fn policy(maximum_utilization_ppm: u32) -> ChannelStartupPolicy {
+        ChannelStartupPolicy {
+            admission: AdmissionPolicy {
+                maximum_utilization_ppm,
+                recovery_reserve_ppm: 100_000,
+            },
+            target_chunk_samples: 32,
+            measurement_transaction_time: duration(36_900),
+            measurement_slot: duration(40_000),
+            maximum_service_interval: duration(500_000),
+            retry_base_delay: duration(10_000),
+            retry_max_delay: duration(1_000_000),
+            retry_attempt_limit: 3,
+            offline_probe_interval: duration(5_000_000),
+            time_sync_schedule: TimeSyncScheduleConfig::new(
+                duration(30_000_000),
+                duration(4_000),
+                duration(250_000),
+            )
+            .unwrap(),
+            time_sync_transaction_time: duration(4_000),
+            telemetry_schedule: TelemetryScheduleConfig::new(
+                duration(600_000_000),
+                duration(20_000),
+                duration(5_000_000),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn inventory(node_count: u8, output_rate: OutputRateCode) -> DiscoveryInventory {
+        let nodes = (1..=node_count)
+            .map(|address| {
+                json!({
+                    "id": address,
+                    "hardware_id": format!("{:02x}01010101010101", address),
+                    "board_revision": 2,
+                    "enabled": true,
+                    "output_rate_hz": output_rate.hertz_label()
+                })
+            })
+            .collect::<Vec<_>>();
+        let topology = InstallationTopologyProfile::from_document(&json!({
+            "system": {"name":"test-host"},
+            "channels":[{
+                "name":"line-a", "channel_id":1, "enabled":true,
+                "transport":{"kind":"serial-rs485", "device_id":"adapter-1", "endpoint":"/dev/a", "baud_rate":115200},
+                "nodes":nodes
+            }]
+        }))
+        .unwrap();
+        let plan = InstallationDiscoveryPlan::from_topology(&topology);
+        let mut collector = plan.collector();
+        for target in plan.channels()[0].targets() {
+            let identity = NodeIdentity {
+                hardware_id: target.hardware_id(),
+                boot_epoch: BootEpoch::new(100 + u64::from(target.id().node_address)),
+                node_address: target.id().node_address,
+                board_revision: target.board_revision(),
+                firmware: FirmwareVersion {
+                    major: 0,
+                    minor: 5,
+                    patch: 6,
+                },
+                protocol: LOCAL_PROTOCOL_VERSION,
+            };
+            let capabilities = NodeCapabilities {
+                schema_version: CAPABILITIES_SCHEMA_VERSION,
+                service_flags: ServiceId::Identity.capability_bit()
+                    | ServiceId::Measurement.capability_bit()
+                    | ServiceId::Configuration.capability_bit()
+                    | ServiceId::Lifecycle.capability_bit()
+                    | ServiceId::Time.capability_bit()
+                    | ServiceId::Telemetry.capability_bit(),
+                feature_flags: REQUIRED_RECORDING_FEATURES,
+                max_payload_bytes: MAX_PAYLOAD_BYTES as u16,
+                journal_capacity_samples: 2048,
+                output_rate_mask: sensor_protocol::IMPLEMENTED_OUTPUT_RATE_MASK,
+                max_sample_chunk_samples: 34,
+            };
+            collector
+                .accept_runtime(
+                    DiscoveryTargetId {
+                        channel_id: 1,
+                        node_address: target.id().node_address,
+                    },
+                    identity,
+                    capabilities,
+                    ObservedConfiguration {
+                        revision: 1,
+                        desired: sensor_protocol::MeasurementConfiguration {
+                            output_rate,
+                            range_g: 2,
+                            high_pass_corner: 0,
+                            filter_profile: sensor_protocol::DecimationFilterProfile::Balanced,
+                            fifo_watermark: 30,
+                            offset_x: 0,
+                            offset_y: 0,
+                            offset_z: 0,
+                        },
+                        sensor_odr: output_rate_odr(output_rate),
+                        decimation_factor: 1,
+                    },
+                )
+                .unwrap();
+        }
+        collector.finish().unwrap()
+    }
+
+    #[test]
+    fn admission_accounts_for_partial_chunks_at_slow_odr() {
+        for rate in [OutputRateCode::Hz31_25, OutputRateCode::Hz7_8125] {
+            let plans = build_channel_startup_plans(&inventory(1, rate), policy(900_000)).unwrap();
+            let schedule = plans[0].nodes()[0].schedule;
+            assert!(admission_chunk_samples(schedule) < schedule.target_chunk_samples);
+            assert!(plans[0].admission().accepted());
+        }
+    }
+
+    fn output_rate_odr(rate: OutputRateCode) -> sensor_protocol::Adxl355Odr {
+        match rate {
+            OutputRateCode::Hz4000 => sensor_protocol::Adxl355Odr::Hz4000,
+            OutputRateCode::Hz2000 => sensor_protocol::Adxl355Odr::Hz2000,
+            OutputRateCode::Hz1000 => sensor_protocol::Adxl355Odr::Hz1000,
+            OutputRateCode::Hz500 => sensor_protocol::Adxl355Odr::Hz500,
+            OutputRateCode::Hz250 => sensor_protocol::Adxl355Odr::Hz250,
+            OutputRateCode::Hz125 => sensor_protocol::Adxl355Odr::Hz125,
+            OutputRateCode::Hz62_5 => sensor_protocol::Adxl355Odr::Hz62_5,
+            OutputRateCode::Hz31_25 => sensor_protocol::Adxl355Odr::Hz31_25,
+            OutputRateCode::Hz15_625 => sensor_protocol::Adxl355Odr::Hz15_625,
+            OutputRateCode::Hz7_8125 => sensor_protocol::Adxl355Odr::Hz7_8125,
+            OutputRateCode::Hz3_90625 => sensor_protocol::Adxl355Odr::Hz3_90625,
+        }
+    }
+
+    #[test]
+    fn four_nodes_at_125_hz_build_bounded_scheduler_inputs() {
+        let plans =
+            build_channel_startup_plans(&inventory(4, OutputRateCode::Hz125), policy(700_000))
+                .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].nodes().len(), 4);
+        assert_eq!(plans[0].admission().required_utilization_ppm, 677_236);
+        assert!(plans[0].admission().accepted());
+        assert!(plans[0]
+            .nodes()
+            .iter()
+            .all(|node| node.schedule.target_chunk_samples == 32));
+        assert!(plans[0].nodes().iter().all(|node| {
+            node.requirements.hardware_id == node.discovered.hardware_id
+                && node.requirements.node_address == node.discovered.node_address
+                && node.requirements.board_revision == 2
+                && node.requirements.required_output_rate == Some(OutputRateCode::Hz125)
+                && node.requirements.required_services & ServiceId::Time.capability_bit() != 0
+                && node.telemetry.is_some()
+        }));
+    }
+
+    #[test]
+    fn overcommitted_channel_is_rejected_before_runtime_start() {
+        assert!(matches!(
+            build_channel_startup_plans(&inventory(4, OutputRateCode::Hz125), policy(600_000)),
+            Err(ChannelStartupError::ChannelOverCapacity { channel_id: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn configuration_preview_recalculates_the_whole_channel_before_mutation() {
+        let mut plans =
+            build_channel_startup_plans(&inventory(4, OutputRateCode::Hz125), policy(700_000))
+                .unwrap();
+        let original = plans[0].clone();
+        let faster = sensor_protocol::MeasurementConfiguration {
+            output_rate: OutputRateCode::Hz250,
+            ..original.nodes()[0].configuration.desired
+        };
+        let report = plans[0].preview_configuration(1, faster).unwrap();
+        assert!(!report.accepted());
+        assert_eq!(plans[0], original);
+
+        let slower = ObservedConfiguration {
+            revision: 2,
+            desired: sensor_protocol::MeasurementConfiguration {
+                output_rate: OutputRateCode::Hz62_5,
+                ..original.nodes()[0].configuration.desired
+            },
+            sensor_odr: sensor_protocol::Adxl355Odr::Hz62_5,
+            decimation_factor: 1,
+        };
+        let report = plans[0].accept_configuration(1, slower).unwrap();
+        assert!(report.accepted());
+        assert_eq!(plans[0].nodes()[0].configuration, slower);
+        assert_eq!(
+            plans[0].nodes()[0].requirements.required_output_rate,
+            Some(OutputRateCode::Hz62_5)
+        );
+    }
+
+    #[test]
+    fn node_capability_can_only_reduce_the_requested_chunk() {
+        let plans = build_channel_startup_plans(
+            &inventory(1, OutputRateCode::Hz250),
+            ChannelStartupPolicy {
+                target_chunk_samples: 64,
+                ..policy(900_000)
+            },
+        )
+        .unwrap();
+        assert_eq!(plans[0].nodes()[0].schedule.max_sample_chunk_samples, 34);
+        assert_eq!(plans[0].nodes()[0].schedule.target_chunk_samples, 34);
+    }
+
+    #[test]
+    fn assembly_uses_only_recovered_session_cursors_and_matches_identity() {
+        let plans =
+            build_channel_startup_plans(&inventory(2, OutputRateCode::Hz125), policy(900_000))
+                .unwrap();
+        let mut recovered = plans[0]
+            .nodes()
+            .iter()
+            .map(|planned| {
+                RecoveredNode::from_parts(
+                    DiscoveryTargetId {
+                        channel_id: planned.discovered.channel_id,
+                        node_address: planned.discovered.node_address,
+                    },
+                    RuntimeResult {
+                        operation_id: 7,
+                        code: RuntimeResultCode::Ok,
+                        state: RuntimeState::Recording,
+                        observability: ObservabilityProfile::Production,
+                        sensor_status: SensorStatusCode::Ok,
+                    },
+                    RecoveryContinuity::Contiguous,
+                    NodeSession::recovered(
+                        planned.discovered.hardware_id,
+                        planned.discovered.boot_epoch,
+                        sensor_core::SequenceCursor::new(
+                            100 + u64::from(planned.discovered.node_address),
+                        ),
+                        sensor_core::SequenceCursor::new(90),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        recovered.reverse();
+
+        let now = MonotonicMicros::new(5_000);
+        let coordinator = assemble_recording_coordinator(
+            &plans[0],
+            recovered,
+            RecordingAssemblyPolicy {
+                scheduler: ChannelSchedulerPolicy {
+                    overflow_guard: duration(100_000),
+                    max_slot: duration(50_000),
+                },
+                first_time_sync_delay: duration(1_000_000),
+                time_sync_phase_step: duration(100_000),
+            },
+            now,
+            44,
+        )
+        .unwrap();
+
+        assert_eq!(coordinator.runtime().node_count(), 2);
+        assert_eq!(coordinator.runtime().telemetry_schedule_count(), 2);
+        for planned in plans[0].nodes() {
+            assert_eq!(
+                coordinator
+                    .runtime()
+                    .snapshot(planned.discovered.node_address, now)
+                    .unwrap()
+                    .received,
+                sensor_core::SequenceCursor::new(100 + u64::from(planned.discovered.node_address))
+            );
+        }
+    }
+}

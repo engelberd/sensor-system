@@ -1,0 +1,735 @@
+use core::fmt;
+use std::path::PathBuf;
+
+use sensor_core::{BootEpoch, ContinuityBreak, Gap, HardwareId, SequenceCursor};
+use sensor_protocol::SampleChunk;
+
+use crate::bounded_writer::{
+    GroupDurableMeasurementSink, GroupPersistError, GroupPersistSuccess, PersistenceEnvelope,
+    PersistenceRecord,
+};
+use crate::capture_segments::{CaptureSegmentError, CaptureSegmentStream};
+use crate::capture_wal::{CaptureWalBatch, CaptureWalConfig};
+use crate::capture_window::CaptureWindowManifest;
+use crate::measurement_persistence::DurableMeasurementSink;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CaptureStreamSpec {
+    pub directory: PathBuf,
+    pub config: CaptureWalConfig,
+    pub calendar: Option<crate::capture_calendar::CalendarSource>,
+}
+
+/// Bounded router from channel-level persistence to one WAL owner per sensor.
+///
+/// The set of streams is fixed at construction. Recording cannot accidentally
+/// create a file for an unknown identity or a new boot epoch; stream recovery
+/// must first reconcile that change explicitly.
+pub struct CaptureRepository {
+    streams: Vec<CaptureSegmentStream>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureStreamRollover {
+    pub sealed_previous: Option<CaptureWindowManifest>,
+    pub durable: SequenceCursor,
+}
+
+/// Opaque group bound to one configured sensor stream and one physical WAL.
+pub struct CaptureRepositoryBatch {
+    hardware_id: HardwareId,
+    boot_epoch: BootEpoch,
+    wal: CaptureWalBatch,
+}
+
+impl CaptureRepositoryBatch {
+    pub const fn hardware_id(&self) -> HardwareId {
+        self.hardware_id
+    }
+
+    pub const fn boot_epoch(&self) -> BootEpoch {
+        self.boot_epoch
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.wal.record_count()
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.wal.byte_len()
+    }
+
+    pub const fn durable_cursor_after_commit(&self) -> SequenceCursor {
+        self.wal.durable_cursor_after_commit()
+    }
+
+    pub fn config_revision(&self) -> Option<u32> {
+        self.wal.config_revision()
+    }
+
+    pub const fn seals_window(&self) -> bool {
+        self.wal.seals_window()
+    }
+
+    pub fn stage_chunk(
+        &mut self,
+        chunk: &SampleChunk,
+    ) -> Result<SequenceCursor, CaptureRepositoryError> {
+        self.wal
+            .stage_chunk(self.hardware_id, chunk)
+            .map_err(|error| CaptureRepositoryError::Segment(CaptureSegmentError::Wal(error)))
+    }
+
+    pub fn stage_gap(&mut self, gap: Gap) -> Result<SequenceCursor, CaptureRepositoryError> {
+        self.wal
+            .stage_gap(gap)
+            .map_err(|error| CaptureRepositoryError::Segment(CaptureSegmentError::Wal(error)))
+    }
+
+    pub fn stage_continuity_break(
+        &mut self,
+        observed: ContinuityBreak,
+    ) -> Result<SequenceCursor, CaptureRepositoryError> {
+        self.wal
+            .stage_continuity_break(observed)
+            .map_err(|error| CaptureRepositoryError::Segment(CaptureSegmentError::Wal(error)))
+    }
+}
+
+impl CaptureRepository {
+    pub fn open(
+        specs: impl IntoIterator<Item = CaptureStreamSpec>,
+    ) -> Result<Self, CaptureRepositoryError> {
+        let mut streams = Vec::new();
+        for spec in specs {
+            if streams.iter().any(|stream: &CaptureSegmentStream| {
+                stream.hardware_id() == spec.config.hardware_id
+                    && stream.boot_epoch() == spec.config.boot_epoch
+            }) {
+                return Err(CaptureRepositoryError::DuplicateStream {
+                    hardware_id: spec.config.hardware_id,
+                    boot_epoch: spec.config.boot_epoch,
+                });
+            }
+            let mut sink = CaptureSegmentStream::open(spec.directory, spec.config)
+                .map_err(CaptureRepositoryError::Segment)?;
+            sink.set_calendar_source(spec.calendar)
+                .map_err(CaptureRepositoryError::Segment)?;
+            streams.push(sink);
+        }
+        if streams.is_empty() {
+            return Err(CaptureRepositoryError::NoStreams);
+        }
+        Ok(Self { streams })
+    }
+
+    pub fn stream_count(&self) -> usize {
+        self.streams.len()
+    }
+
+    pub fn durable_cursors(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (HardwareId, BootEpoch, sensor_core::SequenceCursor)> + '_
+    {
+        self.streams.iter().map(|stream| {
+            (
+                stream.hardware_id(),
+                stream.boot_epoch(),
+                stream.durable_cursor(),
+            )
+        })
+    }
+
+    pub fn finish_stream(
+        &mut self,
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    ) -> Result<Option<CaptureWindowManifest>, CaptureRepositoryError> {
+        self.stream_mut(hardware_id, boot_epoch)?
+            .finish_window()
+            .map_err(CaptureRepositoryError::Segment)
+    }
+
+    /// Seals the previous boot epoch and installs the explicitly reconciled
+    /// successor while this repository remains the sole owner of both WALs.
+    ///
+    /// Retaining the sealed stream makes shutdown and post-mortem inspection
+    /// deterministic. Repeating a completed rollover is idempotent.
+    pub fn rollover_stream(
+        &mut self,
+        previous_boot_epoch: BootEpoch,
+        next: CaptureStreamSpec,
+    ) -> Result<CaptureStreamRollover, CaptureRepositoryError> {
+        let hardware_id = next.config.hardware_id;
+        let next_boot_epoch = next.config.boot_epoch;
+        if previous_boot_epoch == next_boot_epoch {
+            return Err(CaptureRepositoryError::UnchangedBootEpoch {
+                hardware_id,
+                boot_epoch: next_boot_epoch,
+            });
+        }
+        let previous_index = self
+            .streams
+            .iter()
+            .position(|stream| {
+                stream.hardware_id() == hardware_id && stream.boot_epoch() == previous_boot_epoch
+            })
+            .ok_or(CaptureRepositoryError::UnknownStream {
+                hardware_id,
+                boot_epoch: previous_boot_epoch,
+            })?;
+
+        if let Some(existing) = self.streams.iter().find(|stream| {
+            stream.hardware_id() == hardware_id && stream.boot_epoch() == next_boot_epoch
+        }) {
+            return Ok(CaptureStreamRollover {
+                sealed_previous: None,
+                durable: existing.durable_cursor(),
+            });
+        }
+
+        let sealed_previous = self.streams[previous_index]
+            .finish_window()
+            .map_err(CaptureRepositoryError::Segment)?;
+        let durable = next.config.recovered_cursor;
+        let mut successor = CaptureSegmentStream::open(next.directory, next.config)
+            .map_err(CaptureRepositoryError::Segment)?;
+        successor
+            .set_calendar_source(next.calendar)
+            .map_err(CaptureRepositoryError::Segment)?;
+        debug_assert_eq!(successor.durable_cursor(), durable);
+        self.streams.push(successor);
+        Ok(CaptureStreamRollover {
+            sealed_previous,
+            durable,
+        })
+    }
+
+    /// Seals every non-empty current window after all submitted writes have
+    /// become durable. All streams are attempted so one local failure does not
+    /// leave unrelated streams needlessly open; the first error is reported.
+    pub fn finish_all_streams(
+        &mut self,
+    ) -> Result<Vec<CaptureWindowManifest>, CaptureRepositoryError> {
+        let mut manifests = Vec::with_capacity(self.streams.len());
+        let mut first_error = None;
+        for stream in &mut self.streams {
+            match stream.finish_window() {
+                Ok(Some(manifest)) => manifests.push(manifest),
+                Ok(None) => {}
+                Err(error) if first_error.is_none() => {
+                    first_error = Some(CaptureRepositoryError::Segment(error));
+                }
+                Err(_) => {}
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(manifests),
+        }
+    }
+
+    pub fn begin_batch(
+        &mut self,
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    ) -> Result<CaptureRepositoryBatch, CaptureRepositoryError> {
+        let wal = self
+            .stream_mut(hardware_id, boot_epoch)?
+            .begin_batch()
+            .map_err(CaptureRepositoryError::Segment)?;
+        Ok(CaptureRepositoryBatch {
+            hardware_id,
+            boot_epoch,
+            wal,
+        })
+    }
+
+    pub fn commit_batch(
+        &mut self,
+        batch: CaptureRepositoryBatch,
+    ) -> Result<(), CaptureRepositoryError> {
+        self.stream_mut(batch.hardware_id, batch.boot_epoch)?
+            .commit_batch(batch.wal)
+            .map_err(CaptureRepositoryError::Segment)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_failure_before_next_sync(
+        &mut self,
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    ) -> Result<(), CaptureRepositoryError> {
+        self.stream_mut(hardware_id, boot_epoch)?
+            .inject_failure_before_next_sync();
+        Ok(())
+    }
+
+    fn stream_mut(
+        &mut self,
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    ) -> Result<&mut CaptureSegmentStream, CaptureRepositoryError> {
+        self.streams
+            .iter_mut()
+            .find(|stream| stream.hardware_id() == hardware_id && stream.boot_epoch() == boot_epoch)
+            .ok_or(CaptureRepositoryError::UnknownStream {
+                hardware_id,
+                boot_epoch,
+            })
+    }
+}
+
+impl DurableMeasurementSink for CaptureRepository {
+    type Error = CaptureRepositoryError;
+
+    fn persist_chunk(
+        &mut self,
+        hardware_id: HardwareId,
+        chunk: &SampleChunk,
+    ) -> Result<(), Self::Error> {
+        self.stream_mut(hardware_id, chunk.header.boot_epoch)?
+            .persist_chunk(hardware_id, chunk)
+            .map_err(CaptureRepositoryError::Segment)
+    }
+
+    fn persist_gap(&mut self, gap: Gap) -> Result<(), Self::Error> {
+        self.stream_mut(gap.hardware_id, gap.boot_epoch)?
+            .persist_gap(gap)
+            .map_err(CaptureRepositoryError::Segment)
+    }
+
+    fn persist_continuity_break(&mut self, observed: ContinuityBreak) -> Result<(), Self::Error> {
+        self.stream_mut(observed.hardware_id, observed.boot_epoch)?
+            .persist_continuity_break(observed)
+            .map_err(CaptureRepositoryError::Segment)
+    }
+}
+
+impl GroupDurableMeasurementSink for CaptureRepository {
+    fn persist_group(
+        &mut self,
+        envelopes: &[&PersistenceEnvelope],
+    ) -> Result<GroupPersistSuccess, GroupPersistError<Self::Error>> {
+        let Some(first) = envelopes.first() else {
+            return Ok(GroupPersistSuccess {
+                persisted_records: 0,
+            });
+        };
+        if let PersistenceRecord::Chunk { chunk, .. } = first.record() {
+            let stream = self
+                .stream_mut(first.hardware_id(), first.boot_epoch())
+                .map_err(GroupPersistError::Preparation)?;
+            stream
+                .prepare_chunk(chunk)
+                .map_err(|e| GroupPersistError::Preparation(CaptureRepositoryError::Segment(e)))?;
+            if stream.chunk_needs_boundary(chunk) {
+                self.persist_chunk(first.hardware_id(), chunk)
+                    .map_err(|error| GroupPersistError::Commit {
+                        attempted_records: 1,
+                        error,
+                    })?;
+                return Ok(GroupPersistSuccess {
+                    persisted_records: 1,
+                });
+            }
+        }
+        let mut batch = self
+            .begin_batch(first.hardware_id(), first.boot_epoch())
+            .map_err(GroupPersistError::Preparation)?;
+        let mut staged = 0_usize;
+        for (index, envelope) in envelopes.iter().enumerate() {
+            if envelope.hardware_id() != batch.hardware_id()
+                || envelope.boot_epoch() != batch.boot_epoch()
+                || (staged > 0 && envelope.start_cursor() != batch.durable_cursor_after_commit())
+            {
+                break;
+            }
+            if let PersistenceRecord::Chunk { chunk, .. } = envelope.record() {
+                if batch
+                    .config_revision()
+                    .is_some_and(|revision| revision != chunk.config_revision)
+                    || self
+                        .stream_mut(batch.hardware_id(), batch.boot_epoch())
+                        .map_err(GroupPersistError::Preparation)?
+                        .chunk_needs_boundary(chunk)
+                {
+                    break;
+                }
+            }
+            let result = match envelope.record() {
+                PersistenceRecord::Chunk { chunk, .. } => batch.stage_chunk(chunk),
+                PersistenceRecord::Gap(gap) => batch.stage_gap(*gap),
+                PersistenceRecord::ContinuityBreak(observed) => {
+                    batch.stage_continuity_break(*observed)
+                }
+            };
+            match result {
+                Ok(_) => staged += 1,
+                Err(error) if staged == 0 => {
+                    debug_assert_eq!(index, 0);
+                    return Err(GroupPersistError::Preparation(error));
+                }
+                Err(_) => break,
+            }
+            if batch.seals_window() {
+                break;
+            }
+        }
+        self.commit_batch(batch)
+            .map_err(|error| GroupPersistError::Commit {
+                attempted_records: staged,
+                error,
+            })?;
+        Ok(GroupPersistSuccess {
+            persisted_records: staged,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum CaptureRepositoryError {
+    NoStreams,
+    DuplicateStream {
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    },
+    UnknownStream {
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    },
+    UnchangedBootEpoch {
+        hardware_id: HardwareId,
+        boot_epoch: BootEpoch,
+    },
+    Segment(CaptureSegmentError),
+}
+
+impl fmt::Display for CaptureRepositoryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Segment(error) => write!(formatter, "capture repository segment failed: {error}"),
+            other => write!(formatter, "capture repository error: {other:?}"),
+        }
+    }
+}
+
+impl std::error::Error for CaptureRepositoryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Segment(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use sensor_core::{GapReason, SampleAxes, SampleAxis, SampleSequence, SequenceCursor};
+    use sensor_protocol::{SampleChunkHeader, TimingEvidence, TIMING_VALID};
+
+    use crate::capture_window::CaptureWindowPolicy;
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDirectory(PathBuf);
+
+    impl TempDirectory {
+        fn new() -> Self {
+            let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "sensor-host-capture-repository-{}-{id}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn spec(root: &std::path::Path, id: u8, epoch: u64) -> CaptureStreamSpec {
+        CaptureStreamSpec {
+            calendar: None,
+            directory: root.join(format!("node-{id}")),
+            config: CaptureWalConfig {
+                hardware_id: HardwareId::from_bytes([id, 0, 0, 0, 0, 0, 0, 0]),
+                boot_epoch: BootEpoch::new(epoch),
+                recovered_cursor: SequenceCursor::ORIGIN,
+                first_window_ordinal: 0,
+                window_policy: CaptureWindowPolicy::new(600_000_000).unwrap(),
+            },
+        }
+    }
+
+    fn chunk(epoch: u64, value: i32) -> SampleChunk {
+        let axis = SampleAxis::new(value).unwrap();
+        SampleChunk {
+            device_times: sensor_core::SampleTimes::new(vec![10]).unwrap(),
+            header: SampleChunkHeader {
+                boot_epoch: BootEpoch::new(epoch),
+                retained_from: SequenceCursor::ORIGIN,
+                produced: SequenceCursor::new(1),
+                first: SequenceCursor::ORIGIN,
+                sample_count: 1,
+            },
+            config_revision: 1,
+            timing: TimingEvidence {
+                segment_id: 1,
+                first_device_time_us: 10,
+                last_device_time_us: 10,
+                max_fit_residual_us: 1,
+                quality_flags: TIMING_VALID,
+            },
+            samples: vec![SampleAxes::new(axis, axis, axis)],
+        }
+    }
+
+    #[test]
+    fn durable_split_prefix_recovery_keeps_the_original_job_receipt() {
+        use crate::bounded_writer::PersistenceSubmitter;
+        use crate::capture_calendar::CalendarWindow;
+        use crate::persistence_executor::{GroupedPersistenceWorker, RecoveredCursorEvidence};
+        let temp = TempDirectory::new();
+        let mut spec = spec(&temp.0, 1, 1);
+        spec.config.window_policy = CaptureWindowPolicy::new(100).unwrap();
+        std::fs::create_dir_all(&spec.directory).unwrap();
+        CalendarWindow::new(0, 50, 100, None)
+            .unwrap()
+            .save(&spec.directory, 0)
+            .unwrap();
+        CalendarWindow::new(50, 100, 100, None)
+            .unwrap()
+            .save(&spec.directory, 1)
+            .unwrap();
+        let mut value = chunk(1, 11);
+        value.header.sample_count = 4;
+        value.header.produced = SequenceCursor::new(4);
+        value.samples = vec![value.samples[0]; 4];
+        value.device_times = sensor_core::SampleTimes::new(vec![0, 49, 50, 51]).unwrap();
+        value.timing.first_device_time_us = 0;
+        value.timing.last_device_time_us = 51;
+        let mut repository = CaptureRepository::open([spec.clone()]).unwrap();
+        repository
+            .persist_chunk(spec.config.hardware_id, &value.slice(0..2).unwrap())
+            .unwrap();
+        repository.finish_all_streams().unwrap();
+        drop(repository);
+        let repository = CaptureRepository::open([spec.clone()]).unwrap();
+        let mut worker = GroupedPersistenceWorker::new(repository, 4, 1).unwrap();
+        let job = worker
+            .submit_record(PersistenceEnvelope::chunk(spec.config.hardware_id, value).unwrap())
+            .unwrap();
+        worker.process_one_group().unwrap();
+        assert!(worker.poll_completion().unwrap().result.is_err());
+        let recovered = CaptureRepository::open([spec.clone()]).unwrap();
+        worker
+            .replace_recovered_sink(
+                recovered,
+                RecoveredCursorEvidence {
+                    hardware_id: spec.config.hardware_id,
+                    boot_epoch: spec.config.boot_epoch,
+                    durable: SequenceCursor::new(2),
+                },
+            )
+            .unwrap();
+        assert!(worker.poll_completion().is_none());
+        worker.process_one_group().unwrap();
+        let complete = worker.poll_completion().unwrap();
+        assert_eq!(complete.id, job);
+        assert_eq!(complete.result.unwrap().end, SequenceCursor::new(4));
+        let mut repository = worker.into_sink();
+        repository.finish_all_streams().unwrap();
+        let first = crate::capture_segments::validate_capture_segment(
+            spec.directory.join("window-00000000000000000000.wal"),
+            spec.directory.join("window-00000000000000000000.manifest"),
+        )
+        .unwrap();
+        let second = crate::capture_segments::validate_capture_segment(
+            spec.directory.join("window-00000000000000000001.wal"),
+            spec.directory.join("window-00000000000000000001.manifest"),
+        )
+        .unwrap();
+        assert_eq!(
+            first.manifest.sample_count + second.manifest.sample_count,
+            4
+        );
+        assert_eq!(first.manifest.end_exclusive, second.manifest.first_cursor);
+    }
+
+    #[test]
+    fn routes_multiple_nodes_without_mixing_their_cursors() {
+        let temp = TempDirectory::new();
+        let first = spec(&temp.0, 1, 10);
+        let second = spec(&temp.0, 2, 20);
+        let mut repository = CaptureRepository::open([first.clone(), second.clone()]).unwrap();
+
+        repository
+            .persist_chunk(first.config.hardware_id, &chunk(10, 11))
+            .unwrap();
+        repository
+            .persist_chunk(second.config.hardware_id, &chunk(20, 22))
+            .unwrap();
+        drop(repository);
+
+        let recovered = CaptureRepository::open([first, second]).unwrap();
+        let states = recovered.durable_cursors().collect::<Vec<_>>();
+        assert_eq!(states.len(), 2);
+        assert!(states
+            .iter()
+            .all(|(_, _, cursor)| *cursor == SequenceCursor::new(1)));
+    }
+
+    #[test]
+    fn commits_one_stream_batch_without_advancing_another_stream() {
+        let temp = TempDirectory::new();
+        let first = spec(&temp.0, 1, 10);
+        let second = spec(&temp.0, 2, 20);
+        let mut repository = CaptureRepository::open([first.clone(), second.clone()]).unwrap();
+
+        let mut batch = repository
+            .begin_batch(first.config.hardware_id, first.config.boot_epoch)
+            .unwrap();
+        batch.stage_chunk(&chunk(10, 11)).unwrap();
+        batch
+            .stage_gap(
+                Gap::new(
+                    first.config.hardware_id,
+                    first.config.boot_epoch,
+                    SampleSequence::new(1),
+                    2,
+                    GapReason::SourceLoss,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(batch.record_count(), 2);
+        assert_eq!(batch.durable_cursor_after_commit(), SequenceCursor::new(3));
+        assert!(repository
+            .durable_cursors()
+            .all(|(_, _, cursor)| cursor == SequenceCursor::ORIGIN));
+
+        repository.commit_batch(batch).unwrap();
+        let states = repository.durable_cursors().collect::<Vec<_>>();
+        assert!(states.iter().any(|(hardware_id, _, cursor)| {
+            *hardware_id == first.config.hardware_id && *cursor == SequenceCursor::new(3)
+        }));
+        assert!(states.iter().any(|(hardware_id, _, cursor)| {
+            *hardware_id == second.config.hardware_id && *cursor == SequenceCursor::ORIGIN
+        }));
+    }
+
+    #[test]
+    fn group_sink_persists_only_the_contiguous_prefix_of_one_stream() {
+        let temp = TempDirectory::new();
+        let first = spec(&temp.0, 1, 10);
+        let second = spec(&temp.0, 2, 20);
+        let mut repository = CaptureRepository::open([first.clone(), second.clone()]).unwrap();
+        let records = [
+            PersistenceEnvelope::chunk(first.config.hardware_id, chunk(10, 11)).unwrap(),
+            PersistenceEnvelope::gap(
+                Gap::new(
+                    first.config.hardware_id,
+                    first.config.boot_epoch,
+                    SampleSequence::new(1),
+                    2,
+                    GapReason::SourceLoss,
+                )
+                .unwrap(),
+            ),
+            PersistenceEnvelope::chunk(second.config.hardware_id, chunk(20, 22)).unwrap(),
+        ];
+
+        assert_eq!(
+            repository
+                .persist_group(&records.iter().collect::<Vec<_>>())
+                .unwrap(),
+            GroupPersistSuccess {
+                persisted_records: 2
+            }
+        );
+        let states = repository.durable_cursors().collect::<Vec<_>>();
+        assert!(states.iter().any(|(hardware_id, _, cursor)| {
+            *hardware_id == first.config.hardware_id && *cursor == SequenceCursor::new(3)
+        }));
+        assert!(states.iter().any(|(hardware_id, _, cursor)| {
+            *hardware_id == second.config.hardware_id && *cursor == SequenceCursor::ORIGIN
+        }));
+    }
+
+    #[test]
+    fn rejects_unknown_boot_epoch_and_duplicate_stream_owners() {
+        let temp = TempDirectory::new();
+        let configured = spec(&temp.0, 1, 10);
+        let mut repository = CaptureRepository::open([configured.clone()]).unwrap();
+        assert!(matches!(
+            repository.persist_chunk(configured.config.hardware_id, &chunk(11, 1)),
+            Err(CaptureRepositoryError::UnknownStream { .. })
+        ));
+
+        assert!(matches!(
+            CaptureRepository::open([configured.clone(), configured]),
+            Err(CaptureRepositoryError::DuplicateStream { .. })
+        ));
+    }
+
+    #[test]
+    fn rollover_seals_previous_epoch_and_routes_the_successor() {
+        let temp = TempDirectory::new();
+        let previous = spec(&temp.0, 1, 10);
+        let mut next = spec(&temp.0, 1, 11);
+        next.directory = temp.0.join("node-1-epoch-11");
+        let mut repository = CaptureRepository::open([previous.clone()]).unwrap();
+        repository
+            .persist_chunk(previous.config.hardware_id, &chunk(10, 11))
+            .unwrap();
+
+        let rollover = repository
+            .rollover_stream(previous.config.boot_epoch, next.clone())
+            .unwrap();
+        assert_eq!(rollover.durable, SequenceCursor::ORIGIN);
+        assert_eq!(rollover.sealed_previous.unwrap().sample_count, 1);
+        repository
+            .persist_chunk(next.config.hardware_id, &chunk(11, 22))
+            .unwrap();
+        assert_eq!(repository.stream_count(), 2);
+        assert!(repository
+            .durable_cursors()
+            .any(|(hardware_id, epoch, cursor)| {
+                hardware_id == next.config.hardware_id
+                    && epoch == next.config.boot_epoch
+                    && cursor == SequenceCursor::new(1)
+            }));
+
+        let repeated = repository
+            .rollover_stream(previous.config.boot_epoch, next)
+            .unwrap();
+        assert_eq!(repeated.sealed_previous, None);
+        assert_eq!(repeated.durable, SequenceCursor::new(1));
+        assert_eq!(repository.stream_count(), 2);
+    }
+
+    #[test]
+    fn rollover_requires_an_existing_previous_epoch_and_a_new_epoch() {
+        let temp = TempDirectory::new();
+        let previous = spec(&temp.0, 1, 10);
+        let mut repository = CaptureRepository::open([previous.clone()]).unwrap();
+
+        assert!(matches!(
+            repository.rollover_stream(previous.config.boot_epoch, previous.clone()),
+            Err(CaptureRepositoryError::UnchangedBootEpoch { .. })
+        ));
+        let next = spec(&temp.0, 2, 11);
+        assert!(matches!(
+            repository.rollover_stream(BootEpoch::new(10), next),
+            Err(CaptureRepositoryError::UnknownStream { .. })
+        ));
+    }
+}

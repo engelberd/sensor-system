@@ -113,3 +113,12 @@ nie odpytuje RS485 i nie zastępuje Telemetry WAL jako trwałego źródła.
 
 Snapshot jest podstawą obserwacji. Historia zdarzeń pozostaje w journald, a
 trwałe dane pomiarowe w Capture, Time WAL i Telemetry WAL.
+
+
+### Błędy bootstrapu kanału (ADR-0015)
+
+`channels` zawiera także kanały odrzucone przez bootstrap: `phase=faulted`,
+zachowana `channel_name` i opcjonalny tekst `startup_error`. Dla działającego
+kanału `startup_error=null`. Jest to rozszerzenie addytywne schema 1.
+Host pozostaje `degraded`, a sprawne kanały zachowują własne metryki i recording.
+Brak node w inventory niesprawnego kanału nie oznacza usunięcia go z konfiguracji.

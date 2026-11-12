@@ -2,13 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST_BINARY="${SENSOR_HOST_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-host}"
-DOCTOR_BINARY="${SENSOR_HOST_DOCTOR_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-doctor}"
-HIL_BINARY="${SENSOR_HOST_HIL_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-hil}"
-CAPTURE_VALIDATE_BINARY="${SENSOR_CAPTURE_VALIDATE_BINARY:-$ROOT_DIR/host_v2/target/release/capture-validate}"
-CAPTURE_EXPORT_BINARY="${SENSOR_CAPTURE_EXPORT_BINARY:-$ROOT_DIR/host_v2/target/release/capture-export}"
-OPERATIONS_BINARY="${SENSOR_OPERATIONS_BINARY:-$ROOT_DIR/host_v2/target/release/sensor-operations}"
-ANALYSIS_EXPORT_BINARY="${SENSOR_ANALYSIS_EXPORT_BINARY:-$ROOT_DIR/host_v2/target/release/analysis-export}"
+HOST_BINARY="${SENSOR_HOST_BINARY:-$ROOT_DIR/host/runtime/target/release/sensor-host}"
+DOCTOR_BINARY="${SENSOR_HOST_DOCTOR_BINARY:-$ROOT_DIR/host/runtime/target/release/sensor-doctor}"
+HIL_BINARY="${SENSOR_HOST_HIL_BINARY:-$ROOT_DIR/host/runtime/target/release/sensor-hil}"
+CAPTURE_VALIDATE_BINARY="${SENSOR_CAPTURE_VALIDATE_BINARY:-$ROOT_DIR/host/runtime/target/release/capture-validate}"
+CAPTURE_EXPORT_BINARY="${SENSOR_CAPTURE_EXPORT_BINARY:-$ROOT_DIR/host/runtime/target/release/capture-export}"
+OPERATIONS_BINARY="${SENSOR_OPERATIONS_BINARY:-$ROOT_DIR/host/runtime/target/release/sensor-operations}"
+ANALYSIS_EXPORT_BINARY="${SENSOR_ANALYSIS_EXPORT_BINARY:-$ROOT_DIR/host/runtime/target/release/analysis-export}"
 HOST_CONFIG="${SENSOR_HOST_CONFIG:-$ROOT_DIR/host/system_config.json}"
 STATUS_FILE="${SENSOR_HOST_STATUS_FILE:-/run/sensor-system/host-v2-status.json}"
 OPERATIONS_SOCKET="${SENSOR_HOST_OPERATIONS_SOCKET:-/run/sensor-system/operations-v1.sock}"
@@ -20,8 +20,8 @@ usage() {
 Usage:
   ./hostctl <command> [args...]
 
-Host v2:
-  build                 Build all native host v2 release binaries
+Host:
+  build                 Build all native host release binaries
   validate              Validate the effective v2 installation profile
   discover              Read-only discovery of every enabled node
   run                   Run the v2 recorder in the foreground
@@ -40,9 +40,9 @@ Host v2:
 Data:
   capture validate ROOT                 Validate all sealed Capture streams
   capture export CAPTURE_DIR OUTPUT_DIR Validate and export one stream to CSV
-  analysis export-new                     Export every newly sealed window to CSV
+  analysis export-new                     Export every newly sealed window to HDF5
 
-Node service (protocol 5 over RS485):
+Node service (protocol 6 over RS485):
   node <sensor-hil command> [args...]    Identity, diagnostics, time and recovery
   update [options]                      Fail-closed application + A/B update
 
@@ -65,12 +65,12 @@ Examples:
   ./hostctl capture validate var/recordings
   ./hostctl node diagnostics /dev/sensor-system-line-b 1 HARDWARE_ID 2 115200
   ./hostctl update --port /dev/sensor-system-line-b --node 1 \
-    --hardware-id HARDWARE_ID --board-revision 2 --expected-firmware 0.5.7
+    --hardware-id HARDWARE_ID --board-revision 2 --expected-firmware 0.5.11
 EOF
 }
 
 missing_binary() {
-  echo "[ERROR] missing host v2 binary: $1" >&2
+  echo "[ERROR] missing host binary: $1" >&2
   echo "Build it with: ./hostctl build" >&2
   exit 69
 }
@@ -103,7 +103,7 @@ case "$COMMAND" in
     usage
     ;;
   build)
-    exec cargo build --release --workspace --manifest-path "$ROOT_DIR/host_v2/Cargo.toml" "$@"
+    exec cargo build --release --workspace --manifest-path "$ROOT_DIR/host/runtime/Cargo.toml" "$@"
     ;;
   validate|discover)
     require_binary "$HOST_BINARY"
@@ -164,6 +164,7 @@ case "$COMMAND" in
     [[ $SUBCOMMAND == export-new ]] || { echo "[ERROR] analysis requires export-new" >&2; exit 64; }
     shift
     require_binary "$ANALYSIS_EXPORT_BINARY"
+    export SENSOR_ANALYSIS_PYTHON="${SENSOR_ANALYSIS_PYTHON:-$ROOT_DIR/host/.venv/bin/python}"
     EXECUTION=("$ANALYSIS_EXPORT_BINARY")
     ((HAS_CONFIG)) || EXECUTION+=(--config "$HOST_CONFIG")
     ((HAS_REPOSITORY)) || EXECUTION+=(--repository-root "$ROOT_DIR")
@@ -175,29 +176,29 @@ case "$COMMAND" in
     exec "$HIL_BINARY" "$@"
     ;;
   update)
-    exec "$ROOT_DIR/host_v2/tools/update_node_v2.sh" "$@"
+    exec "$ROOT_DIR/host/runtime/tools/update_node.sh" "$@"
     ;;
   install-services)
     if [[ ${SENSOR_HOST_SKIP_BUILD:-0} != 1 ]]; then
-      cargo build --release -p sensor-host --manifest-path "$ROOT_DIR/host_v2/Cargo.toml"
+      cargo build --release -p sensor-host --manifest-path "$ROOT_DIR/host/runtime/Cargo.toml"
     fi
     require_binary "$HOST_BINARY"
     require_binary "$ANALYSIS_EXPORT_BINARY"
     "$HOST_BINARY" validate --config "$HOST_CONFIG" --repository-root "$ROOT_DIR"
-    exec "$ROOT_DIR/host_v2/tools/install_systemd_service.sh" \
+    exec "$ROOT_DIR/host/runtime/tools/install_systemd_service.sh" \
       --repository-root "$ROOT_DIR" --config "$HOST_CONFIG" --binary "$HOST_BINARY" \
       --analysis-binary "$ANALYSIS_EXPORT_BINARY" \
-      --python "${SENSOR_HOST_SYSTEM_PYTHON:-/usr/bin/python3}" \
+      --python "${SENSOR_HOST_SYSTEM_PYTHON:-$ROOT_DIR/host/.venv/bin/python}" \
       --user "${SENSOR_HOST_SERVICE_USER:-$(id -un)}" \
       --group "${SENSOR_HOST_SERVICE_GROUP:-$(id -gn)}" \
       --dashboard-host "${SENSOR_HOST_DASHBOARD_HOST:-127.0.0.1}" \
       --dashboard-port "${SENSOR_HOST_DASHBOARD_PORT:-8090}" "$@"
     ;;
   rollback-services)
-    exec "$ROOT_DIR/host_v2/tools/rollback_systemd_service.sh" "$@"
+    exec "$ROOT_DIR/host/runtime/tools/rollback_systemd_service.sh" "$@"
     ;;
   start|stop|restart|status|logs)
-    exec "$ROOT_DIR/host_v2/tools/service_control.sh" "$COMMAND" "$@"
+    exec "$ROOT_DIR/host/runtime/tools/service_control.sh" "$COMMAND" "$@"
     ;;
   ping|config|lab|recorder|archive|verify|supervisor|console|dashboard|operator|boot|py)
     echo "[ERROR] '$COMMAND' belongs to the retired Python host and is not exposed by hostctl v2" >&2

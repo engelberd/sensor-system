@@ -16,7 +16,7 @@ adres RS485 nie są trwałą tożsamością urządzenia.
 
 ## 2. Wspólny status odpowiedzi
 
-Pierwszy bajt każdego response application protocol 5 jest statusem:
+Pierwszy bajt każdego response application protocol 6 jest statusem:
 
 | Kod | Nazwa |
 | ---: | --- |
@@ -85,9 +85,9 @@ Output-rate bits są stabilną tabelą dokładnych częstotliwości wyjściowych
 
 Maska opisuje próbki publikowane przez Measurement Service po obowiązkowym
 filtrowaniu i decymacji. Nie opisuje rejestru ani wejściowego ODR sensora.
-Obecny firmware przyjmuje sensor ODR `4000, 2000, 1000, 500, 250, 125 Hz` i
-zawsze decymuje ×2, dlatego uczciwa maska wynosi `0x007e`: output
-`2000, 1000, 500, 250, 125, 62.5 Hz`. Host używa właśnie tych wartości do
+Obecny firmware przyjmuje sensor ODR od 4000 do 7.8125 Hz i zawsze
+decymuje ×2. Maska wynosi `0x07fe`: wyjściowe ODR od 2000 do 3.90625 Hz,
+w tym 31.25 i 7.8125 Hz (ADR-0012). Host używa tych wartości do
 schedulera i admission control.
 
 Feature bits schema 2:

@@ -13,7 +13,7 @@ struct RuntimeCapacityProfile {
     static constexpr size_t kIngressEvents = 128;
     static constexpr size_t kJournalSamples = 2048;
     static constexpr size_t kJournalGaps = 64;
-    static constexpr size_t kMaxChunkSamples = 48;
+    static constexpr size_t kMaxChunkSamples = 34;
     static constexpr size_t kCommandMailboxEntries = 4;
     static constexpr size_t kResultMailboxEntries = 4;
     static constexpr size_t kLifecycleResultCacheEntries = 8;

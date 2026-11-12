@@ -501,3 +501,13 @@ odłączenie i powrót node, utrata konwertera, wiele node na jednej magistrali,
 Scan/Assign i długi przewód. Archive pozostaje poza MVP; w okresie przejściowym
 operator musi monitorować miejsce i wynosić Capture/Analysis przed progiem
 rezerwy.
+
+
+### Aktualizacja 2026-11-11: częściowy bootstrap
+
+[ADR-0015](../adr/0015-partial-channel-startup.md) zastępuje wcześniejsze
+ograniczenie opisane wyżej: awaria jednej linii przy bootstrapie nie kończy
+startu pozostałych. Niesprawny kanał jest faulted z przyczyną w statusie,
+a host pracuje jako degraded. Jeżeli nie pozostał żaden dopuszczony kanał,
+start nadal kończy się błędem. Otwarte pozostaje automatyczne dołączanie
+kanału, który nie uzyskał workera przy starcie; obecnie wymaga restartu hosta.

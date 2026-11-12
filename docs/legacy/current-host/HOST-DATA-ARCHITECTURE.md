@@ -1,7 +1,7 @@
 # Host data architecture
 
 > **Legacy:** dokument opisuje moduły działającego hosta Python. Nie określa
-> zależności ani drzewa kodu `host_v2`.
+> zależności ani drzewa kodu `host/runtime`.
 
 ## Purpose
 

@@ -27,10 +27,10 @@ constexpr uint32_t ceil_div(uint32_t numerator, uint32_t denominator) {
     return (numerator + denominator - 1u) / denominator;
 }
 
-constexpr uint32_t fallback_interval_ms(uint32_t odr_hz,
+constexpr uint32_t fallback_interval_q8_ms(uint32_t odr_hz,
                                         uint32_t watermark_entries) {
     if (odr_hz == 0u) {
-        odr_hz = 250u;
+        odr_hz = 250u * 256u;
     }
     if (watermark_entries < kAxesPerSample) {
         watermark_entries = kAxesPerSample;
@@ -41,9 +41,9 @@ constexpr uint32_t fallback_interval_ms(uint32_t odr_hz,
 
     const uint32_t entries_per_second = odr_hz * kAxesPerSample;
     const uint32_t watermark_ms =
-        ceil_div(watermark_entries * 1000u, entries_per_second);
+        ceil_div(watermark_entries * 256000u, entries_per_second);
     const uint32_t fifo_full_ms =
-        ceil_div(kFifoCapacityEntries * 1000u, entries_per_second);
+        ceil_div(kFifoCapacityEntries * 256000u, entries_per_second);
 
     uint32_t interval_ms = watermark_ms + (watermark_ms / 4u) + 1u;
     const uint32_t latest_safe_ms = fifo_full_ms > 2u ? fifo_full_ms - 2u : 1u;
@@ -53,4 +53,7 @@ constexpr uint32_t fallback_interval_ms(uint32_t odr_hz,
     return interval_ms == 0u ? 1u : interval_ms;
 }
 
+constexpr uint32_t fallback_interval_ms(uint32_t odr_hz, uint32_t watermark_entries) {
+    return fallback_interval_q8_ms(odr_hz * 256u, watermark_entries);
+}
 }  // namespace FifoServicePolicy

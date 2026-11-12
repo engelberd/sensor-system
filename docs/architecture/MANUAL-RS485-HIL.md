@@ -41,7 +41,7 @@ ls -1 /dev/cu.usbserial* /dev/cu.usbserial-* 2>/dev/null
 Z katalogu głównego repozytorium:
 
 ```bash
-./host_v2/tools/run_manual_rs485_hil.sh \
+./host/runtime/tools/run_manual_rs485_hil.sh \
   /dev/cu.usbserial-0001 \
   1 \
   0011223344556677 \
@@ -92,7 +92,7 @@ wynikowego do analizy.
 Firmware 0.5.6 można sprawdzić niezależną, fail-closed serią exchange:
 
 ```bash
-host_v2/target/release/sensor-hil time-probe \
+host/runtime/target/release/sensor-hil time-probe \
   /dev/cu.usbserial-0001 1 0011223344556677 2 8 1000 115200
 ```
 

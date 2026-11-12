@@ -4,6 +4,7 @@
 
 #include "common/device_config.h"
 #include "common/sensor_types.h"
+#include "common/sensor_rate.h"
 #include "runtime/sensor_runtime.h"
 
 namespace runtime {
@@ -50,31 +51,19 @@ struct ConfigurationResult {
 
 inline bool output_rate_to_sensor(
     uint8_t output_rate_code,
-    uint16_t& odr_hz,
+    float& odr_hz,
     uint8_t& odr_register) {
-    switch (output_rate_code) {
-        case 1: odr_hz = 4000; odr_register = 0; return true;
-        case 2: odr_hz = 2000; odr_register = 1; return true;
-        case 3: odr_hz = 1000; odr_register = 2; return true;
-        case 4: odr_hz = 500; odr_register = 3; return true;
-        case 5: odr_hz = 250; odr_register = 4; return true;
-        case 6: odr_hz = 125; odr_register = 5; return true;
-        default: return false;
-    }
+    if (output_rate_code < 1 || output_rate_code > 10) return false;
+    odr_register = output_rate_code - 1;
+    return SensorRate::from_register(odr_register, odr_hz);
 }
 
 inline RuntimeMeasurementConfiguration runtime_configuration_from_device(
     const DeviceConfig& value) {
     RuntimeMeasurementConfiguration output{};
-    switch (value.odr_hz) {
-        case 4000: output.output_rate_code = 1; break;
-        case 2000: output.output_rate_code = 2; break;
-        case 1000: output.output_rate_code = 3; break;
-        case 500: output.output_rate_code = 4; break;
-        case 250: output.output_rate_code = 5; break;
-        case 125: output.output_rate_code = 6; break;
-        default: output.output_rate_code = UINT8_MAX; break;
-    }
+    uint8_t sensor_register = 0;
+    output.output_rate_code = SensorRate::to_register(value.odr_hz, sensor_register)
+        && sensor_register <= 9 ? sensor_register + 1 : UINT8_MAX;
     output.range_g = value.range_g;
     output.high_pass_corner = value.high_pass_corner;
     output.filter_profile = value.filter_profile;
@@ -87,7 +76,7 @@ inline RuntimeMeasurementConfiguration runtime_configuration_from_device(
 
 inline bool valid_runtime_configuration(
     const RuntimeMeasurementConfiguration& value) {
-    uint16_t odr_hz = 0;
+    float odr_hz = 0;
     uint8_t odr_register = 0;
     return output_rate_to_sensor(
                value.output_rate_code, odr_hz, odr_register) &&
@@ -183,7 +172,7 @@ private:
     ConfigurationResult result(
         uint32_t operation_id, ConfigurationResultCode code) const {
         const DeviceConfig& current = config_manager_.current();
-        uint16_t unused_odr = 0;
+        float unused_odr = 0;
         uint8_t sensor_odr = UINT8_MAX;
         const auto configuration = runtime_configuration_from_device(current);
         (void)output_rate_to_sensor(

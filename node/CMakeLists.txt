@@ -63,7 +63,7 @@ set(SENSOR_SYSTEM_NODE_INCLUDE_DIRS
     ${CMAKE_CURRENT_LIST_DIR}/controller
     ${CMAKE_CURRENT_LIST_DIR}/diagnostics
     ${CMAKE_CURRENT_LIST_DIR}/interfaces
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3
+    ${CMAKE_CURRENT_LIST_DIR}/protocol
     ${CMAKE_CURRENT_LIST_DIR}/storage
     ${CMAKE_CURRENT_LIST_DIR}/transport
 )
@@ -79,14 +79,14 @@ set(SENSOR_SYSTEM_NODE_APP_COMMON_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/diagnostics/diagnostic_store.cpp
     ${CMAKE_CURRENT_LIST_DIR}/diagnostics/persistent_diagnostic_store.cpp
     ${CMAKE_CURRENT_LIST_DIR}/observer/tinyusb_cdc_port.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/dispatcher.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/configuration.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/commissioning.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/time.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/framing.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/identity.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/lifecycle.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/protocol_v3/measurement.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/dispatcher.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/configuration.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/commissioning.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/time.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/framing.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/identity.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/lifecycle.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol/measurement.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/crc16.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/frame_decoder.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transport/frame_encoder.cpp

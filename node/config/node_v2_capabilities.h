@@ -4,7 +4,7 @@
 
 #include "config/node_v2_runtime_profile.h"
 #include "processing/decimating_filter.h"
-#include "protocol_v3/identity.h"
+#include "protocol/identity.h"
 
 namespace node_v2 {
 

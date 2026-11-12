@@ -4,8 +4,8 @@ This repository contains the full Sensor System project:
 
 - `hardware/` for KiCad PCB projects, parts, footprints, and hardware notes
 - `node/` for the Pico firmware and bootloader artifacts
-- `host_v2/` for the Rust recorder, protocol-5 service tools and data tools
-- `host/` for installation profiles and temporarily retained migration code
+- `host/` for the complete host product: configuration, operator support and runtime
+- `host/runtime/` for the Rust recorder, protocol-6 contracts and data tools
 
 Architecture and current implementation gates start at
 [docs/README.md](docs/README.md). The supported local operator interface is
@@ -70,7 +70,7 @@ the Raspberry Pi host:
 2. Install the Pico SDK and toolchain.
 3. Build `node/`.
 4. Flash `node/build/sensor-system-node-factory.uf2` onto a brand-new Pico 2.
-5. Build host v2 with `./hostctl build`.
+5. Build the host with `./hostctl build`.
 6. Identify the node read-only with `./hostctl node identify DEVICE ADDRESS 115200`.
 
 Example setup for a clean local checkout:

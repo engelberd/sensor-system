@@ -17,7 +17,7 @@ enum class SensorStatus {
 };
 
 struct AccelerometerConfig {
-    uint16_t odr_hz = 250;
+    float odr_hz = 250.0f; // ADXL rates are exact binary fractions; never serialized on wire.
     uint8_t range_g = 2;
     uint8_t high_pass_corner = 0;
 };

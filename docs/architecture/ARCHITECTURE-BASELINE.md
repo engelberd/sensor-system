@@ -14,7 +14,8 @@ szczegółów implementacyjnych, które powinny powstać razem z właściwym mod
 - jeden właściciel każdego zmiennego stanu;
 - oddzielenie `sensor_core`, `sensor_protocol`, `sensor_data`, `system_config`,
   adapterów, aplikacji i narzędzi;
-- równoległa implementacja `host_v2` bez importów starego `host`;
+- jeden produkt `host/`, z produkcyjnym recorderem w `host/runtime/` bez
+  importów historycznego recordera Python;
 - firmware node w C++17/Pico SDK, krytyczny runtime hosta w Rust, Python tylko
   dla narzędzi i przetwarzania offline;
 - początkowo jeden proces recordera z logicznym `ChannelAgent` per channel i
@@ -38,7 +39,7 @@ Dokumenty należące do baseline:
 
 - [PRODUCT-INVARIANTS.md](PRODUCT-INVARIANTS.md);
 - [DOMAIN-LANGUAGE.md](DOMAIN-LANGUAGE.md);
-- [HOST-V2-STRUCTURE.md](HOST-V2-STRUCTURE.md);
+- [HOST-RUNTIME-STRUCTURE.md](HOST-RUNTIME-STRUCTURE.md);
 - [MEASUREMENT-DATA-CONTRACT.md](MEASUREMENT-DATA-CONTRACT.md);
 - [RS485-COMMUNICATION-POLICY.md](RS485-COMMUNICATION-POLICY.md);
 - [HOST-SCALING.md](HOST-SCALING.md).

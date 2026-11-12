@@ -5,7 +5,7 @@
 #include <fstream>
 #include <vector>
 
-#include "protocol_v3/framing.h"
+#include "protocol/framing.h"
 
 namespace {
 using namespace ProtocolV3;
@@ -86,7 +86,7 @@ void test_oversize_and_routes() {
 }
 
 std::vector<uint8_t> read_vector(const char* name) {
-    const std::string path = std::string("../host_v2/contracts/golden/") + name;
+    const std::string path = std::string("../host/runtime/contracts/golden/") + name;
     std::ifstream input(path, std::ios::binary);
     assert(input.good());
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), {});

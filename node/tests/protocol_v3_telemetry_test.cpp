@@ -1,7 +1,7 @@
 #include <cassert>
 #include <cstdint>
 
-#include "protocol_v3/telemetry.h"
+#include "protocol/telemetry.h"
 
 namespace {
 

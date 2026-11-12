@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "protocol_v3/diagnostics.h"
+#include "protocol/diagnostics.h"
 
 namespace {
 

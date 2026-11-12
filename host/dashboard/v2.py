@@ -180,7 +180,7 @@ class V2DashboardRepository:
             Path(hil_binary)
             if hil_binary is not None
             else self.config_path.resolve().parent.parent
-            / "host_v2"
+            / "host/runtime"
             / "target"
             / "release"
             / "sensor-hil"

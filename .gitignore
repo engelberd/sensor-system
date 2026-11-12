@@ -1,5 +1,5 @@
 node/build/
-host_v2/target/
+host/runtime/target/
 host/.venv/
 host/host_config.json
 host/system_config.json
@@ -8,10 +8,11 @@ host/systemd/*.service
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
-host_v2/analysis/Untitled*.ipynb
+host/runtime/analysis/Untitled*.ipynb
 runs/
 data/
 logs/
+/output/
 /var/*
 !/var/README.md
 !/var/recordings/
@@ -29,9 +30,9 @@ logs/
 !/var/tmp/
 /var/tmp/**
 !/var/tmp/.gitkeep
-!/var/run/
-/var/run/**
-!/var/run/.gitkeep
+!/var/analysis/
+/var/analysis/**
+!/var/analysis/.gitkeep
 /LINUX/
 /pico-sdk/
 diagnostics/*

@@ -4,14 +4,14 @@
 #include <cstring>
 
 #include "measurement/delivery_session.h"
-#include "protocol_v3/dispatcher.h"
-#include "protocol_v3/framing.h"
-#include "protocol_v3/lifecycle.h"
-#include "protocol_v3/lifecycle_handler.h"
-#include "protocol_v3/measurement.h"
-#include "protocol_v3/measurement_handler.h"
-#include "protocol_v3/time_service.h"
-#include "protocol_v3/transport_endpoint.h"
+#include "protocol/dispatcher.h"
+#include "protocol/framing.h"
+#include "protocol/lifecycle.h"
+#include "protocol/lifecycle_handler.h"
+#include "protocol/measurement.h"
+#include "protocol/measurement_handler.h"
+#include "protocol/time_service.h"
+#include "protocol/transport_endpoint.h"
 
 namespace {
 using namespace ProtocolV3;

@@ -4,13 +4,13 @@
 #include <cstring>
 
 #include "measurement/delivery_session.h"
-#include "protocol_v3/dispatcher.h"
-#include "protocol_v3/diagnostics.h"
-#include "protocol_v3/lifecycle.h"
-#include "protocol_v3/lifecycle_handler.h"
-#include "protocol_v3/measurement.h"
-#include "protocol_v3/measurement_handler.h"
-#include "protocol_v3/telemetry.h"
+#include "protocol/dispatcher.h"
+#include "protocol/diagnostics.h"
+#include "protocol/lifecycle.h"
+#include "protocol/lifecycle_handler.h"
+#include "protocol/measurement.h"
+#include "protocol/measurement_handler.h"
+#include "protocol/telemetry.h"
 #include "runtime/operation_mailbox.h"
 
 namespace {

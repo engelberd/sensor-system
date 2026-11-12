@@ -86,6 +86,33 @@ static_assert(sizeof(LegacyPersistentConfigV3) == 44,
               "v3 migration layout must match deployed PersistentConfig");
 #pragma pack(pop)
 
+// v4 used integral sensor Hz. Its layout must not follow current DeviceConfig.
+struct LegacyDeviceConfigV4 {
+    uint8_t node_id;
+    uint32_t baudrate;
+    uint16_t odr_hz;
+    uint8_t range_g;
+    uint8_t high_pass_corner;
+    uint8_t filter_profile;
+    int32_t offset_x;
+    int32_t offset_y;
+    int32_t offset_z;
+    uint16_t act_threshold;
+    uint8_t act_count;
+    uint8_t fifo_watermark;
+};
+#pragma pack(push, 1)
+struct LegacyPersistentConfigV4 {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved0;
+    uint32_t generation;
+    LegacyDeviceConfigV4 device; uint32_t crc32;
+};
+#pragma pack(pop)
+static_assert(sizeof(LegacyDeviceConfigV4) == 32, "v4 device layout changed");
+static_assert(sizeof(LegacyPersistentConfigV4) == 48, "v4 flash layout changed");
+
 struct FlashWriteContext {
     uint32_t flash_offset;
     const uint8_t* data;
@@ -233,6 +260,31 @@ bool FlashConfigStore::load_copy(uint32_t flash_offset, PersistentConfig& config
         return true;
     }
 
+    const auto* v4 = reinterpret_cast<const LegacyPersistentConfigV4*>(XIP_BASE + flash_offset);
+    if (v4->magic == PERSISTENT_CONFIG_MAGIC && v4->version == 4) {
+        auto checked = *v4;
+        const uint32_t stored_crc = checked.crc32;
+        checked.crc32 = 0;
+        if (stored_crc == config_crc32(&checked, sizeof(checked))) {
+            config = {};
+            config.generation = v4->generation;
+            config.device.node_id = v4->device.node_id;
+            config.device.baudrate = v4->device.baudrate;
+            config.device.odr_hz = v4->device.odr_hz;
+            config.device.range_g = v4->device.range_g;
+            config.device.high_pass_corner = v4->device.high_pass_corner;
+            config.device.filter_profile = v4->device.filter_profile;
+            config.device.offset_x = v4->device.offset_x;
+            config.device.offset_y = v4->device.offset_y;
+            config.device.offset_z = v4->device.offset_z;
+            config.device.act_threshold = v4->device.act_threshold;
+            config.device.act_count = v4->device.act_count;
+            config.device.fifo_watermark = v4->device.fifo_watermark;
+            config.crc32 = 0;
+            config.crc32 = config_crc32(&config, sizeof(config));
+            return true;
+        }
+    }
     const auto* legacy_v3 =
         reinterpret_cast<const LegacyPersistentConfigV3*>(XIP_BASE + flash_offset);
     if (is_valid_legacy_copy(*legacy_v3)) {

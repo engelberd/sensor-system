@@ -15,7 +15,7 @@ Port RX -> StreamDecoder -> ApplicationDispatcher -> ResponseOutbox
 
 Nie steruje sensorem, nie planuje hosta, nie wykonuje retry requestu i nie
 zwalnia próbek samodzielnie. Kod znajduje się w
-`node/protocol_v3/transport_endpoint.h`.
+`node/protocol/transport_endpoint.h`.
 
 ## Ograniczenia pracy
 

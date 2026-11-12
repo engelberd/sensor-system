@@ -1,8 +1,8 @@
 #include <cassert>
 #include <cstring>
 
-#include "protocol_v3/commissioning_handler.h"
-#include "protocol_v3/dispatcher.h"
+#include "protocol/commissioning_handler.h"
+#include "protocol/dispatcher.h"
 #include "runtime/operation_mailbox.h"
 
 namespace {

@@ -6,13 +6,13 @@
 #include <string>
 #include <vector>
 
-#include "protocol_v3/time_service.h"
+#include "protocol/time_service.h"
 
 namespace {
 using namespace ProtocolV3;
 
 std::vector<uint8_t> read_vector(const char* name) {
-    const std::string path = std::string("../host_v2/contracts/golden/") + name;
+    const std::string path = std::string("../host/runtime/contracts/golden/") + name;
     std::ifstream input(path, std::ios::binary);
     assert(input.good());
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), {});

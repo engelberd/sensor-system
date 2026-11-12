@@ -52,7 +52,7 @@ Archive file is validated and a future storage policy confirms replication.
 
 The existing Python host's HDF5 implementation is documented in
 [legacy HDF5 policy](../legacy/current-host/HDF5-DATA-POLICY.md). It is an input
-to migration tests, not a required storage mechanism for `host_v2`.
+to migration tests, not a required storage mechanism for `host/runtime`.
 
 ## Rejected alternatives
 

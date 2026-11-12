@@ -1,5 +1,8 @@
 # Capture WAL v1
 
+> Historyczny format. Bieżący kontrakt: [CAPTURE-WAL-V2](CAPTURE-WAL-V2.md), ADR-0012.
+
+
 - Status: warstwa rekordu, recovery, segmentacja, atomowe manifesty, reader i
   checkpoint core, bounded handoff, threaded executor oraz bezpieczny batch
   jednego WAL, group commit, typed profile, coverage index/checkpoint i cleanup

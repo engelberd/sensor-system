@@ -58,36 +58,36 @@ compile_and_run tests/boot_update_protocol_test.cpp boot/boot_update_protocol.cp
 compile_and_run tests/boot_runtime_logic_test.cpp \
     boot/boot_metadata.cpp \
     boot_shared/boot_runtime_logic.cpp
-compile_and_run tests/protocol_v3_framing_test.cpp protocol_v3/framing.cpp
-compile_and_run tests/protocol_v3_identity_test.cpp protocol_v3/identity.cpp
+compile_and_run tests/protocol_v3_framing_test.cpp protocol/framing.cpp
+compile_and_run tests/protocol_v3_identity_test.cpp protocol/identity.cpp
 compile_and_run tests/protocol_v3_configuration_test.cpp \
-    protocol_v3/configuration.cpp
+    protocol/configuration.cpp
 compile_and_run tests/protocol_v3_configuration_handler_test.cpp \
-    protocol_v3/configuration.cpp
+    protocol/configuration.cpp
 compile_and_run tests/protocol_v3_commissioning_test.cpp \
-    protocol_v3/commissioning.cpp \
-    protocol_v3/framing.cpp
+    protocol/commissioning.cpp \
+    protocol/framing.cpp
 compile_and_run tests/protocol_v3_commissioning_handler_test.cpp \
-    protocol_v3/dispatcher.cpp \
-    protocol_v3/commissioning.cpp \
-    protocol_v3/time.cpp \
-    protocol_v3/framing.cpp \
-    protocol_v3/identity.cpp \
-    protocol_v3/lifecycle.cpp \
-    protocol_v3/measurement.cpp
-compile_and_run tests/protocol_v3_time_test.cpp protocol_v3/time.cpp
+    protocol/dispatcher.cpp \
+    protocol/commissioning.cpp \
+    protocol/time.cpp \
+    protocol/framing.cpp \
+    protocol/identity.cpp \
+    protocol/lifecycle.cpp \
+    protocol/measurement.cpp
+compile_and_run tests/protocol_v3_time_test.cpp protocol/time.cpp
 compile_and_run tests/protocol_v3_telemetry_test.cpp
 compile_and_run tests/protocol_v3_diagnostics_handler_test.cpp
-compile_and_run tests/node_v2_capabilities_test.cpp protocol_v3/identity.cpp
-compile_and_run tests/protocol_v3_lifecycle_test.cpp protocol_v3/lifecycle.cpp
+compile_and_run tests/node_v2_capabilities_test.cpp protocol/identity.cpp
+compile_and_run tests/protocol_v3_lifecycle_test.cpp protocol/lifecycle.cpp
 compile_and_run tests/protocol_v3_dispatcher_test.cpp \
-    protocol_v3/dispatcher.cpp \
-    protocol_v3/time.cpp \
-    protocol_v3/framing.cpp \
-    protocol_v3/identity.cpp \
-    protocol_v3/lifecycle.cpp \
-    protocol_v3/measurement.cpp
-compile_and_run tests/protocol_v3_measurement_test.cpp protocol_v3/measurement.cpp
+    protocol/dispatcher.cpp \
+    protocol/time.cpp \
+    protocol/framing.cpp \
+    protocol/identity.cpp \
+    protocol/lifecycle.cpp \
+    protocol/measurement.cpp
+compile_and_run tests/protocol_v3_measurement_test.cpp protocol/measurement.cpp
 compile_and_run tests/measurement_stream_test.cpp
 compile_and_run tests/measurement_journal_test.cpp
 compile_and_run tests/sample_ingress_test.cpp -pthread
@@ -101,45 +101,45 @@ compile_and_run tests/system_operation_runtime_test.cpp
 compile_and_run tests/core1_protocol_runtime_test.cpp
 compile_and_run tests/node_v2_runtime_types_test.cpp
 compile_and_run tests/node_v2_composition_types_test.cpp \
-    protocol_v3/dispatcher.cpp \
-    protocol_v3/configuration.cpp \
-    protocol_v3/commissioning.cpp \
-    protocol_v3/time.cpp \
-    protocol_v3/framing.cpp \
-    protocol_v3/identity.cpp \
-    protocol_v3/lifecycle.cpp \
-    protocol_v3/measurement.cpp
+    protocol/dispatcher.cpp \
+    protocol/configuration.cpp \
+    protocol/commissioning.cpp \
+    protocol/time.cpp \
+    protocol/framing.cpp \
+    protocol/identity.cpp \
+    protocol/lifecycle.cpp \
+    protocol/measurement.cpp
 compile_and_run tests/node_v2_runtime_composition_test.cpp \
-    protocol_v3/dispatcher.cpp \
-    protocol_v3/configuration.cpp \
-    protocol_v3/commissioning.cpp \
-    protocol_v3/time.cpp \
-    protocol_v3/framing.cpp \
-    protocol_v3/identity.cpp \
-    protocol_v3/lifecycle.cpp \
-    protocol_v3/measurement.cpp
+    protocol/dispatcher.cpp \
+    protocol/configuration.cpp \
+    protocol/commissioning.cpp \
+    protocol/time.cpp \
+    protocol/framing.cpp \
+    protocol/identity.cpp \
+    protocol/lifecycle.cpp \
+    protocol/measurement.cpp
 compile_and_run tests/node_v2_core1_composition_test.cpp \
-    protocol_v3/dispatcher.cpp \
-    protocol_v3/configuration.cpp \
-    protocol_v3/commissioning.cpp \
-    protocol_v3/time.cpp \
-    protocol_v3/framing.cpp \
-    protocol_v3/identity.cpp \
-    protocol_v3/lifecycle.cpp \
-    protocol_v3/measurement.cpp
+    protocol/dispatcher.cpp \
+    protocol/configuration.cpp \
+    protocol/commissioning.cpp \
+    protocol/time.cpp \
+    protocol/framing.cpp \
+    protocol/identity.cpp \
+    protocol/lifecycle.cpp \
+    protocol/measurement.cpp
 compile_and_run tests/delivery_session_test.cpp
-compile_and_run tests/protocol_v3_measurement_handler_test.cpp protocol_v3/measurement.cpp
+compile_and_run tests/protocol_v3_measurement_handler_test.cpp protocol/measurement.cpp
 compile_and_run tests/protocol_v3_response_outbox_test.cpp \
-    protocol_v3/dispatcher.cpp \
-    protocol_v3/time.cpp \
-    protocol_v3/framing.cpp \
-    protocol_v3/identity.cpp \
-    protocol_v3/lifecycle.cpp \
-    protocol_v3/measurement.cpp
+    protocol/dispatcher.cpp \
+    protocol/time.cpp \
+    protocol/framing.cpp \
+    protocol/identity.cpp \
+    protocol/lifecycle.cpp \
+    protocol/measurement.cpp
 compile_and_run tests/protocol_v3_transport_endpoint_test.cpp \
-    protocol_v3/dispatcher.cpp \
-    protocol_v3/time.cpp \
-    protocol_v3/framing.cpp \
-    protocol_v3/identity.cpp \
-    protocol_v3/lifecycle.cpp \
-    protocol_v3/measurement.cpp
+    protocol/dispatcher.cpp \
+    protocol/time.cpp \
+    protocol/framing.cpp \
+    protocol/identity.cpp \
+    protocol/lifecycle.cpp \
+    protocol/measurement.cpp

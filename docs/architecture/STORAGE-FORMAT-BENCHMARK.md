@@ -2,7 +2,7 @@
 
 - Status: pierwszy benchmark syntetyczny; decyzja Archive pozostaje warunkowa
 - Ostatnia aktualizacja: 2026-10-08
-- Narzędzie: `host_v2/python/tools/storage_benchmark.py`
+- Narzędzie: `host/runtime/python/tools/storage_benchmark.py`
 
 ## Pytanie
 
@@ -129,6 +129,6 @@ trwały outbox. Szczegóły opisuje
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 host/.venv/bin/python \
-  host_v2/python/tools/storage_benchmark.py \
+  host/runtime/python/tools/storage_benchmark.py \
   --duration-s 600 --odr 125 --profile vibration
 ```

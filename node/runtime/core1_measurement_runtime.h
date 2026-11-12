@@ -5,7 +5,7 @@
 
 #include "measurement/delivery_session.h"
 #include "measurement/sample_ingress.h"
-#include "protocol_v3/measurement_handler.h"
+#include "protocol/measurement_handler.h"
 #include "runtime/runtime_fault_latch.h"
 
 namespace runtime {

@@ -1,7 +1,7 @@
 # HDF5 sample, file, validation and archive policy
 
 > **Legacy:** dokument opisuje obecną implementację HDF5 starego hosta. Dla
-> `host_v2` podział Capture/Archive/Derived pozostaje, ale fizyczny format
+> `host/runtime` podział Capture/Archive/Derived pozostaje, ale fizyczny format
 > Capture nie został jeszcze wybrany.
 
 ## Product boundaries

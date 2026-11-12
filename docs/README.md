@@ -15,27 +15,30 @@ podana niżej.
    dashboardu i zdalnej obsługi Raspberry Pi.
 4. [Hostctl v2](architecture/HOSTCTL-V2.md) — obowiązujący lokalny interfejs
    operatora, aktualizacja node i jawnie wycofane komendy legacy.
-5. [Operations API v1](architecture/OPERATIONS-API-V1.md) — targety, tryby,
+5. [Katalog API i integracji](architecture/SYSTEM-API-CATALOG.md) — wspólny
+   indeks HTTP, IPC, statusu i danych, stan funkcji oraz braki dla nowego
+   dashboardu i innych platform.
+6. [Operations API v1](architecture/OPERATIONS-API-V1.md) — targety, tryby,
    idempotency i bounded command path dla sterowania per channel/per node.
-6. [Operator HTTP API v1](architecture/OPERATOR-HTTP-API-V1.md) — cienki,
+7. [Operator HTTP API v1](architecture/OPERATOR-HTTP-API-V1.md) — cienki,
    asynchroniczny adapter dashboardu do tego samego Operations API.
-7. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
+8. [Core readiness audit](architecture/CORE-READINESS-AUDIT.md) — krytyczne
    ryzyka, realne granice wydajności i mapa parametrów.
-8. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
+9. [Product invariants](architecture/PRODUCT-INVARIANTS.md) — wymagania, których
    implementacja nie może naruszyć.
-9. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
+10. [Measurement data contract](architecture/MEASUREMENT-DATA-CONTRACT.md) —
    znaczenie próbek, sekwencji, luk, czasu i okien danych.
-10. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
+11. [Archive and publication policy](architecture/ARCHIVE-AND-PUBLICATION-POLICY.md)
    — godzinne produkty, watermark, wysyłka i retencja.
-11. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
+12. [RS485 communication policy](architecture/RS485-COMMUNICATION-POLICY.md) —
    zasady jednej magistrali z wieloma node.
-12. [Host v2 README](../host_v2/README.md) — realne drzewo kodu i polecenia
+13. [Runtime hosta](../host/runtime/README.md) — realne drzewo kodu i polecenia
    weryfikacji.
 
 Logiczny strumień node łączący zwarty ring próbek z dokładnymi lukami
 opisuje [MEASUREMENT-JOURNAL.md](architecture/MEASUREMENT-JOURNAL.md).
 Fizyczny format trwałych rekordów hosta i reguły recovery opisuje
-[CAPTURE-WAL-V1.md](architecture/CAPTURE-WAL-V1.md).
+[CAPTURE-WAL-V2.md](architecture/CAPTURE-WAL-V2.md).
 Mapowanie `config_revision` próbek na pełne ustawienia i jego recovery opisuje
 [CONFIGURATION-HISTORY-V1.md](architecture/CONFIGURATION-HISTORY-V1.md).
 Warunki bezpiecznego usuwania Capture i Archive opisuje
@@ -44,8 +47,10 @@ Granice timestampów `t1..t4`, model dryfu i zasady niepewności opisuje
 [TIME-SERVICE.md](architecture/TIME-SERVICE.md).
 Kompaktowy format surowych obserwacji czasu i jego recovery opisuje
 [TIME-WAL-V1.md](architecture/TIME-WAL-V1.md).
+Wspólne granice WAL/Analysis i dzienne katalogi opisuje
+[ADR-0013](adr/0013-shared-capture-calendar.md).
 Główny automatyczny widok około dziesięciominutowych plików dla MATLAB-a i
-notebooków opisuje [ANALYSIS-CSV-V2.md](architecture/ANALYSIS-CSV-V2.md).
+notebooków opisuje [ANALYSIS-HDF5-V6.md](architecture/ANALYSIS-HDF5-V6.md).
 Relację many-to-many pomiędzy zakresami Capture i produktami godzinnymi opisuje
 [ARCHIVE-COVERAGE-INDEX.md](architecture/ARCHIVE-COVERAGE-INDEX.md).
 Ograniczony handoff rekordów z kanałów do storage opisuje
@@ -89,7 +94,7 @@ potrzeb v2 są w
 Aktualny kontrakt cursorów i transferu próbek opisuje
 [MEASUREMENT-SERVICE.md](protocol/MEASUREMENT-SERVICE.md).
 Dokładny układ bajtów znajduje się w
-[MEASUREMENT-WIRE-V5.md](protocol/MEASUREMENT-WIRE-V5.md), a bezpieczną migrację
+[MEASUREMENT-WIRE-V6.md](protocol/MEASUREMENT-WIRE-V6.md), a bezpieczną migrację
 z działającego protocol 4 opisuje
 [MIGRATION-V4-V5.md](protocol/MIGRATION-V4-V5.md).
 Minimalny payload synchronizacji zegara opisuje
@@ -105,7 +110,7 @@ firmware opisuje
 
 Szczegółowe słownictwo znajduje się w
 [DOMAIN-LANGUAGE.md](architecture/DOMAIN-LANGUAGE.md), docelowe odpowiedzialności
-modułów w [HOST-V2-STRUCTURE.md](architecture/HOST-V2-STRUCTURE.md), a model
+modułów w [HOST-RUNTIME-STRUCTURE.md](architecture/HOST-RUNTIME-STRUCTURE.md), a model
 skalowania w [HOST-SCALING.md](architecture/HOST-SCALING.md).
 
 ## Hierarchia decyzji
@@ -123,14 +128,15 @@ Nie wyprowadzamy nowych wymagań z nazw istniejących klas starego hosta.
 
 ## Status katalogów
 
-- `host_v2/` — nowa implementacja; Rust na drodze krytycznej, Python offline.
-- `host/` — działający host Python; referencja zachowania i źródło testów
-  porównawczych, ale nie wzorzec zależności dla v2.
+- `host/` — jeden produkt hosta: konfiguracja, adapter operatorski i runtime.
+- `host/runtime/` — produkcyjny recorder Rust, kontrakty i Python offline.
+- pozostały recorder Python w `host/` — kod migracyjny oczekujący na
+  wydzielenie; nie jest wzorcem zależności produkcyjnego runtime.
 - `node/` — działający firmware C++17; będzie zmieniany etapami do protokołu v5.
 - `docs/architecture/` — obowiązujący projekt produktu i implementacji v2.
 - `docs/adr/` — historia decyzji i ich uzasadnienie.
 - `docs/legacy/` — dokumentacja starego hosta, formatów i wdrożeń. Nie jest
-  specyfikacją `host_v2`.
+  specyfikacją `host/runtime`.
 
 Diagramy UML zostały usunięte. W tym projekcie źródłem prawdy są kontrakty,
 krótkie przepływy tekstowe, tabele stanów i wykonywalne testy.

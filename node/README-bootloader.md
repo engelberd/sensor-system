@@ -1,5 +1,12 @@
 # Sensor System Node Bootloader And Remote Update
 
+Bieżący firmware **0.5.11** używa application protocol **6** (framing 3).
+Indywidualne timestampy i wolne ODR opisuje
+[ADR-0012](../docs/adr/0012-individual-sample-timestamps.md).
+Host i firmware wymagają wspólnej aktualizacji; nie ma fallbacku protocol 5.
+Persistent config v5 zachowuje pola instalacji z v4 przy aktualizacji.
+
+
 This firmware now builds as a real A/B update system intended for RS485-only maintenance.
 
 ## Flash Layout
@@ -190,7 +197,7 @@ The update command performs trial confirmation itself. For diagnostics or
 recovery the same step remains available directly:
 
 ```bash
-cargo run --release --manifest-path host_v2/Cargo.toml --bin sensor-hil -- \
+cargo run --release --manifest-path host/runtime/Cargo.toml --bin sensor-hil -- \
   confirm-trial /dev/sensor-system-rs485 1 0011223344556677 2 0.5.6 115200
 ```
 

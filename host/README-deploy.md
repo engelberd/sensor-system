@@ -1,7 +1,7 @@
 # Sensor System Deployment Checklist (legacy Host + Node)
 
 Ta procedura dotyczy wycofanego hosta Python. Wdrożenie V2 opisuje
-`../host_v2/DEPLOY-RASPBERRY-PI.md`; komendy operatorskie są w
+`../host/runtime/DEPLOY-RASPBERRY-PI.md`; komendy operatorskie są w
 `../docs/architecture/HOSTCTL-V2.md`.
 
 This is a practical pre-flight list for deploying a node where you will **not**

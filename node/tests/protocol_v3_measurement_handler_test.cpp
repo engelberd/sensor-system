@@ -3,7 +3,7 @@
 #include <cstdint>
 
 #include "measurement/delivery_session.h"
-#include "protocol_v3/measurement_handler.h"
+#include "protocol/measurement_handler.h"
 
 namespace {
 using namespace measurement;

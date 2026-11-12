@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
-#include "protocol_v3/dispatcher.h"
-#include "protocol_v3/diagnostics.h"
+#include "protocol/dispatcher.h"
+#include "protocol/diagnostics.h"
 #include "runtime/core0_sensor_runtime.h"
 #include "runtime/core1_protocol_runtime.h"
 #include "runtime/node_v2_runtime_types.h"
@@ -166,7 +166,7 @@ private:
         const Acquisition& acquisition) {
         const auto config = runtime::runtime_configuration_from_device(
             config_manager.current());
-        uint16_t unused = 0;
+        float unused = 0;
         uint8_t sensor_odr = UINT8_MAX;
         (void)runtime::output_rate_to_sensor(
             config.output_rate_code, unused, sensor_odr);

@@ -1,7 +1,7 @@
 # Host v2 i firmware node — plan implementacji
 
 - Status dokumentu: aktywny plan wykonawczy
-- Ostatnia aktualizacja: 2026-10-28
+- Ostatnia aktualizacja: 2026-11-12
 - Baseline: `architecture-v1`
 
 Ten dokument odpowiada na cztery pytania: co już mamy, czego brakuje, co robimy
@@ -47,6 +47,110 @@ Izolacja do osobnych procesów może później objąć cały `TransportDevice`, 
 uzasadnią ją pomiary lub testy awarii.
 
 ## 3. Stan implementacji
+
+### TimeSync w Analysis HDF5 v6 — 2026-11-12
+
+[Analysis HDF5 v6](ANALYSIS-HDF5-V6.md) dodaje jedną tabelę `time_sync` z
+identyfikatorem zegara hosta, surowymi `t1..t4`, `path_delay_us` i
+`uncertainty_us`. Eksporter zachowuje obserwacje wewnątrz okna oraz po dwa
+punkty brzegowe z każdej domeny hosta. V5 i starsze produkty są atomowo
+odtwarzane z Capture, Time i Telemetry WAL. Kod, loader i testy lokalne są
+gotowe; wdrożenie i backfill na rpi-sanok2 pozostają osobną bramką.
+
+### Kanoniczny układ źródeł — 2026-11-12
+
+[ADR-0016](../adr/0016-version-neutral-source-layout.md) usuwa wersje generacji
+z aktywnych ścieżek. Jedyny produkt hosta leży w `host/`, recorder Rust,
+Analysis i kontrakty w `host/runtime/`, a endpoint firmware w `node/protocol/`.
+Usunięto `host_v2/` i `node/protocol_v3/`; wersje wire pozostają w kontraktach.
+Nazwy wdrożonych unitów i socketów zachowano jako kompatybilny interfejs.
+
+### Jedna tabela zdarzeń — 2026-11-12
+
+[Analysis HDF5 v5](ANALYSIS-HDF5-V5.md) przechowuje `events` jako jedną tabelę
+compound: `row_index`, `source_sample_number`, `event`, `count`, `reason`.
+Zastępuje to grupę pięciu osobnych kolumn z v4; `samples` i `telemetry` pozostają
+bez zmian. Starsze produkty są odtwarzane atomowo z Capture WAL.
+[Odbiór rpi-sanok2](RPI-SANOK2-EVENTS-TABLE-2026-11-12.md) potwierdził migrację
+wszystkich plików oraz ciągłe nagrywanie linii B bez restartu recordera.
+
+### Ostateczny format nazw Analysis — 2026-11-11
+
+Nazwy mają format `CHANNEL_YYYY-MM-DD_HH-MM.h5`, np.
+`line-b_2026-11-11_16-51.h5`. Channel pochodzi z profilu, node pozostaje
+w atrybutach. Schema v4 nie zmienia się. Na rpi-sanok2 przemianowano cztery
+pliki (13 763 próbek), sprawdzając SHA-256 datasetów, pozostałe metadane
+i inode. Zmieniono tylko nazwę i `data_file`; B nie zatrzymywano.
+
+### Jedna tabela telemetrii — 2026-11-11
+
+[Analysis HDF5 v4](ANALYSIS-HDF5-V4.md) przechowywał `telemetry` jako jedną
+tabelę `time_us` uint64 i `temperature_c` float64; raw i offset od pierwszej
+próbki usunięto. Samples raw i natywne metadane pozostają bez zmian.
+[Odbiór rpi-sanok2](RPI-SANOK2-TELEMETRY-TABLE-2026-11-11.md) potwierdził
+19 temperatur w przebudowanych plikach i ciągłe nagrywanie B podczas wdrożenia.
+
+### Natywne nagłówki HDF5 — 2026-11-11
+
+[Analysis HDF5 v3](ANALYSIS-HDF5-V3.md) zapisuje metadane jako nazwane
+atrybuty pliku, konfigurację z prefiksem `configuration_`; dataset JSON usunięto.
+Tabela raw, nazwy plików i telemetria pozostają zachowane.
+[Odbiór rpi-sanok2](RPI-SANOK2-HDF5-ATTRIBUTES-2026-11-11.md) potwierdził
+trzy przebudowane pliki, 9033 próbek i 19 temperatur bez zatrzymania recordera.
+
+### Jedna tabela raw i telemetria — 2026-11-11
+
+Na żądanie użytkownika [Analysis HDF5 v2](ANALYSIS-HDF5-V2.md) zapisuje jeden
+compound dataset `samples`: sample_sequence, czas_us (uint64), x/y/z (int32 raw).
+Kolumny m/s² usunięto. Telemetry jest zachowana w tym samym pliku; krótkie okno
+zakończone przed pierwszym odczytem ma jawny status braku obserwacji.
+[Odbiór rpi-sanok2](RPI-SANOK2-RAW-HDF5-2026-11-11.md) potwierdził dziewięć
+temperatur w dłuższym oknie oraz wymianę formatu bez zatrzymywania recordera.
+
+### Czysta instalacja i nazwy Analysis — 2026-11-11
+
+Na żądanie użytkownika wyniki HDF5 trafiają bezpośrednio do `var/analysis`
+pod nazwą `line-b_node-1_16-38_11-11-2026.h5`. Identyfikacja okien korzysta
+z metadanych HDF5; kolizje minuty mają minimalny sufiks. rpi-sanok2 używa
+standardowego `var/recordings` i minimalnego overlay profilu; stare pomiary
+usunięto za zgodą użytkownika. [Odbiór czystej struktury](RPI-SANOK2-CLEAN-LAYOUT-2026-11-11.md).
+
+### Częściowy start kanałów — 2026-11-11
+
+[ADR-0015](../adr/0015-partial-channel-startup.md): niesprawny channel podczas
+bootstrapu jest izolowany i raportowany jako startup fault; zdrowe kanały
+rozpoczynają recording, host ma stan degraded. Pełne dowody są nadal wymagane
+wewnątrz każdego dopuszczonego kanału. Brak wszystkich kanałów nadal kończy
+start błędem. Automatyczne dołączenie kanału nieobecnego przy starcie pozostaje
+otwarte; po przywróceniu wymaga restartu hosta. Recovery node w istniejących
+workerach pozostaje aktywne. [Odbiór rpi-sanok2](RPI-SANOK2-PARTIAL-START-2026-11-11.md)
+potwierdził recording B, clean restart i nowy HDF5 przy niedostępnej A.
+
+### Analysis HDF5 — 2026-11-11
+
+[ADR-0014](../adr/0014-analysis-hdf5.md) zastępuje automatyczne Analysis CSV
+jednym [HDF5 v1](ANALYSIS-HDF5-V1.md) na okno: próbki surowe i fizyczne,
+indywidualne czasy uint64, zdarzenia, temperatura i pełne metadane konfiguracji
+oraz czasu. Stary czytnik i kontrakty Analysis CSV usunięto. `capture-export`
+pozostaje osobnym narzędziem diagnostycznym. Wdrożenie tylko rpi-sanok2; [odbiór i zastany błąd recordera](RPI-SANOK2-HDF5-DEPLOYMENT-2026-11-11.md).
+Wzmianki CSV w historycznych raportach poniżej opisują stan sprzed tej decyzji.
+
+### Indywidualne timestampy — 2026-11-02
+
+ADR-0012 wprowadza application protocol 6, Capture WAL v2 i Analysis CSV v3.
+Pico przekazuje indywidualne czasy przez delty u16/u32, host przechowuje je
+razem z XYZ i eksportuje bez interpolacji. Limit chunku to 34, cel 32;
+budżety common to 51 ms exchange / 52 ms slot. Wolne ODR 31.25 i 7.8125 Hz
+są obsługiwane przez konfigurację sensora; persistent config v5 zachowuje
+przy aktualizacji pola instalacji z v4. Nie utrzymujemy poprzedniego trybu
+recording. Wymagane nowe katalogi Capture/Analysis i wspólna aktualizacja
+hosta oraz firmware. Krótki HIL i wdrożenie na rpi-sanok2 zamknięto
+2026-11-02: oba firmware 0.5.11, testy 125/250/31.25/7.8125 Hz, WAL -> CSV
+i ponowny start. Otwarta bramka: soak, pomiary DRDY/IRQ, wydajność nośnika
+oraz dwa problemy przejścia/nowego Capture opisane w
+[RPI-SANOK2-TIMESTAMPS-DEPLOYMENT-2026-11-02.md](RPI-SANOK2-TIMESTAMPS-DEPLOYMENT-2026-11-02.md).
+Historyczne wpisy poniżej opisują
+wcześniejsze etapy i ich protocol 5.
 
 ### Gotowe w kodzie v2
 
@@ -160,13 +264,10 @@ uzasadnią ją pomiary lub testy awarii.
   rekonfigurację quiescent schedulera i trwały WAL znaczenia `config_revision`;
 - bounded walidacja Capture i strumieniowy `capture-export`, generujący
   `samples.csv`, `events.csv` oraz `windows.csv` bez ładowania nagrania do RAM;
-- automatyczny, idempotentny `Analysis CSV v2` per zamknięte okno Capture:
-  tylko osie XYZ w `m/s²`, uproszczona nazwa z czasem pierwszej próbki,
-  ustawiony i wyznaczony ODR oraz pełne znaczenie czasu i konwersji w JSON,
-  osobne zdarzenia jakości, rzadki `telemetry.csv` dopasowany czasem urządzenia
-  oraz timer systemd poza gorącą ścieżką RS485;
-  pierwszy przebieg ma ograniczony backfill i nie rozwija całej historycznej
-  bazy do tekstu;
+- automatyczny, idempotentny `Analysis HDF5 v1` per zamknięte okno Capture:
+  surowe XYZ i m/s², indywidualne czasy, pełne metadane konfiguracji i czasu,
+  zdarzenia jakości i temperatura w jednym pliku; timer systemd poza RS485;
+  ograniczony domyślny backfill, jawne `--backfill-all` do migracji.
 
 ### Gotowe jako decyzja lub kontrakt
 
@@ -199,8 +300,8 @@ Operations API i `hostctl` przez jedynego właściciela RS485. Pięć aktywnych
 node działa na firmware 0.5.10. HIL potwierdził Configuration, pusty skan,
 restart i Resume; panel Commissioning jest podłączony, a do zamknięcia
 pozostaje HIL Scan/Assign z nieprzypisanym node. Telemetry temperatury ma pełny
-pion node → scheduler → WAL → status/dashboard → Analysis CSV. Archive,
-kompresja i uploader są świadomie odłożone poza MVP. `Analysis CSV v2` jest
+pion node → scheduler → WAL → status/dashboard → Analysis HDF5. Archive,
+kompresja i uploader są świadomie odłożone poza MVP. `Analysis HDF5 v1` jest
 obecnym formatem gotowym do podstawowej analizy drgań; Capture WAL pozostaje
 źródłem prawdy.
 
@@ -209,7 +310,7 @@ Nie oznacza to jeszcze gotowości produkcyjnej dla wielu node, 1–16 channels,
 długich przewodów ani awarii storage.
 
 Te elementy są źródłem doświadczeń i scenariuszy testowych. Nie importujemy ich
-bezpośrednio do `host_v2` i nie kopiujemy ich struktury klas.
+bezpośrednio do `host/runtime` i nie kopiujemy ich struktury klas.
 
 ## 4. Granice modułów
 
@@ -290,8 +391,8 @@ CSV jest formatem wymiany generowanym z zapieczętowanego i zweryfikowanego
 Capture. Nie zastępuje kompaktowego WAL na gorącej ścieżce, ponieważ tekstowy
 zapis każdej próbki zwiększyłby rozmiar, liczbę konwersji i obciążenie storage.
 Istniejący `capture-export` zapisuje strumieniowo `samples.csv`, `events.csv` i
-`windows.csv` ze stałym użyciem pamięci. `analysis-export` publikuje dodatkowo
-osobny, atomowy CSV dla każdego zamkniętego około dziesięciominutowego okna.
+`windows.csv` ze stałym użyciem pamięci. `analysis-export` publikuje
+osobny, atomowy HDF5 dla każdego zamkniętego około dziesięciominutowego okna.
 
 Poza MVP pozostają Archive, kompresja, publication outbox, uploader,
 automatyczny dobór ODR i fizyczna kwalifikacja 16 kanałów. Dashboard oraz
@@ -666,8 +767,8 @@ ODR spoza pełnego zbioru ADXL355. `InstallationDiscoveryPlan` wybiera wyłączn
 aktywne channel/node i wymaga Measurement, Lifecycle, Time, journala oraz timing
 DRDY. Wykonawca odpytuje node jednego half-duplex channel kolejno, a niezależne
 kanały uruchamia równolegle. Każdy node ma bounded deadline; brak odpowiedzi,
-rozłączenie lub błąd jednej linii nie może zwrócić częściowego inventory jako
-sukcesu. Collector koreluje wynik z `(channel_id, node_address)` i ponownie
+rozłączenie lub błąd jednej linii nie jest pełnym sukcesem discovery.
+Produkcyjny bootstrap dopuszcza zdrowe kanały i jawnie raportuje pozostałe (ADR-0015). Collector koreluje wynik z `(channel_id, node_address)` i ponownie
 sprawdza identity oraz capabilities.
 
 `ChannelStartupPlan` przekształca kompletne inventory w jawne
@@ -709,9 +810,10 @@ wyniku. Test pionowy potwierdza, że `produced=140` wybrane jako origin nowego
 WAL wraca po replayu jako durable i bez zmiany trafia do schedulera.
 
 `installation_bootstrap` wykonuje produkcyjny bootstrap wszystkich aktywnych
-kanałów równolegle i nie zamyka ich portów po zebraniu danych. Dopiero kompletny
-wynik jest ponownie sprawdzany przez `DiscoveryInventoryCollector`; błąd jednej
-linii odrzuca całą próbę startupu i nie publikuje częściowego inventory.
+kanałów równolegle i nie zamyka portów zdrowych kanałów po zebraniu danych.
+`DiscoveryInventoryCollector` sprawdza pełne dowody osobno per kanał; błędy
+są izolowane, a inventory zawiera wyłącznie dopuszczone kanały. Startup faults
+pozostają w health/status i wymuszają degraded (ADR-0015).
 `HostStartupBlueprint` łączy następnie każdy zachowany endpoint z jego planem
 admission po `channel_id`, buduje jedną topologię globalnego Time WAL i kończy
 całą walidację przed otwarciem Capture albo wysłaniem `Start`. Dzięki temu
@@ -909,9 +1011,9 @@ Zmiana niezmiennika wymaga ADR.
 8. Po zmianach Rust uruchom:
 
 ```bash
-cargo fmt --all --manifest-path host_v2/Cargo.toml --check
-cargo clippy --workspace --all-targets --manifest-path host_v2/Cargo.toml -- -D warnings
-cargo test --workspace --manifest-path host_v2/Cargo.toml
+cargo fmt --all --manifest-path host/runtime/Cargo.toml --check
+cargo clippy --workspace --all-targets --manifest-path host/runtime/Cargo.toml -- -D warnings
+cargo test --workspace --manifest-path host/runtime/Cargo.toml
 ```
 
 9. Po zmianach starego hosta uruchom:
@@ -1232,3 +1334,14 @@ wykonuje `ResumeRecording` z nowym handshake i `boot_epoch`. Awaryjna ścieżka
 bez działającego workera zwalnia port przez zatrzymanie usługi, wysyła reset i
 zawsze próbuje ponownie uruchomić usługę. Dashboard może ustawić nietrwały punkt
 odniesienia liczników próbek i ciągłości; nie kasuje to żadnych danych Capture.
+
+### Wspólne okna Capture/Analysis — 2026-11-02
+
+Zaimplementowano [ADR-0013](../adr/0013-shared-capture-calendar.md): granice
+kalendarzowe, rotację przy zmianie konfiguracji, trwałą kotwicę czasu, podział
+chunków z recovery prefiksu i dzienne katalogi CSV. Wdrożenie na rpi-sanok2
+oraz HIL rzeczywistej granicy 21:30, zmiany samego offsetu i restartu ukończono;
+9 nowych okien / 58 336 próbek porównano z CSV. Szczegóły i ograniczenia:
+[raport odbioru](RPI-SANOK2-CALENDAR-DEPLOYMENT-2026-11-02.md).
+Pozostaje długotrwała obserwacja i test odcięcia zasilania w trakcie podziału
+chunku; historyczny mieszany segment B ordinal 3 nadal jest jawnie odrzucany.

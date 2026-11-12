@@ -1,7 +1,7 @@
 #include <cassert>
 #include <cstdint>
 
-#include "protocol_v3/configuration.h"
+#include "protocol/configuration.h"
 
 namespace {
 
@@ -42,7 +42,7 @@ void compact_value_matches_host_layout() {
 
 void node_policy_reports_the_specific_invalid_field() {
     auto value = example();
-    value.output_rate = ProtocolV3::OutputRateCode::Hz31_25;
+    value.output_rate = ProtocolV3::OutputRateCode::Hz4000;
     auto result = ProtocolV3::validate_for_node(value);
     assert(result.code ==
            ProtocolV3::ConfigValidationCode::UnsupportedOutputRate);

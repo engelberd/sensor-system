@@ -4,10 +4,10 @@
 #include <cstring>
 
 #include "measurement/delivery_session.h"
-#include "protocol_v3/dispatcher.h"
-#include "protocol_v3/measurement.h"
-#include "protocol_v3/measurement_handler.h"
-#include "protocol_v3/response_outbox.h"
+#include "protocol/dispatcher.h"
+#include "protocol/measurement.h"
+#include "protocol/measurement_handler.h"
+#include "protocol/response_outbox.h"
 
 namespace {
 using namespace ProtocolV3;

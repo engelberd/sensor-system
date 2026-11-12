@@ -3,8 +3,8 @@
 #include <cstdint>
 
 #include "measurement/measurement_ingress_sink.h"
-#include "protocol_v3/dispatcher.h"
-#include "protocol_v3/measurement.h"
+#include "protocol/dispatcher.h"
+#include "protocol/measurement.h"
 #include "runtime/core0_sensor_runtime.h"
 #include "runtime/core1_measurement_runtime.h"
 

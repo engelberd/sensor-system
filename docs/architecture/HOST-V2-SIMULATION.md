@@ -82,7 +82,7 @@ pull staje się gotowy po 256 ms.
 Uruchomienie:
 
 ```bash
-cargo test --workspace --manifest-path host_v2/Cargo.toml
+cargo test --workspace --manifest-path host/runtime/Cargo.toml
 ```
 
 ## Czego ta bramka nie potwierdza

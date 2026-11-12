@@ -1,3 +1,4 @@
-# Python dependency used by the protocol-2 A/B bootloader uploader.
-# The recorder, analysis exporter and protocol-5 control plane are native Rust.
+# Service tools, dashboard and offline HDF5 export. Recorder/control plane use Rust.
 pyserial>=3.5,<4
+numpy>=1.24,<3
+h5py>=3.8,<4

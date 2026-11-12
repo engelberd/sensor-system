@@ -3,6 +3,10 @@
 - Status: accepted
 - Date: 2026-09-24
 
+Uwaga historyczna: równoległy układ katalogów obowiązywał podczas migracji.
+Od 2026-11-12 zastępuje go [ADR-0016](0016-version-neutral-source-layout.md):
+`host/` jest jednym produktem, a jego recorder leży w `host/runtime/`.
+
 ## Context
 
 Obecny host jest działającą referencją, ale miesza protokół, logikę recordera,
@@ -22,7 +26,7 @@ tych protokołów.
 
 ## Decision
 
-Nowy host powstaje w osobnym pakiecie `host_v2`. Kod produkcyjny w `host_v2`
+Nowy host powstaje w osobnym pakiecie `host/runtime`. Kod produkcyjny w `host/runtime`
 nie może importować starego pakietu `host`. Stary system pozostaje uruchamialną
 referencją do czasu ukończenia bram integracyjnych i sprzętowych.
 
@@ -46,8 +50,8 @@ ponownie używane za nowymi granicami.
 
 ## Consequences
 
-- `host` i `host_v2` mogą działać równolegle podczas budowy i porównań.
-- `host_v2` oraz stare firmware kończą handshake błędem wersji przed rozpoczęciem
+- `host` i `host/runtime` mogą działać równolegle podczas budowy i porównań.
+- `host/runtime` oraz stare firmware kończą handshake błędem wersji przed rozpoczęciem
   recording.
 - Nie utrzymujemy dwóch ścieżek protokołu w nowym rdzeniu.
 - Wspólne zachowanie przenosimy przez testy i kontrakty, nie przez import starej

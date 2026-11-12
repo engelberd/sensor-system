@@ -13,7 +13,7 @@ wykonuje pomiaru sensora. Jest adapterem pomiędzy payloadem tej usługi a
 application payload <-> MeasurementServiceHandler <-> DeliverySession
 ```
 
-Implementacja znajduje się w `node/protocol_v3/measurement_handler.h`. Obsługuje
+Implementacja znajduje się w `node/protocol/measurement_handler.h`. Obsługuje
 wyłącznie `GET_STREAM_STATE`, `PULL_SAMPLES` i `RELEASE_SAMPLES`. Nie zna COBS,
 CRC, adresowania framingu, UART, harmonogramu hosta ani storage.
 

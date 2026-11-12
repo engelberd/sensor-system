@@ -1,7 +1,7 @@
 #include <cassert>
 #include <cstdint>
 
-#include "protocol_v3/commissioning.h"
+#include "protocol/commissioning.h"
 
 namespace {
 

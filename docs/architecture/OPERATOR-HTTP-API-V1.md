@@ -29,10 +29,12 @@ samym ID zachowuje idempotency Operations API.
 | POST | `/api/v2/channels/{channel_id}/nodes/{node_address}/reset-metrics-view` | ustawienie lokalnego punktu odniesienia liczników dashboardu |
 | POST | `/api/v2/channels/{channel_id}/commission` | zatwierdzenie wykrytego node, zapis profilu i restart hosta |
 
-Mutujący POST wymaga `Content-Type: application/json` oraz nagłówka
-`X-Sensor-System-Request: dashboard-v2`. Własny nagłówek blokuje prosty
-cross-origin form POST. Dashboard nadal jest dostępny wyłącznie w prywatnej
-sieci administracyjnej; nagłówek nie zastępuje autoryzacji sieciowej.
+Mutujący POST używa `Content-Type: application/json` oraz nagłówka
+`X-Sensor-System-Request: dashboard-v2`. Adapter egzekwuje obecnie własny
+nagłówek i limit ciała, ale jawna walidacja `Content-Type` pozostaje do dodania.
+Własny nagłówek blokuje prosty cross-origin form POST. Dashboard nadal jest
+dostępny wyłącznie w prywatnej sieci administracyjnej; nagłówek nie zastępuje
+uwierzytelnienia ani autoryzacji.
 
 Przykład:
 

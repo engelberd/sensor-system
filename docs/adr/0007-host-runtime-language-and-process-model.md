@@ -18,7 +18,7 @@ z zapisanymi danymi.
 ## Decyzja
 
 1. Firmware node pozostaje w C++17 z Pico SDK.
-2. Krytyczny runtime `host_v2` implementujemy w stabilnym Rust dla ARM64 Linux.
+2. Krytyczny runtime `host/runtime` implementujemy w stabilnym Rust dla ARM64 Linux.
 3. Python pozostaje językiem narzędzi offline: analizy, walidacji, migracji i
    diagnostyki zapisanych danych. Recorder nie uruchamia interpretera Python.
 4. Pierwsza wersja używa jednego procesu `sensor-host`. Każdy channel ma własny

@@ -1,4 +1,5 @@
 #include <cassert>
+#include <initializer_list>
 
 #include "runtime/configuration_runtime.h"
 
@@ -178,7 +179,20 @@ void reset_uses_the_product_measurement_default() {
 
 }  // namespace
 
+void test_fractional_output_rates_are_exact() {
+    for (uint8_t code : {7, 8, 9, 10}) {
+        float sensor_hz = 0; uint8_t reg = 0;
+        assert(runtime::output_rate_to_sensor(code, sensor_hz, reg));
+        DeviceConfig config{}; config.odr_hz = sensor_hz;
+        const auto observed = runtime::runtime_configuration_from_device(config);
+        assert(observed.output_rate_code == code);
+        assert(reg == code - 1);
+        assert(runtime::valid_runtime_configuration(observed));
+    }
+}
+
 int main() {
+    test_fractional_output_rates_are_exact();
     applies_only_in_service_states_and_advances_revision();
     rejects_stale_revision_before_touching_hardware();
     storage_failure_restores_the_previous_runtime_config();

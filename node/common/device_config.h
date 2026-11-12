@@ -8,7 +8,7 @@ struct DeviceConfig {
     uint8_t node_id = UNASSIGNED_NODE_ID;
     uint32_t baudrate = 115200;
 
-    uint16_t odr_hz = 250;
+    float odr_hz = 250.0f; // ADXL rates are exact binary fractions; never serialized on wire.
     uint8_t range_g = 2;
     uint8_t high_pass_corner = 0;
     uint8_t filter_profile = 1; // DecimationFilterProfile::Balanced

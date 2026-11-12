@@ -376,9 +376,10 @@ private:
             return kLegacyPollingIntervalMs;
         }
 
-        uint32_t odr_hz = last_config_.odr_hz;
+        const uint32_t odr_hz_q8_initial = static_cast<uint32_t>(last_config_.odr_hz * 256.0f);
+        uint32_t odr_hz = odr_hz_q8_initial;
         if (odr_hz == 0) {
-            odr_hz = 250;
+            odr_hz = 250 * 256;
         }
 
         uint32_t watermark = snapshot.last_fifo_samples;
@@ -389,7 +390,7 @@ private:
             watermark = 3u;
         }
 
-        return FifoServicePolicy::fallback_interval_ms(odr_hz, watermark);
+        return FifoServicePolicy::fallback_interval_q8_ms(odr_hz, watermark);
     }
 
     void sync_diagnostic_stats_locked(const SensorDiagnosticSnapshot& snapshot) {

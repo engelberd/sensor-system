@@ -1,6 +1,6 @@
 #include <cassert>
 
-#include "protocol_v3/configuration_handler.h"
+#include "protocol/configuration_handler.h"
 #include "runtime/operation_mailbox.h"
 
 namespace {
@@ -38,7 +38,7 @@ void get_and_validate_are_read_only() {
     assert(mailbox.commands_waiting_approx() == 0);
 
     ProtocolV3::MeasurementConfiguration invalid{};
-    invalid.output_rate = ProtocolV3::OutputRateCode::Hz31_25;
+    invalid.output_rate = ProtocolV3::OutputRateCode::Hz4000;
     invalid.fifo_watermark = 30;
     uint8_t request[ProtocolV3::kConfigurationValueBytes]{};
     assert(ProtocolV3::encode_configuration(

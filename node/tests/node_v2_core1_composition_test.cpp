@@ -3,10 +3,10 @@
 #include <cstdint>
 #include <cstring>
 
-#include "protocol_v3/dispatcher.h"
-#include "protocol_v3/lifecycle.h"
-#include "protocol_v3/lifecycle_handler.h"
-#include "protocol_v3/transport_endpoint.h"
+#include "protocol/dispatcher.h"
+#include "protocol/lifecycle.h"
+#include "protocol/lifecycle_handler.h"
+#include "protocol/transport_endpoint.h"
 #include "runtime/core1_measurement_runtime.h"
 #include "runtime/core1_protocol_runtime.h"
 #include "runtime/operation_mailbox.h"

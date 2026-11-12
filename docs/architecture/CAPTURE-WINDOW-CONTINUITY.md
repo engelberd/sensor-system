@@ -1,7 +1,7 @@
 # Ciągłość okien Capture
 
-- Status: obowiązujący kontrakt logiczny; adapter plikowy pozostaje otwarty
-- Ostatnia aktualizacja: 2026-10-08
+- Status: obowiązujący kontrakt logiczny
+- Ostatnia aktualizacja: 2026-11-02
 
 ## Gwarancja
 
@@ -30,10 +30,12 @@ każdego miejsca, w którym próbki nie istnieją. Recorder nie interpoluje dany
 
 ## Rotacja
 
-Docelowy czas okna jest progiem decyzji po rekordzie, a nie punktem cięcia
-wewnątrz paczki. Cały zweryfikowany chunk trafia do jednego okna. Jeśli jego
-ostatnia próbka przekroczy cel czasu, okno kończy się na `chunk.end()` i kolejne
-zaczyna dokładnie od tego cursora.
+Wspólna polityka WAL/CSV wyznacza granice kalendarzowe w strefie instalacji.
+Transferowy chunk może zostać podzielony między próbkami: pierwsza próbka
+na granicy lub po niej trafia do następnego okna. Zmiana `config_revision`
+zamyka poprzednie okno przed pierwszą próbką z nowymi ustawieniami.
+[ADR-0013](../adr/0013-shared-capture-calendar.md) opisuje zamrożenie mapowania
+czasu, recovery fragmentów i codzienne katalogi CSV.
 
 Okno przechowuje osobno `first_sample_cursor`; gap lub continuity break mogą
 poprzedzać pierwszą rzeczywistą próbkę. Czas okna zaczyna się od timing evidence
@@ -45,7 +47,7 @@ Adapter Capture wykonuje operację w tej kolejności:
 
 1. `CaptureWindowLedger` przygotowuje plan i sprawdza hardware, boot epoch oraz
    dokładny następny cursor.
-2. Adapter dopisuje cały rekord do bieżącego pliku/WAL.
+2. Adapter dopisuje rekord lub fragment chunku do bieżącego pliku/WAL.
 3. Durable barrier potwierdza rekord zgodnie z polityką storage.
 4. Adapter zatwierdza plan ledgera; dopiero wtedy może otrzymać manifest okna.
 5. Manifest jest zapisywany i publikowany atomowo, po czym następny rekord
@@ -65,7 +67,7 @@ mogą zostać naprawione zmianą nazwy pliku.
 
 ## Stan implementacji
 
-Warstwa [Capture WAL v1](CAPTURE-WAL-V1.md) implementuje packed int24, CRC32C,
+Warstwa [Capture WAL v2](CAPTURE-WAL-V2.md) implementuje packed int24, CRC32C,
 trwały marker seal, odtwarzanie ledgera, fizyczny segment per okno i atomowy
 manifest. Bezpiecznie obcinany jest tylko fizycznie niepełny ogon; pełna
 korupcja CRC zatrzymuje recovery fail-closed. Read-only reader i niezależny

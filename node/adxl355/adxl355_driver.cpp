@@ -1,3 +1,4 @@
+#include "common/sensor_rate.h"
 #include "adxl355/adxl355_driver.h"
 #include "adxl355/adxl355_registers.h"
 #include "adxl355/adxl355_temperature.h"
@@ -115,14 +116,8 @@ SensorStatus Adxl355Driver::configure(const AccelerometerConfig& config) {
         default: return SensorStatus::InvalidParam;
     }
 
-    switch (config.odr_hz) {
-        case 4000: odr_bits = ADXL355::ODR_4000HZ; break;
-        case 2000: odr_bits = ADXL355::ODR_2000HZ; break;
-        case 1000: odr_bits = ADXL355::ODR_1000HZ; break;
-        case 500:  odr_bits = ADXL355::ODR_500HZ;  break;
-        case 250:  odr_bits = ADXL355::ODR_250HZ;  break;
-        case 125:  odr_bits = ADXL355::ODR_125HZ;  break;
-        default: return SensorStatus::InvalidParam;
+    if (!SensorRate::to_register(config.odr_hz, odr_bits)) {
+        return SensorStatus::InvalidParam;
     }
 
     const bool rearm_irq = int1_irq_enabled_;

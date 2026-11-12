@@ -9,13 +9,14 @@ sensor-system/
 ├── hardware/                 KiCad, biblioteki i dokumentacja elektroniki
 ├── node/                     firmware, bootloader i profile board-v1/board-v2
 ├── host/
+│   ├── runtime/                recorder Rust, kontrakty wire i Analysis
 │   ├── configs/
 │   │   ├── common.json       wspólne ustawienia produktu
 │   │   └── systems/          śledzone profile fizycznych instalacji
-│   ├── common/, recorder/    kod legacy zachowany do migracji danych
-│   ├── tests/                testy migracyjne i interfejsu operatorskiego
+│   ├── dashboard/             aktywny adapter HTTP do Operations API
+│   ├── common/, recorder/     kod legacy oczekujący na wydzielenie
+│   ├── tests/                 testy migracyjne i interfejsu operatorskiego
 │   └── system_config.json    lokalna, ignorowana nakładka aktywnego hosta
-├── host_v2/                  runtime Rust, systemd i narzędzia danych v2
 ├── docs/
 │   ├── architecture/         obowiązujący projekt i roadmapa
 │   ├── adr/                  decyzje architektoniczne
@@ -27,7 +28,6 @@ sensor-system/
     ├── archive/
     ├── diagnostics/
     ├── log/
-    ├── run/
     └── tmp/
 ```
 

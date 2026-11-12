@@ -6,13 +6,13 @@
 #include <string>
 #include <vector>
 
-#include "protocol_v3/identity.h"
+#include "protocol/identity.h"
 
 namespace {
 using namespace ProtocolV3;
 
 std::vector<uint8_t> read_vector(const char* name) {
-    const std::string path = std::string("../host_v2/contracts/golden/") + name;
+    const std::string path = std::string("../host/runtime/contracts/golden/") + name;
     std::ifstream input(path, std::ios::binary);
     assert(input.good());
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), {});
@@ -38,7 +38,7 @@ NodeCapabilities capabilities() {
     value.max_payload_bytes = 512;
     value.journal_capacity_samples = 4096;
     value.output_rate_mask = kImplementedOutputRateMask;
-    value.max_sample_chunk_samples = 48;
+    value.max_sample_chunk_samples = 34;
     return value;
 }
 
@@ -46,7 +46,7 @@ void test_identity_golden_round_trip() {
     uint8_t encoded[kIdentityResponseBytes]{};
     assert(encode_identity_success(identity(), encoded, sizeof(encoded)) ==
            IdentityCodecStatus::Ok);
-    const auto golden = read_vector("identity_v5_response.bin");
+    const auto golden = read_vector("identity_v6_response.bin");
     assert(golden.size() == sizeof(encoded));
     assert(std::memcmp(golden.data(), encoded, sizeof(encoded)) == 0);
 
@@ -63,7 +63,7 @@ void test_capabilities_golden_round_trip() {
     uint8_t encoded[kCapabilitiesResponseBytes]{};
     assert(encode_capabilities_success(capabilities(), encoded, sizeof(encoded)) ==
            IdentityCodecStatus::Ok);
-    const auto golden = read_vector("capabilities_v5_response.bin");
+    const auto golden = read_vector("capabilities_v6_response.bin");
     assert(golden.size() == sizeof(encoded));
     assert(std::memcmp(golden.data(), encoded, sizeof(encoded)) == 0);
 
@@ -77,7 +77,7 @@ void test_capabilities_golden_round_trip() {
     assert((decoded.output_rate_mask & (1u << 0u)) == 0u);  // no 4000 Hz output
     assert((decoded.output_rate_mask & (1u << 1u)) != 0u);  // 2000 Hz output
     assert((decoded.output_rate_mask & (1u << 6u)) != 0u);  // 62.5 Hz output
-    assert((decoded.output_rate_mask & (1u << 7u)) == 0u);  // no 31.25 Hz output
+    assert((decoded.output_rate_mask & (1u << 7u)) != 0u);  // no 31.25 Hz output
 }
 
 void test_fail_closed_validation() {

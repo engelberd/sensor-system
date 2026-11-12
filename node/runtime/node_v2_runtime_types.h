@@ -2,10 +2,10 @@
 
 #include "config/node_v2_runtime_profile.h"
 #include "measurement/measurement_ingress_sink.h"
-#include "protocol_v3/lifecycle_handler.h"
-#include "protocol_v3/configuration_handler.h"
-#include "protocol_v3/commissioning_handler.h"
-#include "protocol_v3/transport_endpoint.h"
+#include "protocol/lifecycle_handler.h"
+#include "protocol/configuration_handler.h"
+#include "protocol/commissioning_handler.h"
+#include "protocol/transport_endpoint.h"
 #include "runtime/core1_measurement_runtime.h"
 #include "runtime/operation_mailbox.h"
 

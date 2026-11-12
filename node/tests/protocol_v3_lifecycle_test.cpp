@@ -2,8 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "protocol_v3/lifecycle.h"
-#include "protocol_v3/lifecycle_handler.h"
+#include "protocol/lifecycle.h"
+#include "protocol/lifecycle_handler.h"
 #include "runtime/operation_mailbox.h"
 
 namespace {

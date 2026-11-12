@@ -105,7 +105,8 @@ provenance odróżniające ją od rzeczywistego pomiaru.
 Nie zapisujemy wymyślonego czasu wynikającego z nazwy pliku lub granicy pełnej
 minuty. Zachowujemy:
 
-- timestamp urządzenia powiązany z rzeczywistą próbką lub segmentem;
+- indywidualny timestamp urządzenia dla każdego wyjściowego XYZ, zachowany
+  bezstratnie od node do WAL i eksportu (ADR-0012, protocol 6);
 - `sample_seq`, którego dotyczy timing anchor;
 - `boot_epoch` i identyfikator segmentu zegara;
 - obserwacje synchronizacji potrzebne do mapowania device time na host/UTC;
@@ -137,14 +138,13 @@ target_window_duration_s = 600  # wartość domyślna, konfigurowalna
 ```
 
 - okno zaczyna się od pierwszej rzeczywiście zapisanej próbki;
-- nie jest wyrównywane do pełnej minuty, sekundy ani granicy UTC;
-- recorder zamyka je na granicy rzeczywistej próbki po osiągnięciu docelowego
-  czasu akwizycji;
-- rzeczywisty czas i liczba próbek mogą nieznacznie różnić się od celu;
-- metadata przechowują realnie oszacowane czasy pierwszej i ostatniej próbki;
-- zmiana długości okna jest ustawieniem systemu/instalacji, nie stałą w kodzie;
-- krótki plik po starcie, zatrzymaniu lub recovery jest legalny i nie jest
-  sztucznie dopełniany.
+- wspólna polityka WAL/CSV wyrównuje kolejne granice do czasu kalendarzowego
+  w `system.timezone`; przy 600 s są to :00, :10, :20 itd.;
+- pierwsza próbka na granicy lub po niej rozpoczyna nowy plik;
+- zmiana `config_revision` zamyka okno przed pierwszą próbką nowej konfiguracji;
+- pierwszy i ostatni plik mogą być krótkie; nie dopełniamy ich próbkami;
+- jeden zamknięty WAL odpowiada jednemu CSV, w podkatalogu dnia;
+- szczegóły trwałości i czasu opisuje [ADR-0013](../adr/0013-shared-capture-calendar.md).
 
 Granica okna nie zużywa pozycji strumienia. Każdy zamknięty plik publikuje
 manifest z zakresem półotwartym:
@@ -160,10 +160,10 @@ sytuacje są błędem walidacji. Jawny `Gap` pozostaje rekordem w cursor space, 
 plik po luce nadal może być bezstratnie dołączony, a analiza widzi dokładny
 brakujący zakres. `ContinuityBreak` zachowuje swoją pozycję i semantykę.
 
-Recorder nie dzieli transferowego chunku podczas rotacji. Najpierw utrwala cały
-uporządkowany rekord, następnie przesuwa durable cursor, a manifest zamkniętego
-okna publikuje dopiero po tej granicy trwałości. Awaria storage pozostawia plan
-rotacji niezatwierdzony i nie może przesunąć początku kolejnego pliku.
+Recorder może podzielić transferowy chunk między rzeczywistymi próbkami,
+zachowując dokładne timestampy i cursory. Potwierdzenie oryginalnego transferu
+następuje dopiero po utrwaleniu wszystkich fragmentów. Recovery zachowuje
+trwały prefiks i dopisuje wyłącznie brakujący sufiks.
 
 Pliki jednego sensora nie muszą zaczynać się w tej samej chwili co pliki innych
 sensorów. Późniejsza analiza używa czasu próbek i segmentów, nie nazw plików.

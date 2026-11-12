@@ -122,6 +122,11 @@ Model produktu rozróżnia:
 | `HardwareId` | niezmienna tożsamość konkretnego urządzenia |
 | `NodeAddress` | adres routingu ważny w obrębie konkretnego channel |
 
+Niedostępność jednego channel przy starcie lub podczas pracy nie zatrzymuje
+zdrowych niezależnych channels. Braki i przyczyny muszą pozostać widoczne
+w health/status; dane niesprawnego kanału nie mogą być uznane za pozyskane.
+Szczegóły bootstrapu i ograniczenia: [ADR-0015](../adr/0015-partial-channel-startup.md).
+
 Wielokanałowy konwerter USB jest jednym `TransportDevice` udostępniającym wiele
 niezależnych channels. Awaria urządzenia może więc dotknąć grupy kanałów, ale
 każdy channel nadal ma osobnego właściciela komunikacji i scheduler.

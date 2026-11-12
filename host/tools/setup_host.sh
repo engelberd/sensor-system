@@ -19,7 +19,7 @@ if ! "${PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
-    echo "[ERROR] Nie znaleziono cargo. Zainstaluj toolchain z host_v2/rust-toolchain.toml." >&2
+    echo "[ERROR] Nie znaleziono cargo. Zainstaluj toolchain z host/runtime/rust-toolchain.toml." >&2
     exit 2
 fi
 
@@ -35,7 +35,7 @@ fi
 echo "[1/6] Przygotowanie środowiska Python dla dashboardu i aktualizacji firmware: ${VENV_DIR}"
 "${PYTHON_BIN}" -m venv "${VENV_DIR}"
 
-echo "[2/6] Instalacja lekkich zależności serwisowych"
+echo "[2/6] Instalacja zależności serwisowych i eksportu HDF5"
 "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check \
     -r "${ROOT_DIR}/host/requirements-v2.txt"
 
@@ -65,4 +65,4 @@ echo "  2. popraw tylko lokalne endpointy/storage/enable w host/system_config.js
 echo "  3. uruchom ./hostctl discover, gdy RS485 jest dostępne;"
 echo "  4. zainstaluj usługi, podając adres interfejsu administracyjnego:"
 echo "     SENSOR_HOST_DASHBOARD_HOST=<TAILSCALE_IP> ./hostctl install-services"
-echo "  5. uruchom ./hostctl start && ./hostctl doctor"
+echo "  5. uruchom sudo ./hostctl start && ./hostctl doctor"

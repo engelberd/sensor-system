@@ -1,7 +1,7 @@
 # Rollout timestampingu — linie C, E, G i H
 
 > **Raport historyczny:** opisuje stan wdrożenia starego firmware/protokołu i
-> nie jest planem rollout `host_v2`.
+> nie jest planem rollout `host/runtime`.
 
 Data: 2026-07-27
 System: testowy, rejestracja bez określonego czasu zakończenia
