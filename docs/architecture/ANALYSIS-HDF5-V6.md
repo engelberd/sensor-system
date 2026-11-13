@@ -62,15 +62,28 @@ Pusta telemetria ma jawny status `no_observations_in_window`.
 
 ## Publikacja i migracja
 
-Nazwy pozostają w formacie `CHANNEL_YYYY-MM-DD_HH-MM.h5`, np.
-`line-b_2026-11-11_16-38.h5`. Tożsamość produktu pochodzi z atrybutów, nie z
-nazwy. Eksporter używa blokady katalogu, ukrytego pliku tymczasowego, `fsync` i
-atomowego `rename`.
+Produkty są grupowane według lokalnej daty pierwszej próbki i channel:
+`analysis_v2.root_dir/YYYY-MM-DD/CHANNEL/`. Pełna przykładowa ścieżka to
+`var/analysis/2026-11-13/line-b/line-b_2026-11-13_16-38.h5`. Nazwy plików
+pozostają w formacie `CHANNEL_YYYY-MM-DD_HH-MM.h5`. Tożsamość produktu pochodzi
+z atrybutów, nie z nazwy. Eksporter używa blokady katalogu channel, ukrytego
+pliku tymczasowego, `fsync` i atomowego `rename`.
 
 V1–v5 są formatami wycofanymi. Indeks eksportera rozpoznaje ich tożsamość, ale
 nie uznaje ich za ukończony produkt bieżący. `./hostctl analysis export-new
 --backfill-all` odtwarza v6 z zachowanych Capture, Time i Telemetry WAL pod tą
 samą czytelną nazwą. Recorder nie musi być zatrzymany.
+
+Istniejące płaskie produkty v6 można przenieść bez przebudowy danych:
+
+```text
+host/.venv/bin/python host/runtime/analysis/reorganize_analysis_layout.py var/analysis
+host/.venv/bin/python host/runtime/analysis/reorganize_analysis_layout.py var/analysis --apply
+```
+
+Pierwsze polecenie jest dry-run. Migrator wyznacza datę i channel z atrybutów
+HDF5, nie nadpisuje istniejącego celu i przenosi plik atomowo w obrębie tego
+samego filesystemu.
 
 ## Odczyt
 

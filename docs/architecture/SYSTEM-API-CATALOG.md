@@ -53,7 +53,7 @@ stronie.
 | Service Control v1 | Unix stream, `/run/sensor-system-control/service-control-v1.sock`, JSON do 2048 B | status/start/stop/restart usług systemd | `gotowe lokalnie` | tylko przez zaufaną lokalną bramę |
 | Operator HTTP | HTTP/JSON w `host/dashboard` | adapter bieżącego dashboardu | `częściowe` | nie jako publiczne API; payloady obserwacyjne są związane z UI |
 | `hostctl` | CLI korzystające z tych samych kontraktów | obsługa lokalna i diagnostyka | `produkcyjne` | dobre dla operatora i skryptów lokalnych, nie dla aplikacji webowej |
-| Analysis HDF5 v6 | pliki `var/analysis/*.h5` | kompletne okna do analizy offline, w tym TimeSync | `gotowe lokalnie`; v5 działa na rpi-sanok2 | tak dla MATLAB/Python, nie jako API czasu rzeczywistego |
+| Analysis HDF5 v6 | pliki `var/analysis/YYYY-MM-DD/CHANNEL/*.h5` | kompletne okna do analizy offline, w tym TimeSync | `gotowe lokalnie`; v5 działa na rpi-sanok2 | tak dla MATLAB/Python, nie jako API czasu rzeczywistego |
 | Capture/Time/Telemetry WAL | lokalne pliki runtime | źródło trwałości i recovery | `produkcyjne` | nie; to prywatny format runtime |
 | Operations Audit WAL | `.operations-audit-v1/channel-NN.wal` | trwały audyt poleceń | zapis `produkcyjny`, odczyt API `brak` | nie bez read modelu |
 | Protokół node | RS485, framing 3 i application protocol 6 | komunikacja host–firmware | `produkcyjne` | nie udostępniać dashboardowi ani platformom zewnętrznym |

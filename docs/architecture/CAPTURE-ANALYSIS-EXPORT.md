@@ -15,7 +15,8 @@ host/.venv/bin/python host/runtime/analysis/load_analysis_window.py /sciezka/okn
 Pierwszy przebieg eksportuje skonfigurowany ogon każdej epoki. Pełną historię
 można odtworzyć przez `./hostctl analysis export-new --backfill-all`.
 Wyniki trafiają bezpośrednio do `analysis_v2.root_dir`, domyślnie `var/analysis`,
-pod nazwami `line-b_2026-11-11_16-38.h5`.
+w układzie `YYYY-MM-DD/CHANNEL/`, np.
+`2026-11-13/line-b/line-b_2026-11-13_16-38.h5`.
 Eksport nie używa RS485 i nie zmienia WAL.
 
 Notebook: [analysis_window.ipynb](../../host/runtime/analysis/analysis_window.ipynb).

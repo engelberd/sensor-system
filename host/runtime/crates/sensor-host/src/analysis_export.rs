@@ -98,15 +98,21 @@ pub fn export_analysis_window(
         timezone,
         ..identity
     };
-    fs::create_dir_all(output_directory)?;
-    sync_directory(output_directory)?;
+    let output_directory = output_directory
+        .join(local.format("%Y-%m-%d").to_string())
+        .join(identity.channel_name);
+    fs::create_dir_all(&output_directory)?;
+    sync_directory(&output_directory)?;
     if let Some(parent) = output_directory.parent() {
         sync_directory(parent)?;
+        if let Some(root) = parent.parent() {
+            sync_directory(root)?;
+        }
     }
 
     // Serialize selection and publication across manual exports and the timer.
     // Closing the descriptor releases flock even after process termination.
-    let directory_lock = File::open(output_directory)?;
+    let directory_lock = File::open(&output_directory)?;
     nix::fcntl::flock(
         directory_lock.as_raw_fd(),
         nix::fcntl::FlockArg::LockExclusive,
@@ -146,7 +152,7 @@ pub fn export_analysis_window(
     }
     // The directory lock makes it safe to remove remnants of interrupted runs.
     let temporary_prefix = format!(".{stem}.");
-    for entry in fs::read_dir(output_directory)? {
+    for entry in fs::read_dir(&output_directory)? {
         let entry = entry?;
         let name = entry.file_name();
         if name
@@ -227,7 +233,7 @@ pub fn export_analysis_window(
         let _ = fs::remove_file(path);
     }
     let written = result?;
-    sync_directory(output_directory)?;
+    sync_directory(&output_directory)?;
     Ok(AnalysisWindowSummary {
         hdf5_path,
         sample_count: written.sample_count,
@@ -1083,7 +1089,11 @@ mod tests {
                 &configs,
             )
             .unwrap();
-            assert_eq!(result.hdf5_path.parent().unwrap(), output);
+            let expected_directory = match ordinal {
+                0 => output.join("2026-11-02/line-b"),
+                _ => output.join("2026-11-03/line-b"),
+            };
+            assert_eq!(result.hdf5_path.parent().unwrap(), expected_directory);
             let expected = match ordinal {
                 0 => "line-b_2026-11-02_23-59.h5",
                 1 => "line-b_2026-11-03_00-00.h5",
