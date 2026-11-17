@@ -1,0 +1,9 @@
+channel,hardware_id,label,board_version,odr_drift
+1,e0c839c677efa961,W4L1 Ad2,2,
+2,e6ab60a60e1506b3,W4P1 Ag2,2,
+3,914c7da59ba288ed,W4L3 Ad3,2,
+4,c2d5b6c24245eaa9,W4P3 Ag3,2,
+5,8d626ee02dcea999,W7L1 Ad1,2,
+6,2f13349450fa4084,W7P1 Ag1,2,
+7,e648a8babac453a2,W7L3 Ad4,2,
+8,e7ef559bda6965ef,W7P3 Ag4,2,

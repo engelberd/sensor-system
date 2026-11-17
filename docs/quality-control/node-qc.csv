@@ -1,0 +1,9 @@
+label,channel,clean_adxl,clean_pico,clean_pcb,clean_enclosure,screw_adxl,screw_pcb,clean_seal,screw_enclosure
+W4L1 Ad2,1,,,,,,,,
+W4P1 Ag2,2,,,,,,,,
+W4L3 Ad3,3,,,,,,,,
+W4P3 Ag3,4,,,,,,,,
+W7L1 Ad1,5,,,,,,,,
+W7P1 Ag1,6,,,,,,,,
+W7L3 Ad4,7,,,,,,,,
+W7P3 Ag4,8,,,,,,,,
